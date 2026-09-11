@@ -57,6 +57,11 @@ export type AgentSnapshot = {
   instructions: string;
   runner?: RunnerName;
   model?: string;
+  /** Remote agents only — captured at submit time so a later re-register cannot change a running job. */
+  cardId?: string;
+  credentialsRef?: string;
+  trustLevel?: string;
+  endpointUrl?: string;
 };
 
 export type JobRecord = {
@@ -79,6 +84,9 @@ export type JobRecord = {
   resultStructured?: unknown;
   error?: ErrorPayload;
   usage?: JobUsage;
+  /** Set by the A2A gateway once the remote task exists. */
+  remoteTaskId?: string;
+  remoteContextId?: string;
   createdAt: string;
   updatedAt: string;
   startedAt?: string;
@@ -136,6 +144,8 @@ type JobRow = {
   result_structured: string | null;
   error: string | null;
   usage: string | null;
+  remote_task_id: string | null;
+  remote_context_id: string | null;
   created_at: string;
   updated_at: string;
   started_at: string | null;
@@ -177,6 +187,8 @@ function toRecord(row: JobRow): JobRecord {
   if (usage !== undefined) record.usage = usage;
   if (row.started_at !== null) record.startedAt = row.started_at;
   if (row.finished_at !== null) record.finishedAt = row.finished_at;
+  if (row.remote_task_id !== null) record.remoteTaskId = row.remote_task_id;
+  if (row.remote_context_id !== null) record.remoteContextId = row.remote_context_id;
 
   return record;
 }

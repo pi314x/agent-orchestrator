@@ -14,5 +14,10 @@ export interface ToolDeps {
 export interface ToolRegistration {
   readonly name: string;
   readonly profile: ToolProfile;
+  /**
+   * Interop-only tools. They disappear from tools/list entirely when
+   * A2A_ENABLED is false, so a purely local deployment never sees them.
+   */
+  readonly requiresA2A?: boolean;
   register(server: McpServer, deps: ToolDeps): void;
 }

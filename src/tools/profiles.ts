@@ -1,5 +1,16 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import type { ToolProfile } from '../config.js';
+import {
+  a2aCardGetTool,
+  a2aCardVerifyTool,
+  a2aDiscoverTool,
+  a2aPushConfigSetTool,
+  a2aServerInfoTool,
+  a2aTaskCancelTool,
+  a2aTaskGetTool,
+  agentPublishTool,
+  agentRegisterTool
+} from './a2a.js';
 import { orchestratorStatusTool, runnerListTool } from './admin.js';
 import { agentCreateTool, agentGetTool, agentListTool, agentTemplateListTool } from './agents.js';
 import { approvalListTool, approvalResolveTool } from './approvals.js';
@@ -29,6 +40,7 @@ import {
 export const TOOL_REGISTRY: readonly ToolRegistration[] = [
   // §5.1 Agents
   agentCreateTool,
+  agentRegisterTool,
   agentListTool,
   agentGetTool,
   agentTemplateListTool,
@@ -70,6 +82,15 @@ export const TOOL_REGISTRY: readonly ToolRegistration[] = [
   // §5.8 Human-in-the-loop
   approvalListTool,
   approvalResolveTool,
+  // §5.9 A2A interoperability
+  a2aCardGetTool,
+  a2aCardVerifyTool,
+  a2aDiscoverTool,
+  a2aTaskGetTool,
+  a2aTaskCancelTool,
+  a2aPushConfigSetTool,
+  a2aServerInfoTool,
+  agentPublishTool,
   // §5.11 Observability & budgets
   eventsQueryTool,
   budgetSetTool,
@@ -80,13 +101,30 @@ export const TOOL_REGISTRY: readonly ToolRegistration[] = [
 
 const PROFILE_RANK: Record<ToolProfile, number> = { core: 0, standard: 1, full: 2 };
 
-/** Profiles are cumulative: a `core` tool is present in every profile. */
-export function toolsForProfile(profile: ToolProfile): readonly ToolRegistration[] {
-  return TOOL_REGISTRY.filter(tool => PROFILE_RANK[tool.profile] <= PROFILE_RANK[profile]);
+export interface ProfileOptions {
+  /** When false, interop tools are left out of the catalog entirely. */
+  a2aEnabled?: boolean;
+}
+
+/**
+ * Profiles are cumulative: a `core` tool is present in every profile. A purely
+ * local deployment never sees the A2A group at all — a smaller tool list is
+ * better for model tool selection than one full of tools that cannot be used.
+ */
+export function toolsForProfile(
+  profile: ToolProfile,
+  options: ProfileOptions = {}
+): readonly ToolRegistration[] {
+  const a2aEnabled = options.a2aEnabled ?? false;
+
+  return TOOL_REGISTRY.filter(
+    tool => PROFILE_RANK[tool.profile] <= PROFILE_RANK[profile] && (a2aEnabled || tool.requiresA2A !== true)
+  );
 }
 
 export function registerTools(server: McpServer, deps: ToolDeps): readonly string[] {
-  const tools = toolsForProfile(deps.services.config.toolProfile);
+  const { config } = deps.services;
+  const tools = toolsForProfile(config.toolProfile, { a2aEnabled: config.a2aEnabled });
   for (const tool of tools) tool.register(server, deps);
   return tools.map(tool => tool.name);
 }

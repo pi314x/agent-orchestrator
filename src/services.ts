@@ -1,3 +1,6 @@
+import { CardStore } from './a2a/card.js';
+import { A2AGateway, type ClientProvider } from './a2a/client.js';
+import { PublishedSkillStore } from './a2a/server.js';
 import type { Config } from './config.js';
 import { ApprovalStore } from './core/approvals.js';
 import { ArtifactStore } from './core/artifacts.js';
@@ -28,6 +31,9 @@ export interface Services {
   bus: MessageBus;
   budgets: BudgetTracker;
   approvals: ApprovalStore;
+  cards: CardStore;
+  publishedSkills: PublishedSkillStore;
+  a2aGateway: A2AGateway;
   runners: RunnerRegistry;
   scheduler: JobScheduler;
   workflows: WorkflowEngine;
@@ -37,13 +43,15 @@ export interface CreateServicesInput {
   config: Config;
   db: Db;
   logger: Logger;
+  /** Lets tests point the A2A gateway at an in-repo fixture agent. */
+  a2aClientProvider?: ClientProvider;
 }
 
 /**
  * Built once per process and shared by every serving unit. These are long-lived
  * handles, not per-request state — nothing here is keyed by connection.
  */
-export function createServices({ config, db, logger }: CreateServicesInput): Services {
+export function createServices({ config, db, logger, a2aClientProvider }: CreateServicesInput): Services {
   const events = new EventLog(db);
   const agents = new AgentRegistry(db);
   const jobs = new JobStore(db);
@@ -52,6 +60,17 @@ export function createServices({ config, db, logger }: CreateServicesInput): Ser
   const bus = new MessageBus(db);
   const budgets = new BudgetTracker(db);
   const approvals = new ApprovalStore(db);
+  const cards = new CardStore(db);
+  const publishedSkills = new PublishedSkillStore(db);
+
+  const a2aGateway = new A2AGateway({
+    db,
+    cards,
+    logger,
+    trustMode: config.a2aTrustMode,
+    allowedWebhookHosts: config.a2aWebhookAllowedHosts,
+    ...(a2aClientProvider !== undefined && { clientProvider: a2aClientProvider })
+  });
 
   const runners = new RunnerRegistry([
     new MockRunner(),
@@ -75,6 +94,7 @@ export function createServices({ config, db, logger }: CreateServicesInput): Ser
     bus,
     budgets,
     logger,
+    a2aGateway,
     maxConcurrency: config.maxConcurrency,
     maxDepth: config.maxDepth,
     defaultRunner: config.defaultRunner
@@ -103,6 +123,9 @@ export function createServices({ config, db, logger }: CreateServicesInput): Ser
     bus,
     budgets,
     approvals,
+    cards,
+    publishedSkills,
+    a2aGateway,
     runners,
     scheduler,
     workflows

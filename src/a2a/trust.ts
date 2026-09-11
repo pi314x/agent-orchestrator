@@ -1,0 +1,146 @@
+import { verifyAgentCardSignature, type AgentCard } from '@a2a-js/sdk';
+import type { JWK } from 'jose';
+import { OrchestratorError } from '../errors.js';
+
+export const TRUST_MODES = ['verified-only', 'allow-unverified'] as const;
+export type TrustMode = (typeof TRUST_MODES)[number];
+
+export const TRUST_LEVELS = ['verified', 'unverified'] as const;
+export type TrustLevel = (typeof TRUST_LEVELS)[number];
+
+/**
+ * A card is `verified` only when a signature is present and checks out.
+ * An unsigned card is `unverified` — never silently upgraded.
+ */
+export type PublicKeyResolver = (kid: string, jku?: string) => Promise<JWK>;
+
+/**
+ * Default resolver: fetch the JWKS the signature header points at and pick the
+ * matching key. The `jku` is attacker-supplied, so it goes through the same URL
+ * checks as a webhook callback before anything is fetched.
+ */
+export function createJwksResolver(fetchImpl: typeof fetch = fetch): PublicKeyResolver {
+  return async (kid, jku) => {
+    if (jku === undefined || jku === '') {
+      throw new Error('The card signature carries no jku, so its key cannot be located.');
+    }
+
+    const url = validateFetchUrl(jku);
+    const response = await fetchImpl(url.toString(), { headers: { accept: 'application/json' } });
+    if (!response.ok) throw new Error(`JWKS fetch returned ${response.status}.`);
+
+    const jwks = (await response.json()) as { keys?: JWK[] };
+    const key = (jwks.keys ?? []).find(candidate => candidate.kid === kid);
+    if (key === undefined) throw new Error(`JWKS at ${jku} has no key with kid ${kid}.`);
+
+    return key;
+  };
+}
+
+export async function verifyCard(
+  card: AgentCard,
+  resolver: PublicKeyResolver = createJwksResolver()
+): Promise<{ trustLevel: TrustLevel; reason?: string }> {
+  if (card.signatures === undefined || card.signatures.length === 0) {
+    return { trustLevel: 'unverified', reason: 'The card carries no signature.' };
+  }
+
+  try {
+    const verify = verifyAgentCardSignature(resolver);
+    await verify(card);
+    return { trustLevel: 'verified' };
+  } catch (error) {
+    return {
+      trustLevel: 'unverified',
+      reason: error instanceof Error ? error.message : 'Signature verification failed.'
+    };
+  }
+}
+
+/**
+ * The gate every remote delegation passes through. `verified-only` is the
+ * default so an unsigned card cannot be used by accident.
+ */
+export function assertTrusted(trustLevel: TrustLevel, mode: TrustMode, agentLabel: string): void {
+  if (mode === 'allow-unverified') return;
+  if (trustLevel === 'verified') return;
+
+  throw new OrchestratorError(
+    'REMOTE_UNVERIFIED',
+    `The Agent Card for ${agentLabel} is unverified and A2A_TRUST_MODE is verified-only.`,
+    'Set A2A_TRUST_MODE=allow-unverified for testing, or use an agent whose card is signed.'
+  );
+}
+
+const BLOCKED_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]', '::1', '0.0.0.0']);
+
+/**
+ * Push-notification callbacks are handed to a third party, so the URL is
+ * checked before it leaves: HTTPS only, no private or loopback targets, and an
+ * explicit allow-list when one is configured. This is the SSRF and
+ * spoofed-callback boundary.
+ */
+export function validateFetchUrl(rawUrl: string): URL {
+  let url: URL;
+  try {
+    url = new URL(rawUrl);
+  } catch {
+    throw new OrchestratorError('INVALID_INPUT', `"${rawUrl}" is not a valid URL.`);
+  }
+
+  if (url.protocol !== 'https:') {
+    throw new OrchestratorError(
+      'POLICY_DENIED',
+      `Refusing a non-HTTPS URL (${url.protocol}).`,
+      'Only HTTPS endpoints are accepted here.'
+    );
+  }
+
+  const hostname = url.hostname.toLowerCase();
+
+  if (BLOCKED_HOSTNAMES.has(hostname) || isPrivateAddress(hostname)) {
+    throw new OrchestratorError(
+      'POLICY_DENIED',
+      `Refusing a URL pointing at a private or loopback address (${hostname}).`,
+      'Use a publicly reachable HTTPS endpoint.'
+    );
+  }
+
+  return url;
+}
+
+export function validateWebhookUrl(rawUrl: string, allowedHosts: readonly string[] = []): URL {
+  const url = validateFetchUrl(rawUrl);
+  const hostname = url.hostname.toLowerCase();
+
+  if (allowedHosts.length > 0 && !allowedHosts.includes(hostname)) {
+    throw new OrchestratorError(
+      'POLICY_DENIED',
+      `Callback host ${hostname} is not in the configured allow-list.`,
+      `Allowed: ${allowedHosts.join(', ')}.`
+    );
+  }
+
+  return url;
+}
+
+function isPrivateAddress(hostname: string): boolean {
+  // IPv4 private ranges plus link-local; hostnames fall through untouched.
+  const parts = hostname.split('.');
+  if (parts.length !== 4 || parts.some(part => !/^\d+$/.test(part))) return false;
+
+  const [a, b] = parts.map(Number) as [number, number, number, number];
+  if (a === 10 || a === 127) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 169 && b === 254) return true;
+  return false;
+}
+
+/**
+ * Remote text can contain anything, including something shaped like an
+ * instruction. Wrapping it marks the boundary for whoever reads it next.
+ */
+export function wrapUntrusted(source: string, text: string): string {
+  return `<untrusted_remote_output source="${source.replace(/"/g, '')}">\n${text}\n</untrusted_remote_output>`;
+}

@@ -1,6 +1,7 @@
 import type { Db } from '../db/sqlite.js';
 import { OrchestratorError } from '../errors.js';
 import { newId } from '../ids.js';
+import type { AgentFileDefinition } from './agent-files.js';
 import type { AgentSnapshot } from './jobs.js';
 import { getTemplate, type RunnerName } from './templates.js';
 
@@ -25,6 +26,14 @@ export type AgentRecord = {
   limits: AgentLimits;
   status: AgentStatus;
   ephemeral: boolean;
+  /** Remote agents only. Each registration owns its own credential. */
+  cardId?: string;
+  credentialsRef?: string;
+  trustLevel?: string;
+  endpointUrl?: string;
+  /** 'file' when defined by a Markdown file in the repo, 'api' otherwise. */
+  source: 'api' | 'file';
+  sourcePath?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -39,6 +48,12 @@ export interface CreateAgentInput {
   toolGrants?: readonly string[];
   limits?: AgentLimits;
   ephemeral?: boolean;
+  cardId?: string;
+  credentialsRef?: string;
+  trustLevel?: string;
+  endpointUrl?: string;
+  source?: 'api' | 'file';
+  sourcePath?: string;
 }
 
 export interface AgentListFilter {
@@ -60,6 +75,12 @@ type AgentRow = {
   limits: string;
   status: string;
   ephemeral: number;
+  card_id: string | null;
+  credentials_ref: string | null;
+  trust_level: string | null;
+  endpoint_url: string | null;
+  source: string;
+  source_path: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -74,12 +95,18 @@ function toRecord(row: AgentRow): AgentRecord {
     limits: JSON.parse(row.limits) as AgentLimits,
     status: row.status as AgentStatus,
     ephemeral: row.ephemeral === 1,
+    source: (row.source === 'file' ? 'file' : 'api') as 'api' | 'file',
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
   if (row.role !== null) record.role = row.role;
   if (row.runner !== null) record.runner = row.runner as RunnerName;
   if (row.model !== null) record.model = row.model;
+  if (row.card_id !== null) record.cardId = row.card_id;
+  if (row.credentials_ref !== null) record.credentialsRef = row.credentials_ref;
+  if (row.trust_level !== null) record.trustLevel = row.trust_level;
+  if (row.endpoint_url !== null) record.endpointUrl = row.endpoint_url;
+  if (row.source_path !== null) record.sourcePath = row.source_path;
   return record;
 }
 
@@ -91,7 +118,11 @@ export function toSnapshot(agent: AgentRecord): AgentSnapshot {
     instructions: agent.instructions,
     ...(agent.role !== undefined && { role: agent.role }),
     ...(agent.runner !== undefined && { runner: agent.runner }),
-    ...(agent.model !== undefined && { model: agent.model })
+    ...(agent.model !== undefined && { model: agent.model }),
+    ...(agent.cardId !== undefined && { cardId: agent.cardId }),
+    ...(agent.credentialsRef !== undefined && { credentialsRef: agent.credentialsRef }),
+    ...(agent.trustLevel !== undefined && { trustLevel: agent.trustLevel }),
+    ...(agent.endpointUrl !== undefined && { endpointUrl: agent.endpointUrl })
   };
 }
 
@@ -165,7 +196,8 @@ export class AgentRegistry {
       .prepare(
         `INSERT INTO agents (
            id, kind, name, role, instructions, runner, model, tool_grants, limits, status, ephemeral, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`
+           , card_id, credentials_ref, trust_level, endpoint_url, source, source_path
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -179,10 +211,88 @@ export class AgentRegistry {
         JSON.stringify(input.limits ?? {}),
         ephemeral ? 1 : 0,
         now,
-        now
+        now,
+        input.cardId ?? null,
+        input.credentialsRef ?? null,
+        input.trustLevel ?? null,
+        input.endpointUrl ?? null,
+        input.source ?? 'api',
+        input.sourcePath ?? null
       );
 
     return this.getOrThrow(id);
+  }
+
+  /**
+   * Reconcile agents defined by repo files against the database: the files are
+   * the source of truth, so edits land and removals disappear. Agents created
+   * through the API are never touched.
+   */
+  syncFromFiles(definitions: readonly AgentFileDefinition[]): {
+    created: string[];
+    updated: string[];
+    removed: string[];
+  } {
+    const now = new Date().toISOString();
+    const created: string[] = [];
+    const updated: string[] = [];
+
+    const existing = new Map(
+      (
+        this.db
+          .prepare(`SELECT * FROM agents WHERE source = 'file' AND status = 'active'`)
+          .all() as AgentRow[]
+      ).map(row => [row.name, toRecord(row)])
+    );
+
+    for (const definition of definitions) {
+      const current = existing.get(definition.name);
+
+      if (current === undefined) {
+        this.create({
+          name: definition.name,
+          instructions: definition.instructions,
+          toolGrants: definition.toolGrants,
+          source: 'file',
+          sourcePath: definition.sourcePath,
+          ...(definition.role !== undefined && { role: definition.role }),
+          ...(definition.runner !== undefined && { runner: definition.runner }),
+          ...(definition.model !== undefined && { model: definition.model })
+        });
+        created.push(definition.name);
+        continue;
+      }
+
+      this.db
+        .prepare(
+          `UPDATE agents SET role = ?, instructions = ?, runner = ?, model = ?, tool_grants = ?,
+             source_path = ?, updated_at = ?
+           WHERE id = ?`
+        )
+        .run(
+          definition.role ?? null,
+          definition.instructions,
+          definition.runner ?? null,
+          definition.model ?? null,
+          JSON.stringify(definition.toolGrants),
+          definition.sourcePath,
+          now,
+          current.id
+        );
+
+      updated.push(definition.name);
+      existing.delete(definition.name);
+    }
+
+    // Whatever is left had its file deleted. Soft-delete so job history keeps resolving.
+    const removed = [...existing.keys()];
+    for (const record of existing.values()) {
+      this.db
+        .prepare(`UPDATE agents SET status = 'deleted', updated_at = ? WHERE id = ?`)
+        .run(now, record.id);
+    }
+
+    return { created, updated, removed };
   }
 
   /** Materialize a built-in template as a throwaway agent for a one-shot job. */

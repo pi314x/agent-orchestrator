@@ -1,7 +1,7 @@
 import { OrchestratorError, toErrorPayload } from '../errors.js';
 import type { Logger } from '../logger.js';
 import { createAgentToolkit, type SpawnJobInput } from '../runners/toolkit.js';
-import type { RunnerRegistry } from '../runners/types.js';
+import type { RunnerEvent, RunnerRegistry } from '../runners/types.js';
 import type { ArtifactStore } from './artifacts.js';
 import type { BudgetTracker } from './budget.js';
 import type { MessageBus } from './bus.js';
@@ -37,6 +37,16 @@ export interface SchedulerDeps {
   maxConcurrency: number;
   maxDepth: number;
   defaultRunner: RunnerName;
+  /** Drives jobs whose backend is a2a_remote; absent until M4 is wired. */
+  a2aGateway?: RemoteExecutor;
+}
+
+/**
+ * The A2A gateway is not a runner (PLAN §9) but exposes the same shape, so the
+ * scheduler drives local and remote work through one path.
+ */
+export interface RemoteExecutor {
+  run(input: { job: JobRecord }, signal: AbortSignal): AsyncIterable<RunnerEvent>;
 }
 
 export class JobScheduler {
@@ -222,12 +232,21 @@ export class JobScheduler {
       this.deps.budgets.assertWithinBudget('job', job.id);
 
       const runnerName = job.agentSnapshot.runner ?? this.deps.defaultRunner;
-      const runner = this.deps.runners.get(runnerName);
-      if (runner === undefined) {
+
+      // One path, two backends: the gateway and a local runner expose the same
+      // `run` shape, so nothing below here knows which one it is talking to.
+      const executor: RemoteExecutor | undefined =
+        job.backend === 'a2a_remote' ? this.deps.a2aGateway : this.deps.runners.get(runnerName);
+
+      if (executor === undefined) {
         throw new OrchestratorError(
           'RUNNER_FAILED',
-          `No runner named "${runnerName}" is registered.`,
-          'Call runner_list to see which runners are available.'
+          job.backend === 'a2a_remote'
+            ? 'The A2A gateway is not enabled.'
+            : `No runner named "${runnerName}" is registered.`,
+          job.backend === 'a2a_remote'
+            ? 'Set A2A_ENABLED=true to delegate to remote agents.'
+            : 'Call runner_list to see which runners are available.'
         );
       }
 
@@ -250,7 +269,7 @@ export class JobScheduler {
       let structured: unknown;
       let usage: JobUsage = {};
 
-      for await (const event of runner.run(
+      for await (const event of executor.run(
         { job, ...(toolkit !== undefined && { toolkit }) },
         controller.signal
       )) {

@@ -1,5 +1,6 @@
 import { serveStdio } from '@modelcontextprotocol/server/stdio';
 import { loadConfig } from './config.js';
+import { loadAgentFiles } from './core/agent-files.js';
 import { migrate } from './db/migrate.js';
 import { assertFts5, openDatabase } from './db/sqlite.js';
 import { startHttpServer } from './http.js';
@@ -20,6 +21,14 @@ if (migration.applied.length > 0) {
 }
 
 const services = createServices({ config, db, logger });
+
+// Repo files are the source of truth for the agents they define: edits land on
+// restart and deletions withdraw the agent.
+const agentFiles = loadAgentFiles(config.agentsDir);
+if (agentFiles.length > 0) {
+  const sync = services.agents.syncFromFiles(agentFiles);
+  logger.info({ ...sync, dir: config.agentsDir }, 'synced agents from files');
+}
 
 // A previous process may have died mid-run; those rows own no scheduler.
 const interrupted = services.jobs.recoverInterrupted();

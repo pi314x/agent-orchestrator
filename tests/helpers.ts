@@ -1,4 +1,5 @@
 import { pino } from 'pino';
+import type { ClientProvider } from '../src/a2a/client.js';
 import type { Config, ToolProfile } from '../src/config.js';
 import { migrate } from '../src/db/migrate.js';
 import { openDatabase, type Db } from '../src/db/sqlite.js';
@@ -23,7 +24,12 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     logLevel: 'silent',
     // CI never reaches a real model.
     defaultRunner: 'mock',
+    agentsDir: 'agents',
     a2aEnabled: false,
+    a2aHttpPort: 0,
+    // Tests use unsigned fixture cards, so signature checks would block them.
+    a2aTrustMode: 'allow-unverified',
+    a2aWebhookAllowedHosts: [],
     ...overrides
   };
 }
@@ -39,6 +45,8 @@ export interface TestServicesOptions {
   config?: Partial<Config>;
   /** Script the mock runner so tests control completion without timers. */
   mockScript?: MockScriptFn;
+  /** Point the A2A gateway at an in-repo fixture agent instead of the network. */
+  a2aClientProvider?: ClientProvider;
 }
 
 export function testServices(options: TestServicesOptions = {}): Services {
@@ -48,7 +56,12 @@ export function testServices(options: TestServicesOptions = {}): Services {
     ...options.config
   });
 
-  const services = createServices({ config, db, logger: silentLogger() });
+  const services = createServices({
+    config,
+    db,
+    logger: silentLogger(),
+    ...(options.a2aClientProvider !== undefined && { a2aClientProvider: options.a2aClientProvider })
+  });
 
   if (options.mockScript !== undefined) {
     services.runners.register(new MockRunner(options.mockScript));

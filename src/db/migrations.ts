@@ -247,6 +247,48 @@ export const MIGRATIONS: readonly Migration[] = [
 
       CREATE INDEX idx_approvals_status ON approvals (status, created_at);
     `
+  },
+  {
+    version: 5,
+    name: 'a2a_interop',
+    up: `
+      CREATE TABLE agent_cards (
+        id          TEXT PRIMARY KEY,
+        url         TEXT NOT NULL UNIQUE,
+        card        TEXT NOT NULL,
+        trust_level TEXT NOT NULL CHECK (trust_level IN ('verified', 'unverified')),
+        verified_at TEXT,
+        fetched_at  TEXT NOT NULL
+      );
+
+      -- Remote agents carry their card, their own credential, and the trust
+      -- level the card was accepted at. Credentials are never shared between
+      -- registrations, so this is a per-agent column by design.
+      ALTER TABLE agents ADD COLUMN card_id TEXT REFERENCES agent_cards (id);
+      ALTER TABLE agents ADD COLUMN credentials_ref TEXT;
+      ALTER TABLE agents ADD COLUMN trust_level TEXT;
+      ALTER TABLE agents ADD COLUMN endpoint_url TEXT;
+
+      ALTER TABLE jobs ADD COLUMN remote_task_id TEXT;
+      ALTER TABLE jobs ADD COLUMN remote_context_id TEXT;
+
+      CREATE INDEX idx_jobs_remote_task ON jobs (remote_task_id) WHERE remote_task_id IS NOT NULL;
+
+      -- Distinguishes agents defined by a repo file from ones created through
+      -- the API, so a sync can safely replace the former and never touch the latter.
+      ALTER TABLE agents ADD COLUMN source TEXT NOT NULL DEFAULT 'api';
+      ALTER TABLE agents ADD COLUMN source_path TEXT;
+
+      CREATE TABLE published_skills (
+        skill_id      TEXT PRIMARY KEY,
+        agent_id      TEXT,
+        template_name TEXT,
+        description   TEXT NOT NULL,
+        exposed       INTEGER NOT NULL DEFAULT 0,
+        created_at    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL
+      );
+    `
   }
 ] as const;
 
