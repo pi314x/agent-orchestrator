@@ -2,8 +2,12 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import type { ToolProfile } from '../config.js';
 import { orchestratorStatusTool, runnerListTool } from './admin.js';
 import { agentCreateTool, agentGetTool, agentListTool, agentTemplateListTool } from './agents.js';
-import { delegateTool } from './delegation.js';
+import { artifactDeleteTool, artifactGetTool, artifactListTool, artifactPutTool } from './artifacts.js';
+import { delegateTool, fanOutTool } from './delegation.js';
 import { jobCancelTool, jobGetTool, jobListTool, jobRetryTool, jobSubmitTool, jobWaitTool } from './jobs.js';
+import { memoryDeleteTool, memoryReadTool, memorySearchTool, memoryWriteTool } from './memory.js';
+import { channelCreateTool, channelListTool, messageListTool, messageSendTool } from './messaging.js';
+import { budgetSetTool, eventsQueryTool } from './observability.js';
 import type { ToolDeps, ToolRegistration } from './types.js';
 
 /**
@@ -26,6 +30,25 @@ export const TOOL_REGISTRY: readonly ToolRegistration[] = [
   jobRetryTool,
   // §5.3 Delegation shortcuts
   delegateTool,
+  fanOutTool,
+  // §5.5 Messaging
+  messageSendTool,
+  messageListTool,
+  channelCreateTool,
+  channelListTool,
+  // §5.6 Shared memory
+  memoryWriteTool,
+  memoryReadTool,
+  memorySearchTool,
+  memoryDeleteTool,
+  // §5.7 Artifacts
+  artifactPutTool,
+  artifactGetTool,
+  artifactListTool,
+  artifactDeleteTool,
+  // §5.11 Observability & budgets
+  eventsQueryTool,
+  budgetSetTool,
   // §5.12 Admin
   orchestratorStatusTool,
   runnerListTool

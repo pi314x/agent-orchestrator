@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { resolveAgentTarget, toSnapshot } from '../core/registry.js';
+import { renderTemplate } from '../core/templating.js';
 import { JobViewSchema, OutputSchemaSchema, toJobView } from '../schemas/common.js';
 import { toolError, toolOk } from './result.js';
 import type { ToolRegistration } from './types.js';
@@ -94,6 +95,158 @@ export const delegateTool: ToolRegistration = {
             completed
               ? `${job.state} — ${job.resultText ?? job.error?.message ?? 'no output'}`
               : `Job ${job.id} is still ${job.state}; call job_wait to keep waiting.`
+          );
+        } catch (error) {
+          return toolError(error);
+        }
+      }
+    );
+  }
+};
+
+export const fanOutTool: ToolRegistration = {
+  name: 'fan_out',
+  profile: 'core',
+
+  register(server, deps) {
+    server.registerTool(
+      'fan_out',
+      {
+        title: 'Fan out over items',
+        description:
+          'Run the same instruction over many items in parallel, optionally reducing the results with a final step. Use it for per-file review, per-record extraction, or any map-style workload; use delegate for a single item. Concurrency is capped by the orchestrator and by any budget you set.',
+        inputSchema: z.object({
+          instructionTemplate: z
+            .string()
+            .min(1)
+            .describe('Instruction with {{item}} substituted per item, e.g. "Review {{item}}".'),
+          items: z.array(z.unknown()).min(1).max(500),
+          agentId: z.string().optional(),
+          template: z.string().optional(),
+          skillQuery: z.string().optional(),
+          model: z.string().optional(),
+          concurrency: z.number().int().min(1).max(50).optional(),
+          reduce: z
+            .object({ instruction: z.string().min(1), template: z.string().optional() })
+            .optional()
+            .describe('Optional final step over the collected results.'),
+          wait: z.boolean().default(true),
+          timeoutSec: z.number().int().min(1).max(MAX_WAIT_SEC).default(60)
+        }),
+        outputSchema: z.object({
+          jobs: z.array(JobViewSchema),
+          reduceJob: JobViewSchema.optional(),
+          completed: z.boolean()
+        }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: true
+        }
+      },
+      async args => {
+        try {
+          const target = {
+            ...(args.agentId !== undefined && { agentId: args.agentId }),
+            ...(args.template !== undefined && { template: args.template }),
+            ...(args.skillQuery !== undefined && { skillQuery: args.skillQuery })
+          };
+
+          const defaults = {
+            runner: deps.services.config.defaultRunner,
+            ...(args.model !== undefined && { model: args.model })
+          };
+
+          const submitItem = (item: unknown) => {
+            // One agent per item: ephemeral template agents must not be shared,
+            // since each carries its own job history.
+            const agent = resolveAgentTarget(
+              deps.services.agents,
+              Object.keys(target).length > 0 ? target : { template: 'writer' },
+              defaults
+            );
+
+            return deps.services.scheduler.submit({
+              backend: 'local',
+              agentId: agent.id,
+              agentSnapshot: {
+                ...toSnapshot(agent),
+                ...(args.model !== undefined && { model: args.model })
+              },
+              instruction: renderTemplate(args.instructionTemplate, { item }),
+              context: { item },
+              timeoutSec: args.timeoutSec
+            });
+          };
+
+          const deadline = Date.now() + args.timeoutSec * 1000;
+          const remaining = () => Math.max(deadline - Date.now(), 0);
+
+          // With a per-call concurrency cap, submit in waves and let each wave
+          // finish first; otherwise the global scheduler cap governs.
+          const waveSize = args.concurrency ?? args.items.length;
+          const submitted: ReturnType<typeof submitItem>[] = [];
+
+          for (let offset = 0; offset < args.items.length; offset += waveSize) {
+            const wave = args.items.slice(offset, offset + waveSize).map(submitItem);
+            submitted.push(...wave);
+
+            const moreToCome = offset + waveSize < args.items.length;
+            if (args.wait && moreToCome) {
+              await deps.services.scheduler.wait(
+                wave.map(job => job.id),
+                'all',
+                remaining()
+              );
+            }
+          }
+
+          const ids = submitted.map(job => job.id);
+
+          if (!args.wait) {
+            return toolOk(
+              { jobs: submitted.map(toJobView), completed: false },
+              `${ids.length} job(s) submitted; use job_wait for results.`
+            );
+          }
+
+          const finished = await deps.services.scheduler.wait(ids, 'all', remaining());
+          const allDone = finished.every(job => job.finishedAt !== undefined);
+
+          if (args.reduce === undefined || !allDone) {
+            return toolOk(
+              { jobs: finished.map(toJobView), completed: allDone },
+              allDone
+                ? `${finished.length} job(s) finished.`
+                : `Timed out; call job_wait on the returned ids to keep waiting.`
+            );
+          }
+
+          const reduceAgent = resolveAgentTarget(
+            deps.services.agents,
+            { template: args.reduce.template ?? 'summarizer' },
+            defaults
+          );
+
+          const reduceJob = deps.services.scheduler.submit({
+            backend: 'local',
+            agentId: reduceAgent.id,
+            agentSnapshot: toSnapshot(reduceAgent),
+            instruction: args.reduce.instruction,
+            context: { results: finished.map(job => job.resultText ?? '') },
+            timeoutSec: args.timeoutSec
+          });
+
+          const [reduced] = await deps.services.scheduler.wait([reduceJob.id], 'all', args.timeoutSec * 1000);
+
+          return toolOk(
+            {
+              jobs: finished.map(toJobView),
+              ...(reduced !== undefined && { reduceJob: toJobView(reduced) }),
+              completed: reduced?.finishedAt !== undefined
+            },
+            `${finished.length} job(s) fanned out, reduced by ${reduceAgent.name}.`
           );
         } catch (error) {
           return toolError(error);

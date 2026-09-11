@@ -172,3 +172,90 @@ describe('discovery tools', () => {
     expect(status['status']).toBe('ok');
   });
 });
+
+describe('fan_out', () => {
+  it('runs the instruction template over every item', async () => {
+    const output = await call('fan_out', {
+      instructionTemplate: 'Review {{item}}',
+      items: ['auth.ts', 'db.ts', 'http.ts'],
+      template: 'reviewer'
+    });
+
+    expect(output['completed']).toBe(true);
+    const jobs = output['jobs'] as Structured[];
+    expect(jobs).toHaveLength(3);
+
+    const texts = jobs.map(j => j['resultText'] as string);
+    expect(texts.some(t => t.includes('auth.ts'))).toBe(true);
+    expect(texts.some(t => t.includes('db.ts'))).toBe(true);
+    expect(texts.some(t => t.includes('http.ts'))).toBe(true);
+  });
+
+  it('reduces the fanned-out results when asked', async () => {
+    const output = await call('fan_out', {
+      instructionTemplate: 'Summarize {{item}}',
+      items: ['a', 'b'],
+      template: 'summarizer',
+      reduce: { instruction: 'Combine the findings' }
+    });
+
+    const reduceJob = output['reduceJob'] as Structured;
+    expect(reduceJob).toBeDefined();
+    expect(reduceJob['state']).toBe('succeeded');
+    expect(reduceJob['resultText']).toContain('Combine the findings');
+  });
+
+  it('respects a per-call concurrency cap', async () => {
+    const output = await call('fan_out', {
+      instructionTemplate: 'Handle {{item}}',
+      items: [1, 2, 3, 4],
+      template: 'coder',
+      concurrency: 2
+    });
+
+    expect(output['completed']).toBe(true);
+    expect(output['jobs']).toHaveLength(4);
+  });
+
+  it('returns handles without waiting when wait is false', async () => {
+    const output = await call('fan_out', {
+      instructionTemplate: 'Later {{item}}',
+      items: ['x', 'y'],
+      template: 'writer',
+      wait: false
+    });
+
+    expect(output['completed']).toBe(false);
+    expect(output['jobs']).toHaveLength(2);
+  });
+});
+
+describe('shared state over MCP', () => {
+  it('round-trips memory through the tools', async () => {
+    await call('memory_write', { namespace: 'proj', key: 'goal', value: { target: 'ship M2' } });
+
+    const read = await call('memory_read', { namespace: 'proj', key: 'goal' });
+    expect(read['found']).toBe(true);
+
+    const found = await call('memory_search', { query: 'ship', namespace: 'proj' });
+    expect((found['entries'] as Structured[]).length).toBeGreaterThan(0);
+  });
+
+  it('round-trips an artifact through the tools', async () => {
+    const put = (await call('artifact_put', { name: 'notes.md', content: 'line one' }))[
+      'artifact'
+    ] as Structured;
+
+    const got = await call('artifact_get', { artifactId: put['artifactId'] as string });
+
+    expect(got['content']).toBe('line one');
+    expect(got['eof']).toBe(true);
+  });
+
+  it('reports a missing artifact as a structured error', async () => {
+    const result = await client.callTool({ name: 'artifact_get', arguments: { artifactId: 'art_nope' } });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({ code: 'NOT_FOUND' });
+  });
+});

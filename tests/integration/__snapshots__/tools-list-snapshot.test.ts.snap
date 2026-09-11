@@ -71,6 +71,28 @@ exports[`tools/list contract > matches the core profile snapshot 1`] = `
   {
     "annotations": {
       "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": false,
+    },
+    "description": "Run the same instruction over many items in parallel, optionally reducing the results with a final step. Use it for per-file review, per-record extraction, or any map-style workload; use delegate for a single item. Concurrency is capped by the orchestrator and by any budget you set.",
+    "name": "fan_out",
+    "title": "Fan out over items",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "Read an artifact by id, with offset and length for large content. Check eof to know whether more remains. Use artifact_list to find the id.",
+    "name": "artifact_get",
+    "title": "Read an artifact",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": true,
@@ -204,6 +226,171 @@ exports[`tools/list contract > matches the full profile snapshot 1`] = `
     "description": "Run one instruction on the best-matching agent and return the result. This is the everyday tool: reach for it whenever you want a sub-agent to do something and hand the answer back. Use job_submit instead when the work is long, has dependencies, or should run in the background, and agent_template_list to see the roles you can target.",
     "name": "delegate",
     "title": "Delegate an instruction",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": false,
+    },
+    "description": "Run the same instruction over many items in parallel, optionally reducing the results with a final step. Use it for per-file review, per-record extraction, or any map-style workload; use delegate for a single item. Concurrency is capped by the orchestrator and by any budget you set.",
+    "name": "fan_out",
+    "title": "Fan out over items",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Send a message to an agent, a channel or a running job. Use it for side-channel coordination between agents; use memory_write when the information should outlive the conversation.",
+    "name": "message_send",
+    "title": "Send a message",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "Read an agent inbox, a channel, or the messages sent to a job. Reading does not mark anything read — that happens inside the agent loop.",
+    "name": "message_list",
+    "title": "List messages",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Create a topic channel for a team of agents, or return the existing one with that name. Use channel_list to see what already exists.",
+    "name": "channel_create",
+    "title": "Create a channel",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "List the topic channels agents can post to. Use channel_create to add one.",
+    "name": "channel_list",
+    "title": "List channels",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Store a JSON value on the orchestrator-local blackboard so later jobs can read it. Use it to pass findings between agents; use artifact_put instead for large content. Remote A2A agents never see memory — put what they need in the job context.",
+    "name": "memory_write",
+    "title": "Write to shared memory",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "Read one value from the blackboard by namespace and key. Returns found:false rather than an error when the key is absent or expired. Use memory_search when you do not know the exact key.",
+    "name": "memory_read",
+    "title": "Read shared memory",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "Full-text search the blackboard, optionally narrowed by namespace and tags. Use it to find what earlier agents recorded when you do not know the key. Use memory_read for an exact lookup.",
+    "name": "memory_search",
+    "title": "Search shared memory",
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Delete one key, every key under a prefix, or a whole namespace. Irreversible — prefer a ttlSec on memory_write when you just want entries to age out.",
+    "name": "memory_delete",
+    "title": "Delete from shared memory",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Store content and get back an id, so large output never has to travel inline. Use it for files, reports and generated code; use memory_write for small structured values. Read it back with artifact_get.",
+    "name": "artifact_put",
+    "title": "Store an artifact",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "Read an artifact by id, with offset and length for large content. Check eof to know whether more remains. Use artifact_list to find the id.",
+    "name": "artifact_get",
+    "title": "Read an artifact",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "List stored artifacts, filtered by job, workflow run or tags. Metadata only — fetch content with artifact_get.",
+    "name": "artifact_list",
+    "title": "List artifacts",
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Permanently delete an artifact. Irreversible, and any job that referenced it will no longer resolve the id.",
+    "name": "artifact_delete",
+    "title": "Delete an artifact",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "Read the append-only audit trail across both backends, filtered by job, agent, run or event type. Use it to explain what happened during a run; use job_get for the outcome alone.",
+    "name": "events_query",
+    "title": "Query the event log",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Set a hard cap on spend for the whole orchestrator, one agent, or one job. Token and cost caps suit local agents; call-count and concurrency caps suit remote ones. Caps are enforced before each run starts, so work already running is never killed mid-flight.",
+    "name": "budget_set",
+    "title": "Set a budget",
   },
   {
     "annotations": {
@@ -352,6 +539,94 @@ exports[`tools/list contract > matches the standard profile snapshot 1`] = `
     "description": "Run one instruction on the best-matching agent and return the result. This is the everyday tool: reach for it whenever you want a sub-agent to do something and hand the answer back. Use job_submit instead when the work is long, has dependencies, or should run in the background, and agent_template_list to see the roles you can target.",
     "name": "delegate",
     "title": "Delegate an instruction",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": false,
+    },
+    "description": "Run the same instruction over many items in parallel, optionally reducing the results with a final step. Use it for per-file review, per-record extraction, or any map-style workload; use delegate for a single item. Concurrency is capped by the orchestrator and by any budget you set.",
+    "name": "fan_out",
+    "title": "Fan out over items",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Store a JSON value on the orchestrator-local blackboard so later jobs can read it. Use it to pass findings between agents; use artifact_put instead for large content. Remote A2A agents never see memory — put what they need in the job context.",
+    "name": "memory_write",
+    "title": "Write to shared memory",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "Read one value from the blackboard by namespace and key. Returns found:false rather than an error when the key is absent or expired. Use memory_search when you do not know the exact key.",
+    "name": "memory_read",
+    "title": "Read shared memory",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "Full-text search the blackboard, optionally narrowed by namespace and tags. Use it to find what earlier agents recorded when you do not know the key. Use memory_read for an exact lookup.",
+    "name": "memory_search",
+    "title": "Search shared memory",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Store content and get back an id, so large output never has to travel inline. Use it for files, reports and generated code; use memory_write for small structured values. Read it back with artifact_get.",
+    "name": "artifact_put",
+    "title": "Store an artifact",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "Read an artifact by id, with offset and length for large content. Check eof to know whether more remains. Use artifact_list to find the id.",
+    "name": "artifact_get",
+    "title": "Read an artifact",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "List stored artifacts, filtered by job, workflow run or tags. Metadata only — fetch content with artifact_get.",
+    "name": "artifact_list",
+    "title": "List artifacts",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "Read the append-only audit trail across both backends, filtered by job, agent, run or event type. Use it to explain what happened during a run; use job_get for the outcome alone.",
+    "name": "events_query",
+    "title": "Query the event log",
   },
   {
     "annotations": {

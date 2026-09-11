@@ -34,6 +34,8 @@ const ConfigSchema = z.object({
   defaultRunner: z.enum(RUNNER_NAMES),
   anthropicApiKey: z.string().optional(),
   anthropicModel: z.string().optional(),
+  openaiApiKey: z.string().optional(),
+  openaiBaseUrl: z.string().optional(),
   a2aEnabled: z.boolean()
 });
 
@@ -66,6 +68,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     defaultRunner: z.enum(RUNNER_NAMES).parse(env.ORCH_DEFAULT_RUNNER?.trim() || 'anthropic'),
     ...(env.ANTHROPIC_API_KEY?.trim() && { anthropicApiKey: env.ANTHROPIC_API_KEY.trim() }),
     ...(env.ANTHROPIC_MODEL?.trim() && { anthropicModel: env.ANTHROPIC_MODEL.trim() }),
+    ...(env.OPENAI_API_KEY?.trim() && { openaiApiKey: env.OPENAI_API_KEY.trim() }),
+    ...(env.OPENAI_BASE_URL?.trim() && { openaiBaseUrl: env.OPENAI_BASE_URL.trim() }),
     a2aEnabled: boolish(false).parse(env.A2A_ENABLED)
   };
 

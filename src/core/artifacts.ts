@@ -1,0 +1,153 @@
+import { createHash } from 'node:crypto';
+import type { Db } from '../db/sqlite.js';
+import { OrchestratorError } from '../errors.js';
+import { newId } from '../ids.js';
+
+export type ArtifactRecord = {
+  artifactId: string;
+  name: string;
+  mimeType: string;
+  contentHash: string;
+  sizeBytes: number;
+  jobId?: string;
+  workflowRunId?: string;
+  tags: string[];
+  createdAt: string;
+};
+
+export interface PutArtifactInput {
+  name: string;
+  content: string;
+  mimeType?: string;
+  jobId?: string;
+  workflowRunId?: string;
+  tags?: readonly string[];
+}
+
+export interface ArtifactListFilter {
+  jobId?: string;
+  workflowRunId?: string;
+  tags?: readonly string[];
+  limit?: number;
+}
+
+type ArtifactRow = {
+  id: string;
+  name: string;
+  mime_type: string;
+  content_hash: string;
+  size_bytes: number;
+  content: string | null;
+  job_id: string | null;
+  workflow_run_id: string | null;
+  tags: string;
+  created_at: string;
+};
+
+function toRecord(row: ArtifactRow): ArtifactRecord {
+  return {
+    artifactId: row.id,
+    name: row.name,
+    mimeType: row.mime_type,
+    contentHash: row.content_hash,
+    sizeBytes: row.size_bytes,
+    tags: JSON.parse(row.tags) as string[],
+    createdAt: row.created_at,
+    ...(row.job_id !== null && { jobId: row.job_id }),
+    ...(row.workflow_run_id !== null && { workflowRunId: row.workflow_run_id })
+  };
+}
+
+/**
+ * Content-hashed store for anything too large to hand back inline. A2A file and
+ * data parts from remote tasks normalize into the same records.
+ */
+export class ArtifactStore {
+  constructor(private readonly db: Db) {}
+
+  put(input: PutArtifactInput): ArtifactRecord {
+    const contentHash = createHash('sha256').update(input.content).digest('hex');
+    const sizeBytes = Buffer.byteLength(input.content, 'utf8');
+    const id = newId('artifact');
+
+    this.db
+      .prepare(
+        `INSERT INTO artifacts (id, name, mime_type, content_hash, size_bytes, content, job_id, workflow_run_id, tags, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        id,
+        input.name,
+        input.mimeType ?? 'text/plain',
+        contentHash,
+        sizeBytes,
+        input.content,
+        input.jobId ?? null,
+        input.workflowRunId ?? null,
+        JSON.stringify([...(input.tags ?? [])]),
+        new Date().toISOString()
+      );
+
+    return this.getOrThrow(id);
+  }
+
+  getOrThrow(artifactId: string): ArtifactRecord {
+    const row = this.db.prepare('SELECT * FROM artifacts WHERE id = ?').get(artifactId) as
+      ArtifactRow | undefined;
+    if (row === undefined) {
+      throw new OrchestratorError(
+        'NOT_FOUND',
+        `No artifact with id ${artifactId}.`,
+        'Use artifact_list to find it.'
+      );
+    }
+    return toRecord(row);
+  }
+
+  /** Slice the stored content, so a huge artifact never has to come back whole. */
+  read(
+    artifactId: string,
+    offset = 0,
+    length?: number
+  ): { record: ArtifactRecord; content: string; eof: boolean } {
+    const record = this.getOrThrow(artifactId);
+    const row = this.db.prepare('SELECT content FROM artifacts WHERE id = ?').get(artifactId) as {
+      content: string | null;
+    };
+
+    const full = row.content ?? '';
+    const end = length === undefined ? full.length : offset + length;
+    const content = full.slice(offset, end);
+
+    return { record, content, eof: end >= full.length };
+  }
+
+  list(filter: ArtifactListFilter = {}): ArtifactRecord[] {
+    const where: string[] = [];
+    const params: unknown[] = [];
+
+    if (filter.jobId !== undefined) {
+      where.push('job_id = ?');
+      params.push(filter.jobId);
+    }
+    if (filter.workflowRunId !== undefined) {
+      where.push('workflow_run_id = ?');
+      params.push(filter.workflowRunId);
+    }
+
+    const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+    const limit = Math.min(Math.max(filter.limit ?? 20, 1), 100);
+
+    const rows = this.db
+      .prepare(`SELECT * FROM artifacts ${clause} ORDER BY id DESC LIMIT ?`)
+      .all(...params, limit) as ArtifactRow[];
+
+    const records = rows.map(toRecord);
+    if (filter.tags === undefined || filter.tags.length === 0) return records;
+    return records.filter(record => filter.tags?.every(tag => record.tags.includes(tag)));
+  }
+
+  delete(artifactId: string): boolean {
+    return this.db.prepare('DELETE FROM artifacts WHERE id = ?').run(artifactId).changes > 0;
+  }
+}

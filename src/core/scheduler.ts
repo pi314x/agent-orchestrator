@@ -1,7 +1,14 @@
 import { OrchestratorError, toErrorPayload } from '../errors.js';
 import type { Logger } from '../logger.js';
+import { createAgentToolkit, type SpawnJobInput } from '../runners/toolkit.js';
 import type { RunnerRegistry } from '../runners/types.js';
+import type { ArtifactStore } from './artifacts.js';
+import type { BudgetTracker } from './budget.js';
+import type { MessageBus } from './bus.js';
 import type { EventLog } from './events.js';
+import type { MemoryStore } from './memory.js';
+import { resolveAgentTarget, toSnapshot, type AgentRegistry } from './registry.js';
+import type { RunnerName } from './templates.js';
 import {
   isTerminal,
   type CreateJobInput,
@@ -21,9 +28,15 @@ export interface SchedulerDeps {
   jobs: JobStore;
   events: EventLog;
   runners: RunnerRegistry;
+  agents: AgentRegistry;
+  memory: MemoryStore;
+  artifacts: ArtifactStore;
+  bus: MessageBus;
+  budgets: BudgetTracker;
   logger: Logger;
   maxConcurrency: number;
   maxDepth: number;
+  defaultRunner: RunnerName;
 }
 
 export class JobScheduler {
@@ -202,7 +215,13 @@ export class JobScheduler {
         }, job.timeoutSec * 1000);
       }
 
-      const runnerName = job.agentSnapshot.runner ?? 'mock';
+      // Caps are checked here, immediately before work starts, so a long
+      // fan-out cannot overshoot between its first and last job.
+      this.deps.budgets.assertWithinBudget('global');
+      this.deps.budgets.assertWithinBudget('agent', job.agentId);
+      this.deps.budgets.assertWithinBudget('job', job.id);
+
+      const runnerName = job.agentSnapshot.runner ?? this.deps.defaultRunner;
       const runner = this.deps.runners.get(runnerName);
       if (runner === undefined) {
         throw new OrchestratorError(
@@ -212,11 +231,29 @@ export class JobScheduler {
         );
       }
 
+      // Only agents we own get a toolkit; remote A2A agents are opaque.
+      const toolkit =
+        job.backend === 'local'
+          ? createAgentToolkit(
+              {
+                memory: this.deps.memory,
+                artifacts: this.deps.artifacts,
+                bus: this.deps.bus,
+                events: this.deps.events,
+                spawnJob: (parent, input) => this.spawnChild(parent, input)
+              },
+              job
+            )
+          : undefined;
+
       let text = '';
       let structured: unknown;
       let usage: JobUsage = {};
 
-      for await (const event of runner.run({ job }, controller.signal)) {
+      for await (const event of runner.run(
+        { job, ...(toolkit !== undefined && { toolkit }) },
+        controller.signal
+      )) {
         switch (event.type) {
           case 'text':
             text += event.text;
@@ -253,6 +290,29 @@ export class JobScheduler {
       this.notify();
       this.pump();
     }
+  }
+
+  /** Backs the toolkit's `spawn_job`; depth and budget rules apply as normal. */
+  private spawnChild(parent: JobRecord, input: SpawnJobInput): { jobId: string } {
+    const agent = resolveAgentTarget(
+      this.deps.agents,
+      {
+        ...(input.agentId !== undefined && { agentId: input.agentId }),
+        ...(input.template !== undefined && { template: input.template })
+      },
+      { runner: this.deps.defaultRunner }
+    );
+
+    const child = this.submit({
+      backend: 'local',
+      agentId: agent.id,
+      agentSnapshot: toSnapshot(agent),
+      instruction: input.instruction,
+      parentJobId: parent.id,
+      depth: parent.depth + 1
+    });
+
+    return { jobId: child.id };
   }
 
   private finishFailed(jobId: string, error: unknown, durationMs: number): void {

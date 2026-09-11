@@ -1,5 +1,6 @@
 import type { JobRecord, JobUsage } from '../core/jobs.js';
 import type { RunnerName } from '../core/templates.js';
+import type { AgentToolkit } from './toolkit.js';
 
 export type RunnerEvent =
   | { type: 'progress'; message: string }
@@ -9,6 +10,9 @@ export type RunnerEvent =
 
 export interface RunnerInput {
   job: JobRecord;
+  /** Present for local agents only; remote A2A agents never get one. */
+  toolkit?: AgentToolkit;
+  maxSteps?: number;
 }
 
 export type RunnerHealth = {

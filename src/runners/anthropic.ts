@@ -1,7 +1,8 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { jsonSchemaOutputFormat } from '@anthropic-ai/sdk/helpers/json-schema';
-import type { JobRecord } from '../core/jobs.js';
+import type { JobRecord, JobUsage } from '../core/jobs.js';
 import { OrchestratorError } from '../errors.js';
+import type { AgentToolkit } from './toolkit.js';
 import type { Runner, RunnerEvent, RunnerHealth, RunnerInput } from './types.js';
 
 export const DEFAULT_ANTHROPIC_MODEL = 'claude-opus-5';
@@ -9,6 +10,29 @@ export const DEFAULT_ANTHROPIC_MODEL = 'claude-opus-5';
 /** Streaming keeps long jobs off the SDK's HTTP timeout, so it gets the larger cap. */
 const MAX_TOKENS_STREAMING = 64_000;
 const MAX_TOKENS_STRUCTURED = 16_000;
+const DEFAULT_MAX_STEPS = 12;
+
+/**
+ * Cached list prices in USD per million tokens (2026-06-24). Only used to
+ * populate usage.costUsd so cost budgets can bite; an unlisted model simply
+ * reports tokens and no cost.
+ */
+const PRICING: Record<string, { input: number; output: number }> = {
+  'claude-opus-5': { input: 5, output: 25 },
+  'claude-opus-4-8': { input: 5, output: 25 },
+  'claude-sonnet-5': { input: 2, output: 10 },
+  'claude-haiku-4-5': { input: 1, output: 5 },
+  'claude-fable-5-1': { input: 10, output: 50 }
+};
+
+function estimateUsage(model: string, inputTokens: number, outputTokens: number): JobUsage {
+  const price = PRICING[model];
+  const usage: JobUsage = { inputTokens, outputTokens };
+  if (price !== undefined) {
+    usage.costUsd = (inputTokens * price.input + outputTokens * price.output) / 1_000_000;
+  }
+  return usage;
+}
 
 export interface AnthropicRunnerOptions {
   apiKey?: string;
@@ -44,6 +68,18 @@ function asOrchestratorError(error: unknown): OrchestratorError {
     return new OrchestratorError('RUNNER_FAILED', `Anthropic API error ${error.status}: ${error.message}`);
   }
   return new OrchestratorError('RUNNER_FAILED', error instanceof Error ? error.message : String(error));
+}
+
+function assertNotRefused(message: {
+  stop_reason: string | null;
+  stop_details?: { category?: string | null } | null;
+}): void {
+  if (message.stop_reason === 'refusal') {
+    throw new OrchestratorError(
+      'RUNNER_FAILED',
+      `The model declined this request (${message.stop_details?.category ?? 'unspecified'}).`
+    );
+  }
 }
 
 export class AnthropicRunner implements Runner {
@@ -83,13 +119,25 @@ export class AnthropicRunner implements Runner {
     return this.client;
   }
 
-  async *run({ job }: RunnerInput, signal: AbortSignal): AsyncIterable<RunnerEvent> {
+  async *run({ job, toolkit, maxSteps }: RunnerInput, signal: AbortSignal): AsyncIterable<RunnerEvent> {
     const client = this.getClient();
     const model = job.agentSnapshot.model ?? this.defaultModel;
     const system = job.agentSnapshot.instructions;
     const prompt = buildPrompt(job);
 
     try {
+      if (toolkit !== undefined) {
+        yield* this.runAgentLoop(
+          client,
+          model,
+          system,
+          prompt,
+          toolkit,
+          maxSteps ?? DEFAULT_MAX_STEPS,
+          signal
+        );
+        return;
+      }
       if (job.outputSchema !== undefined) {
         yield* this.runStructured(client, model, system, prompt, job.outputSchema, signal);
         return;
@@ -98,6 +146,85 @@ export class AnthropicRunner implements Runner {
     } catch (error) {
       throw asOrchestratorError(error);
     }
+  }
+
+  /** Multi-turn loop: the agent works through its toolkit until it calls `finish`. */
+  private async *runAgentLoop(
+    client: Anthropic,
+    model: string,
+    system: string,
+    prompt: string,
+    toolkit: AgentToolkit,
+    maxSteps: number,
+    signal: AbortSignal
+  ): AsyncIterable<RunnerEvent> {
+    const tools = toolkit.tools().map(tool => ({
+      name: tool.name,
+      description: tool.description,
+      input_schema: tool.inputSchema as Anthropic.Tool['input_schema']
+    }));
+
+    const messages: Anthropic.MessageParam[] = [{ role: 'user', content: prompt }];
+    let inputTokens = 0;
+    let outputTokens = 0;
+
+    for (let step = 0; step < maxSteps; step += 1) {
+      signal.throwIfAborted();
+
+      const stream = client.messages.stream(
+        {
+          model,
+          max_tokens: MAX_TOKENS_STREAMING,
+          system,
+          thinking: { type: 'adaptive' },
+          tools,
+          messages
+        },
+        { signal }
+      );
+
+      for await (const event of stream) {
+        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
+          yield { type: 'text', text: event.delta.text };
+        }
+      }
+
+      const message = await stream.finalMessage();
+      assertNotRefused(message);
+
+      inputTokens += message.usage.input_tokens;
+      outputTokens += message.usage.output_tokens;
+
+      const toolUses = message.content.filter(
+        (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use'
+      );
+
+      if (toolUses.length === 0) break;
+
+      messages.push({ role: 'assistant', content: message.content });
+
+      // Every tool_result goes back in ONE user message, or the model stops
+      // making parallel calls.
+      const results: Anthropic.ToolResultBlockParam[] = [];
+      for (const toolUse of toolUses) {
+        const result = await toolkit.invoke(toolUse.name, (toolUse.input ?? {}) as Record<string, unknown>);
+        results.push({
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: result.content,
+          ...(result.isError === true && { is_error: true })
+        });
+      }
+      messages.push({ role: 'user', content: results });
+
+      if (toolkit.finished() !== undefined) break;
+    }
+
+    const finished = toolkit.finished();
+    if (finished?.text !== undefined) yield { type: 'text', text: finished.text };
+    if (finished?.structured !== undefined) yield { type: 'structured', value: finished.structured };
+
+    yield { type: 'usage', usage: estimateUsage(model, inputTokens, outputTokens) };
   }
 
   private async *runStreaming(
@@ -125,17 +252,11 @@ export class AnthropicRunner implements Runner {
     }
 
     const message = await stream.finalMessage();
-
-    if (message.stop_reason === 'refusal') {
-      throw new OrchestratorError(
-        'RUNNER_FAILED',
-        `The model declined this request (${message.stop_details?.category ?? 'unspecified'}).`
-      );
-    }
+    assertNotRefused(message);
 
     yield {
       type: 'usage',
-      usage: { inputTokens: message.usage.input_tokens, outputTokens: message.usage.output_tokens }
+      usage: estimateUsage(model, message.usage.input_tokens, message.usage.output_tokens)
     };
   }
 
@@ -171,12 +292,7 @@ export class AnthropicRunner implements Runner {
       { signal }
     );
 
-    if (message.stop_reason === 'refusal') {
-      throw new OrchestratorError(
-        'RUNNER_FAILED',
-        `The model declined this request (${message.stop_details?.category ?? 'unspecified'}).`
-      );
-    }
+    assertNotRefused(message);
 
     for (const block of message.content) {
       if (block.type === 'text') yield { type: 'text', text: block.text };
@@ -188,7 +304,7 @@ export class AnthropicRunner implements Runner {
 
     yield {
       type: 'usage',
-      usage: { inputTokens: message.usage.input_tokens, outputTokens: message.usage.output_tokens }
+      usage: estimateUsage(model, message.usage.input_tokens, message.usage.output_tokens)
     };
   }
 }

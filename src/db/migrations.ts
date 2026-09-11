@@ -86,6 +86,101 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX idx_jobs_agent ON jobs (agent_id, created_at);
       CREATE INDEX idx_jobs_parent ON jobs (parent_job_id) WHERE parent_job_id IS NOT NULL;
     `
+  },
+  {
+    version: 3,
+    name: 'shared_state',
+    up: `
+      CREATE TABLE memory (
+        id         INTEGER PRIMARY KEY,
+        namespace  TEXT NOT NULL,
+        key        TEXT NOT NULL,
+        value      TEXT NOT NULL,
+        tags       TEXT NOT NULL DEFAULT '[]',
+        expires_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (namespace, key)
+      );
+
+      -- External-content FTS5 index kept in step by triggers, so memory_search
+      -- never drifts from the table it indexes.
+      CREATE VIRTUAL TABLE memory_fts USING fts5 (
+        namespace, key, value, tags, content='memory', content_rowid='id'
+      );
+
+      CREATE TRIGGER memory_ai AFTER INSERT ON memory BEGIN
+        INSERT INTO memory_fts (rowid, namespace, key, value, tags)
+        VALUES (new.id, new.namespace, new.key, new.value, new.tags);
+      END;
+
+      CREATE TRIGGER memory_ad AFTER DELETE ON memory BEGIN
+        INSERT INTO memory_fts (memory_fts, rowid, namespace, key, value, tags)
+        VALUES ('delete', old.id, old.namespace, old.key, old.value, old.tags);
+      END;
+
+      CREATE TRIGGER memory_au AFTER UPDATE ON memory BEGIN
+        INSERT INTO memory_fts (memory_fts, rowid, namespace, key, value, tags)
+        VALUES ('delete', old.id, old.namespace, old.key, old.value, old.tags);
+        INSERT INTO memory_fts (rowid, namespace, key, value, tags)
+        VALUES (new.id, new.namespace, new.key, new.value, new.tags);
+      END;
+
+      CREATE TABLE artifacts (
+        id              TEXT PRIMARY KEY,
+        name            TEXT NOT NULL,
+        mime_type       TEXT NOT NULL DEFAULT 'text/plain',
+        content_hash    TEXT NOT NULL,
+        size_bytes      INTEGER NOT NULL,
+        content         BLOB,
+        path            TEXT,
+        job_id          TEXT,
+        workflow_run_id TEXT,
+        tags            TEXT NOT NULL DEFAULT '[]',
+        created_at      TEXT NOT NULL
+      );
+
+      CREATE INDEX idx_artifacts_job ON artifacts (job_id) WHERE job_id IS NOT NULL;
+      CREATE INDEX idx_artifacts_run ON artifacts (workflow_run_id) WHERE workflow_run_id IS NOT NULL;
+      CREATE INDEX idx_artifacts_hash ON artifacts (content_hash);
+
+      CREATE TABLE channels (
+        id         TEXT PRIMARY KEY,
+        name       TEXT NOT NULL UNIQUE,
+        members    TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE messages (
+        id            TEXT PRIMARY KEY,
+        to_agent_id   TEXT,
+        to_channel    TEXT,
+        to_job_id     TEXT,
+        from_agent_id TEXT,
+        body          TEXT NOT NULL,
+        reply_to      TEXT,
+        read_at       TEXT,
+        created_at    TEXT NOT NULL
+      );
+
+      CREATE INDEX idx_messages_agent ON messages (to_agent_id, created_at) WHERE to_agent_id IS NOT NULL;
+      CREATE INDEX idx_messages_channel ON messages (to_channel, created_at) WHERE to_channel IS NOT NULL;
+      CREATE INDEX idx_messages_job ON messages (to_job_id, created_at) WHERE to_job_id IS NOT NULL;
+
+      CREATE TABLE budgets (
+        id             TEXT PRIMARY KEY,
+        scope          TEXT NOT NULL CHECK (scope IN ('global', 'agent', 'job')),
+        scope_id       TEXT NOT NULL DEFAULT '',
+        max_cost_usd   REAL,
+        max_tokens     INTEGER,
+        max_calls      INTEGER,
+        max_concurrent INTEGER,
+        created_at     TEXT NOT NULL,
+        updated_at     TEXT NOT NULL
+      );
+
+      CREATE UNIQUE INDEX idx_budgets_scope ON budgets (scope, scope_id);
+    `
   }
 ] as const;
 
