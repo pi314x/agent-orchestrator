@@ -19,11 +19,29 @@ type ToolCall = {
 
 type ChatResponse = {
   choices: {
-    message: { content: string | null; tool_calls?: ToolCall[] };
+    message: { content: string | null; refusal?: string | null; tool_calls?: ToolCall[] };
     finish_reason: string;
   }[];
   usage?: { prompt_tokens?: number; completion_tokens?: number };
 };
+
+/**
+ * Both of these otherwise end the job as a silent success with empty or
+ * half-written output, which downstream steps then treat as a real answer.
+ */
+function assertUsable(choice: ChatResponse['choices'][number]): void {
+  const refusal = choice.message.refusal;
+  if (typeof refusal === 'string' && refusal !== '') {
+    throw new OrchestratorError('RUNNER_FAILED', `The model declined this request: ${refusal}`);
+  }
+  if (choice.finish_reason === 'length') {
+    throw new OrchestratorError(
+      'RUNNER_FAILED',
+      'The endpoint truncated its answer at the token limit.',
+      'Narrow the instruction, or ask for an artifact instead of one long reply.'
+    );
+  }
+}
 
 export interface OpenAiRunnerOptions {
   apiKey?: string;
@@ -81,6 +99,9 @@ export class OpenAiCompatibleRunner implements Runner {
 
     let promptTokens = 0;
     let completionTokens = 0;
+    // Buffered rather than yielded: a turn's running commentary must not be
+    // concatenated onto the authoritative `finish` result.
+    let turnText = '';
 
     for (let step = 0; step < (maxSteps ?? DEFAULT_MAX_STEPS); step += 1) {
       signal.throwIfAborted();
@@ -93,10 +114,9 @@ export class OpenAiCompatibleRunner implements Runner {
 
       promptTokens += response.usage?.prompt_tokens ?? 0;
       completionTokens += response.usage?.completion_tokens ?? 0;
+      assertUsable(choice);
 
-      if (choice.message.content !== null && choice.message.content !== '') {
-        yield { type: 'text', text: choice.message.content };
-      }
+      turnText = choice.message.content ?? '';
 
       const toolCalls = choice.message.tool_calls ?? [];
       if (toolCalls.length === 0 || toolkit === undefined) break;
@@ -111,8 +131,14 @@ export class OpenAiCompatibleRunner implements Runner {
       if (toolkit.finished() !== undefined) break;
     }
 
+    // `finish` is authoritative when the agent called it; otherwise the last
+    // turn's prose is the result.
     const finished = toolkit?.finished();
-    if (finished?.text !== undefined) yield { type: 'text', text: finished.text };
+    if (finished?.text !== undefined) {
+      yield { type: 'text', text: finished.text };
+    } else if (turnText !== '') {
+      yield { type: 'text', text: turnText };
+    }
     if (finished?.structured !== undefined) yield { type: 'structured', value: finished.structured };
 
     const usage: JobUsage = { inputTokens: promptTokens, outputTokens: completionTokens };

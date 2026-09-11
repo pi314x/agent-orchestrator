@@ -17,7 +17,7 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "test": "vitest run",
-    "test:live": "RUN_LIVE_TESTS=1 vitest run",
+    "test:live": "RUN_LIVE_TESTS=1 vitest run tests/live",
     "db:migrate": "tsx src/db/migrate-cli.ts",
     "inspect": "ORCH_TRANSPORT=http tsx src/index.ts & npx @modelcontextprotocol/inspector"
   },

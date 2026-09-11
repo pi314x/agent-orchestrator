@@ -43,7 +43,7 @@ Before finishing any task run: `pnpm typecheck && pnpm lint && pnpm test`.
 - `src/runners/` — local execution backends implementing `Runner` from `runners/types.ts`. The A2A gateway is *not* a runner — it lives in `src/a2a/`, not `src/runners/`.
 - `src/proxy/` — downstream MCP client pool, used only to grant tools to **local** agents.
 - `src/db/` — schema, migrations, SQLite/Postgres adapters.
-- `tests/` — `unit/`, `integration/`, `snapshots/`.
+- `tests/` — `unit/`, `integration/`, `live/`. Only `live/` ever calls a real model, and only under `RUN_LIVE_TESTS=1`.
 
 ## Stack notes
 
@@ -64,6 +64,9 @@ Verified against the installed SDK — check here before guessing at an API.
 - **IDs must be monotonic.** `src/ids.ts` uses ulid's `monotonicFactory`, not bare `ulid()`. Ids double as pagination cursors (`WHERE id < ?`), and plain `ulid()` can emit out-of-order ids inside one millisecond, which silently corrupts a page boundary.
 - **Await `scheduler.shutdown()` before closing the DB.** An aborted run still writes its outcome on the way out; closing the connection first turns that into an unhandled `The database connection is not open`. Tests use the `closeServices` helper for the same reason.
 - **Structured output is enforced by the model, not by us.** A job's `outputSchema` is a JSON Schema handed to the anthropic runner via `jsonSchemaOutputFormat`, so constrained decoding guarantees the shape. There is no local JSON-Schema validator in the dependency tree — do not add a second validation pass without a reason.
+- **The anthropic runner is tested against a real wire, not a mock.** `tests/fixtures/fake-anthropic.ts` serves genuine Messages-API SSE over `node:http`, so the runner's streaming parser, tool loop and usage accounting all execute. Point the SDK at it with `new Anthropic({ baseURL: fake.url })`. It caught two real bugs that mocking the runner would have hidden: streamed commentary being concatenated onto the authoritative `finish` result, and `outputSchema` never reaching the model at all.
+- **A killed child never fires `close`.** The CLI runner settles on `exit` (plus a 250 ms flush window), because a surviving grandchild holds the stdio pipes open and `close` then never fires — a timed-out job hung forever. It also spawns `detached: true` and signals the whole process group (`process.kill(-pid, …)`), or subprocesses outlive the kill. A null exit code means *killed*, never success.
+- **`finish` carries the schema.** For a local job the scheduler always supplies a toolkit, so `runStructured` never runs — the only path to structured output is the `finish` tool, whose `structured` argument *is* the job's `outputSchema` (and is required when one was asked for). Changing `outputSchema` plumbing means changing `toolkit.ts`, not the runner.
 - **Scheduling is notification-driven, never polled.** `job_wait` and `drain` resolve off scheduler state-change events; the only timers are the per-job timeout and the wait deadline. Tests gate the mock runner on a promise (`deferred()`) so completion is controlled without any sleep.
 
 ## Hard rules — protocol (MCP)
@@ -112,6 +115,7 @@ Verified against the installed SDK — check here before guessing at an API.
 - Every bug fix gets a regression test.
 - Scheduler and workflow tests use fake timers — no real sleeps.
 - Trust/verification logic (`src/a2a/trust.ts`) needs explicit tests for both `verified-only` and `allow-unverified` modes.
+- `tests/live/` is the one exception to the first rule, and it is gated twice: `RUN_LIVE_TESTS=1` **and** a non-empty `ANTHROPIC_API_KEY`, or every test skips. `pnpm test` never reaches a model; `pnpm test:live` runs only `tests/live`. Keep live tests few and cheap — they exist to prove the shapes we send are ones the API accepts, which no fake can prove.
 
 ## Security rules
 

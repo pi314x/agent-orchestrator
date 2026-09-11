@@ -89,11 +89,22 @@ export function createAgentToolkit(deps: ToolkitDeps, job: JobRecord): AgentTool
     {
       name: 'finish',
       description:
-        'Return your final answer and end the task. Call this exactly once when you are done. If an output schema was requested, pass the object as `structured`.',
-      inputSchema: obj({
-        text: str('The final answer as prose.'),
-        structured: { type: 'object', description: 'Structured result, when one was requested.' }
-      })
+        job.outputSchema === undefined
+          ? 'Return your final answer and end the task. Call this exactly once when you are done.'
+          : 'Return your final answer and end the task. Call this exactly once when you are done. `structured` is required and must match the requested schema.',
+      // When the caller asked for a shape, it becomes the `structured` argument
+      // schema — so tool-input validation constrains the result instead of the
+      // agent being merely asked nicely for it.
+      inputSchema: obj(
+        {
+          text: str('The final answer as prose.'),
+          structured: job.outputSchema ?? {
+            type: 'object',
+            description: 'Structured result, when one was requested.'
+          }
+        },
+        job.outputSchema === undefined ? [] : ['structured']
+      )
     },
     {
       name: 'memory_write',

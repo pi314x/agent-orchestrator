@@ -70,7 +70,11 @@ function asOrchestratorError(error: unknown): OrchestratorError {
   return new OrchestratorError('RUNNER_FAILED', error instanceof Error ? error.message : String(error));
 }
 
-function assertNotRefused(message: {
+/**
+ * Both of these otherwise end the job as a silent success with empty or
+ * half-written output, which downstream steps then treat as a real answer.
+ */
+function assertUsable(message: {
   stop_reason: string | null;
   stop_details?: { category?: string | null } | null;
 }): void {
@@ -78,6 +82,13 @@ function assertNotRefused(message: {
     throw new OrchestratorError(
       'RUNNER_FAILED',
       `The model declined this request (${message.stop_details?.category ?? 'unspecified'}).`
+    );
+  }
+  if (message.stop_reason === 'max_tokens') {
+    throw new OrchestratorError(
+      'RUNNER_FAILED',
+      'The model truncated its answer at the token limit.',
+      'Narrow the instruction, or have the agent store long output as an artifact.'
     );
   }
 }
@@ -167,6 +178,7 @@ export class AnthropicRunner implements Runner {
     const messages: Anthropic.MessageParam[] = [{ role: 'user', content: prompt }];
     let inputTokens = 0;
     let outputTokens = 0;
+    let turnText = '';
 
     for (let step = 0; step < maxSteps; step += 1) {
       signal.throwIfAborted();
@@ -183,14 +195,17 @@ export class AnthropicRunner implements Runner {
         { signal }
       );
 
+      // Buffered rather than yielded: a turn's running commentary must not be
+      // concatenated onto the authoritative `finish` result.
+      turnText = '';
       for await (const event of stream) {
         if (event.type === 'content_block_delta' && event.delta.type === 'text_delta') {
-          yield { type: 'text', text: event.delta.text };
+          turnText += event.delta.text;
         }
       }
 
       const message = await stream.finalMessage();
-      assertNotRefused(message);
+      assertUsable(message);
 
       inputTokens += message.usage.input_tokens;
       outputTokens += message.usage.output_tokens;
@@ -220,8 +235,14 @@ export class AnthropicRunner implements Runner {
       if (toolkit.finished() !== undefined) break;
     }
 
+    // `finish` is authoritative when the agent called it; otherwise the last
+    // assistant turn's prose is the result.
     const finished = toolkit.finished();
-    if (finished?.text !== undefined) yield { type: 'text', text: finished.text };
+    if (finished?.text !== undefined) {
+      yield { type: 'text', text: finished.text };
+    } else if (turnText !== '') {
+      yield { type: 'text', text: turnText };
+    }
     if (finished?.structured !== undefined) yield { type: 'structured', value: finished.structured };
 
     yield { type: 'usage', usage: estimateUsage(model, inputTokens, outputTokens) };
@@ -252,7 +273,7 @@ export class AnthropicRunner implements Runner {
     }
 
     const message = await stream.finalMessage();
-    assertNotRefused(message);
+    assertUsable(message);
 
     yield {
       type: 'usage',
@@ -292,7 +313,7 @@ export class AnthropicRunner implements Runner {
       { signal }
     );
 
-    assertNotRefused(message);
+    assertUsable(message);
 
     for (const block of message.content) {
       if (block.type === 'text') yield { type: 'text', text: block.text };

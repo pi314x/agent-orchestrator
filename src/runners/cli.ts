@@ -5,13 +5,19 @@ import { OrchestratorError } from '../errors.js';
 import type { Runner, RunnerEvent, RunnerHealth, RunnerInput } from './types.js';
 
 const DEFAULT_TIMEOUT_SEC = 600;
+/** How long to wait for trailing output after the child itself has exited. */
+const FLUSH_GRACE_MS = 250;
 
 export interface CliRunnerOptions {
   /** Absolute workspace roots the runner may operate inside. */
   workspaceDirs?: readonly string[];
   command?: string;
   args?: readonly string[];
-  /** When false the child is spawned with no network-bearing env vars. */
+  /**
+   * When false the child's proxy env vars are cleared and `NO_PROXY=*` is set.
+   * That steers well-behaved clients away from the network; it is not a sandbox
+   * and does not stop a process that opens its own sockets.
+   */
   allowNetwork?: boolean;
 }
 
@@ -82,12 +88,20 @@ export class CliRunner implements Runner {
 
     yield { type: 'progress', message: `Running ${this.command} in ${cwd}.` };
 
-    const result = await this.spawnProcess(
-      cwd,
-      job.instruction,
-      job.timeoutSec ?? DEFAULT_TIMEOUT_SEC,
-      signal
-    );
+    const timeoutSec = job.timeoutSec ?? DEFAULT_TIMEOUT_SEC;
+    const result = await this.spawnProcess(cwd, job.instruction, timeoutSec, signal);
+
+    // A killed child closes with a null exit code. Reading that as 0 would hand
+    // back whatever partial stdout it had managed to write, as a success.
+    if (result.signal !== null) {
+      throw new OrchestratorError(
+        'RUNNER_FAILED',
+        result.timedOut
+          ? `${this.command} did not finish within ${timeoutSec}s and was killed.`
+          : `${this.command} was killed (${result.signal}) before it finished.`,
+        result.timedOut ? 'Raise timeoutSec, or split the work into smaller jobs.' : undefined
+      );
+    }
 
     if (result.code !== 0) {
       throw new OrchestratorError(
@@ -105,13 +119,35 @@ export class CliRunner implements Runner {
     instruction: string,
     timeoutSec: number,
     signal: AbortSignal
-  ): Promise<{ code: number; stdout: string; stderr: string }> {
+  ): Promise<{
+    code: number;
+    stdout: string;
+    stderr: string;
+    signal: NodeJS.Signals | null;
+    timedOut: boolean;
+  }> {
     return new Promise((resolvePromise, reject) => {
       const env = this.allowNetwork
         ? process.env
         : { ...process.env, HTTP_PROXY: '', HTTPS_PROXY: '', NO_PROXY: '*' };
 
-      const child = spawn(this.command, this.args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+      // Its own process group, so a kill reaches the whole tree. A coding-agent
+      // CLI spawns subprocesses; signalling only the leader orphans them.
+      const child = spawn(this.command, this.args, {
+        cwd,
+        env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        detached: true
+      });
+
+      const killTree = (sig: NodeJS.Signals): void => {
+        try {
+          if (child.pid !== undefined) process.kill(-child.pid, sig);
+          else child.kill(sig);
+        } catch {
+          // Already gone.
+        }
+      };
 
       let stdout = '';
       let stderr = '';
@@ -123,15 +159,19 @@ export class CliRunner implements Runner {
         stderr += chunk.toString();
       });
 
-      const timer = setTimeout(() => child.kill('SIGKILL'), timeoutSec * 1000);
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        killTree('SIGKILL');
+      }, timeoutSec * 1000);
 
-      const onAbort = (): void => {
-        child.kill('SIGTERM');
-      };
+      const onAbort = (): void => killTree('SIGTERM');
       signal.addEventListener('abort', onAbort, { once: true });
 
+      let flushTimer: NodeJS.Timeout | undefined;
       const cleanup = (): void => {
         clearTimeout(timer);
+        if (flushTimer !== undefined) clearTimeout(flushTimer);
         signal.removeEventListener('abort', onAbort);
       };
 
@@ -140,11 +180,25 @@ export class CliRunner implements Runner {
         reject(new OrchestratorError('RUNNER_FAILED', `Could not start ${this.command}: ${error.message}`));
       });
 
-      child.on('close', code => {
+      let settled = false;
+      const settle = (code: number | null, killedBy: NodeJS.Signals | null): void => {
+        if (settled) return;
+        settled = true;
         cleanup();
-        resolvePromise({ code: code ?? 0, stdout, stderr });
+        resolvePromise({ code: code ?? -1, stdout, stderr, signal: killedBy, timedOut });
+      };
+
+      // `close` waits for every holder of the stdio pipes, and a surviving
+      // grandchild holds them forever — so `exit` is what ends the run, with a
+      // short grace period for output still in flight.
+      child.on('close', settle);
+      child.on('exit', (code, killedBy) => {
+        flushTimer = setTimeout(() => settle(code, killedBy), FLUSH_GRACE_MS);
       });
 
+      // A child that exits before reading its instruction makes stdin emit
+      // EPIPE; unhandled, that error takes the whole orchestrator down.
+      child.stdin.on('error', () => undefined);
       child.stdin.write(instruction);
       child.stdin.end();
     });
