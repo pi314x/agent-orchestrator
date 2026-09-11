@@ -42,6 +42,8 @@ export interface Services {
   runners: RunnerRegistry;
   scheduler: JobScheduler;
   workflows: WorkflowEngine;
+  /** Set once the inbound A2A listener is actually up, so tools can say so. */
+  a2aServing?: boolean;
 }
 
 export interface CreateServicesInput {

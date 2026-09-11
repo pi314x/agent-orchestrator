@@ -78,12 +78,30 @@ Look for correctness bugs and security risk, most severe first.
 ## A2A is off by default
 
 `A2A_ENABLED=false` removes the whole `a2a_*` group, `agent_register` and
-`agent_publish` from `tools/list`. If every agent you use lives in this repo, leave
-it off — the tool list stays small and nothing reaches the network on your behalf.
+`agent_publish` from `tools/list`, and starts no second listener. If every agent you
+use lives in this repo, leave it off — the tool list stays small and nothing reaches
+the network on your behalf.
 
-Turn it on only to talk to agents other people run. Then `A2A_TRUST_MODE`
-(`verified-only` by default) decides whether an unsigned Agent Card is usable, and
-remote output always arrives wrapped as untrusted data.
+Turning it on enables both directions:
+
+**Outbound** — calling agents other people run. `A2A_TRUST_MODE` (`verified-only` by
+default) decides whether an unsigned Agent Card is usable, and remote output always
+arrives wrapped as untrusted data.
+
+**Inbound** — letting them call you. A second HTTP server starts on
+`A2A_HTTP_PORT` (3334), serving the Agent Card at `/.well-known/agent-card.json`
+and JSON-RPC at `/a2a`. It is loopback-bound and Host-validated like the MCP
+surface. Nothing is exposed until `agent_publish` opts a skill in explicitly:
+
+```
+agent_publish  { skillId: "review", templateName: "reviewer",
+                 description: "Reviews a diff for correctness and risk.", exposed: true }
+a2a_server_info    # serving: true, and the card as it now stands
+```
+
+Withdraw it with `exposed: false` and it stops being advertised immediately — no
+restart. Set `A2A_AGENT_CARD_URL` when fronting the server with a proxy, so the
+card advertises the URL peers should actually call.
 
 ## Configuration
 

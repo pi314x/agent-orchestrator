@@ -40,7 +40,7 @@ describe('a2a_server_info', () => {
 
     expect(out['enabled']).toBe(true);
     expect(out['serving']).toBe(false);
-    expect(summary).toMatch(/no inbound A2A listener/i);
+    expect(summary).toMatch(/no inbound listener/i);
   });
 
   it('still reports which skills are opted in', async () => {

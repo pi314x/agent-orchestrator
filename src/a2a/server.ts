@@ -117,7 +117,16 @@ export interface A2AServerDeps {
   serverName: string;
   serverVersion: string;
   publicUrl: string;
+  /** Ceiling on an inbound task, so a job can never outlive the task reporting it. */
+  taskTimeoutSec?: number;
 }
+
+/**
+ * How long an inbound task may run. The job carries this as its own timeoutSec
+ * as well, so the scheduler aborts it rather than leaving it running after the
+ * task has already been reported failed.
+ */
+export const DEFAULT_INBOUND_TASK_TIMEOUT_SEC = 300;
 
 /** Build our Agent Card from the skills explicitly opted in via agent_publish. */
 export function buildAgentCard(deps: A2AServerDeps): AgentCard {
@@ -156,6 +165,8 @@ export function buildAgentCard(deps: A2AServerDeps): AgentCard {
  */
 class OrchestratorExecutor implements AgentExecutor {
   private readonly cancelled = new Set<string>();
+  /** Task to the job running it, so a cancel reaches the actual work. */
+  private readonly jobByTask = new Map<string, string>();
 
   constructor(private readonly deps: A2AServerDeps) {}
 
@@ -186,28 +197,30 @@ class OrchestratorExecutor implements AgentExecutor {
     // out as status updates.
     let taskPublished = false;
 
+    // Events go on the bus wrapped as {kind, data} — the SDK reads
+    // `event.data.status`, so a flat object throws deep inside the bus
+    // listener rather than anywhere near here.
     const publish = (state: TaskState, text: string): void => {
       if (!taskPublished) {
         taskPublished = true;
         eventBus.publish({
           kind: 'task',
-          id: taskId,
-          contextId,
-          status: statusFor(state, text),
-          artifacts: [],
-          history: [],
-          metadata: undefined
-        } as never);
+          data: {
+            id: taskId,
+            contextId,
+            status: statusFor(state, text),
+            artifacts: [],
+            history: [],
+            metadata: undefined
+          }
+        });
         return;
       }
 
       eventBus.publish({
         kind: 'statusUpdate',
-        taskId,
-        contextId,
-        status: statusFor(state, text),
-        metadata: undefined
-      } as never);
+        data: { taskId, contextId, status: statusFor(state, text), metadata: undefined }
+      });
     };
 
     const skill = requestedSkill === undefined ? undefined : this.deps.skills.get(requestedSkill);
@@ -230,16 +243,26 @@ class OrchestratorExecutor implements AgentExecutor {
         { runner: this.deps.defaultRunner }
       );
 
+      const timeoutSec = this.deps.taskTimeoutSec ?? DEFAULT_INBOUND_TASK_TIMEOUT_SEC;
+
       const job = this.deps.scheduler.submit({
         backend: 'local',
         agentId: agent.id,
         agentSnapshot: toSnapshot(agent),
-        instruction
+        instruction,
+        // Without this the job has no deadline of its own and keeps running —
+        // and spending — after the wait below has already reported it failed.
+        timeoutSec
       });
 
-      const [finished] = await this.deps.scheduler.wait([job.id], 'all', 55_000);
+      this.jobByTask.set(taskId, job.id);
 
-      if (this.cancelled.has(taskId)) {
+      // A cancel that arrived before the job existed still has to land.
+      if (this.cancelled.has(taskId)) this.deps.scheduler.cancel(job.id, 'Cancelled by the A2A caller.');
+
+      const [finished] = await this.deps.scheduler.wait([job.id], 'all', timeoutSec * 1000);
+
+      if (this.cancelled.has(taskId) || finished?.state === 'cancelled') {
         publish(TaskState.TASK_STATE_CANCELED, 'Cancelled.');
       } else if (finished?.state === 'succeeded') {
         publish(TaskState.TASK_STATE_COMPLETED, finished.resultText ?? '');
@@ -251,30 +274,75 @@ class OrchestratorExecutor implements AgentExecutor {
       publish(TaskState.TASK_STATE_FAILED, error instanceof Error ? error.message : String(error));
     }
 
+    this.jobByTask.delete(taskId);
     eventBus.finished();
   }
 
+  /** Stops the work, not just the reporting of it. */
   async cancelTask(taskId: string): Promise<void> {
     this.cancelled.add(taskId);
+
+    const jobId = this.jobByTask.get(taskId);
+    if (jobId === undefined) return;
+
+    try {
+      this.deps.scheduler.cancel(jobId, 'Cancelled by the A2A caller.');
+    } catch (error) {
+      this.deps.logger.warn({ err: error, taskId, jobId }, 'could not cancel the job behind an A2A task');
+    }
   }
 }
 
 export interface A2AServerHandle {
-  card: AgentCard;
+  /** The card as it stands now, rebuilt whenever the published skills change. */
+  card(): AgentCard;
   /** Handles one JSON-RPC request body and resolves with the response. */
-  handleJsonRpc(body: unknown): Promise<unknown>;
+  handleJsonRpc(body: unknown, headers?: Record<string, string>): Promise<unknown>;
+}
+
+/** Identifies the exposed-skill set, so a change to it is cheap to detect. */
+function skillSignature(deps: A2AServerDeps): string {
+  return deps.skills
+    .listExposed()
+    .map(skill => `${skill.skillId}:${skill.description}`)
+    .join('|');
 }
 
 export function createA2AServer(deps: A2AServerDeps): A2AServerHandle {
-  const card = buildAgentCard(deps);
-  const handler = new DefaultRequestHandler(card, new InMemoryTaskStore(), new OrchestratorExecutor(deps));
-  const jsonRpc = new JsonRpcTransportHandler(handler);
+  // One task store and one executor for the life of the server: task state has
+  // to survive across requests, since sendMessage and getTask are separate
+  // calls. Only the card-bearing handler is rebuilt.
+  const taskStore = new InMemoryTaskStore();
+  const executor = new OrchestratorExecutor(deps);
+
+  let signature = skillSignature(deps);
+  let card = buildAgentCard(deps);
+  let handler = new DefaultRequestHandler(card, taskStore, executor);
+  let jsonRpc = new JsonRpcTransportHandler(handler);
+
+  // DefaultRequestHandler takes the card by value, so publishing or
+  // withdrawing a skill would otherwise keep serving the card as it looked at
+  // startup — advertising skills that no longer answer.
+  const refresh = (): void => {
+    const current = skillSignature(deps);
+    if (current === signature) return;
+
+    signature = current;
+    card = buildAgentCard(deps);
+    handler = new DefaultRequestHandler(card, taskStore, executor);
+    jsonRpc = new JsonRpcTransportHandler(handler);
+  };
 
   return {
-    card,
-    async handleJsonRpc(body: unknown) {
+    card() {
+      refresh();
+      return card;
+    },
+    async handleJsonRpc(body: unknown, headers: Record<string, string> = {}) {
+      refresh();
+
       const context = defaultServerCallContextBuilder({
-        headers: {},
+        headers,
         extensions: [],
         user: new UnauthenticatedUser()
       });
