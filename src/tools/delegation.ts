@@ -213,13 +213,26 @@ export const fanOutTool: ToolRegistration = {
 
           const finished = await deps.services.scheduler.wait(ids, 'all', remaining());
           const allDone = finished.every(job => job.finishedAt !== undefined);
+          // `finishedAt` is set on failure too, so settled is not the same as
+          // successful — reducing over the difference is how a fan-out quietly
+          // summarises half its input.
+          const succeeded = finished.filter(job => job.state === 'succeeded');
+          const failedCount = finished.length - succeeded.length;
+          const failureNote = failedCount > 0 ? ` (${failedCount} failed)` : '';
 
           if (args.reduce === undefined || !allDone) {
             return toolOk(
               { jobs: finished.map(toJobView), completed: allDone },
               allDone
-                ? `${finished.length} job(s) finished.`
+                ? `${finished.length} job(s) finished${failureNote}.`
                 : `Timed out; call job_wait on the returned ids to keep waiting.`
+            );
+          }
+
+          if (succeeded.length === 0) {
+            return toolOk(
+              { jobs: finished.map(toJobView), completed: true },
+              `All ${finished.length} job(s) failed, so there was nothing to reduce. Check job_get on any id for the reason.`
             );
           }
 
@@ -234,11 +247,18 @@ export const fanOutTool: ToolRegistration = {
             agentId: reduceAgent.id,
             agentSnapshot: toSnapshot(reduceAgent),
             instruction: args.reduce.instruction,
-            context: { results: finished.map(job => job.resultText ?? '') },
+            // Only real results, and an explicit count of what is missing, so
+            // the reducer cannot mistake a gap for an empty answer.
+            context: {
+              results: succeeded.map(job => job.resultText ?? ''),
+              totalCount: finished.length,
+              failedCount
+            },
             timeoutSec: args.timeoutSec
           });
 
-          const [reduced] = await deps.services.scheduler.wait([reduceJob.id], 'all', args.timeoutSec * 1000);
+          // One deadline for the whole call, not one per phase.
+          const [reduced] = await deps.services.scheduler.wait([reduceJob.id], 'all', remaining());
 
           return toolOk(
             {
@@ -246,7 +266,7 @@ export const fanOutTool: ToolRegistration = {
               ...(reduced !== undefined && { reduceJob: toJobView(reduced) }),
               completed: reduced?.finishedAt !== undefined
             },
-            `${finished.length} job(s) fanned out, reduced by ${reduceAgent.name}.`
+            `${finished.length} job(s) fanned out${failureNote}, reduced by ${reduceAgent.name} over ${succeeded.length} result(s).`
           );
         } catch (error) {
           return toolError(error);

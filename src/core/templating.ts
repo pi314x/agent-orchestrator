@@ -5,6 +5,9 @@ const PLACEHOLDER = /\{\{\s*([\w.]+)\s*\}\}/g;
 function lookup(vars: Record<string, unknown>, path: string): unknown {
   return path.split('.').reduce<unknown>((value, segment) => {
     if (value === null || typeof value !== 'object') return undefined;
+    // Own properties only. Inherited ones are never user data, and resolving
+    // them let `{{inputs.toString}}` reach Object.prototype.
+    if (!Object.hasOwn(value, segment)) return undefined;
     return (value as Record<string, unknown>)[segment];
   }, vars);
 }
@@ -12,7 +15,15 @@ function lookup(vars: Record<string, unknown>, path: string): unknown {
 function stringify(value: unknown): string {
   if (value === null || value === undefined) return '';
   if (typeof value === 'string') return value;
-  return JSON.stringify(value);
+
+  // JSON.stringify yields `undefined` for a function or symbol and throws on a
+  // BigInt or a cycle. Returning either from a String.replace callback puts the
+  // literal text "undefined" into the prompt, or takes the whole render down.
+  try {
+    return JSON.stringify(value) ?? '';
+  } catch {
+    return '';
+  }
 }
 
 /**
