@@ -103,6 +103,34 @@ Withdraw it with `exposed: false` and it stops being advertised immediately — 
 restart. Set `A2A_AGENT_CARD_URL` when fronting the server with a proxy, so the
 card advertises the URL peers should actually call.
 
+## Storage
+
+SQLite, through [`better-sqlite3`](https://github.com/WiseLibs/better-sqlite3) — one
+file, at `~/.agent-orchestrator/orchestrator.sqlite` unless `ORCH_DB_URL` says
+otherwise. Opened in WAL mode with foreign keys on and a 5-second busy timeout.
+Schema changes are append-only migrations applied at startup; `orchestrator_status`
+reports the current version.
+
+**The data layer is synchronous, deliberately.** `better-sqlite3` does its I/O on
+the calling thread, so every store — jobs, memory, artifacts, agents, messages,
+budgets — is plain synchronous code with no `async` anywhere. The scheduler and
+workflow engine read job state inside tight loops and rely on that: a query cannot
+interleave with another turn of the event loop, so there is no window for a job's
+state to change between the read and the decision made from it. Local SQLite reads
+are microseconds, and the process is not serving high-concurrency HTTP traffic, so
+the usual reason to go async does not apply.
+
+Two consequences worth knowing before you scale it:
+
+- **No Postgres adapter.** PLAN.md §13 sketches one, and it is not built. Because
+  every network database driver is async, adding one is not a drop-in: it means
+  making ten store classes async and then every caller, including the scheduler
+  loops above. That is a real refactor, not a config switch.
+- **One process per database.** Job state lives in one SQLite file with one
+  scheduler owning the queue. Two processes pointed at the same file will fight
+  over queued jobs — WAL makes the writes safe, but nothing coordinates *which*
+  scheduler picks up a job. Run one.
+
 ## Configuration
 
 Every variable is listed with its default in [`.env.example`](.env.example);
@@ -118,7 +146,7 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 274 tests, no network, no model calls
+pnpm test        # 312 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 pnpm typecheck && pnpm lint && pnpm build
 ```
@@ -132,15 +160,8 @@ anything under `src/`.
 - **The live path is tested against a protocol-level fake, not a real vendor.**
   `tests/live/` exists and is written, but has never been executed — it needs a key.
   Run `pnpm test:live` once before trusting this with real work.
-- **A2A is outbound only.** Calling other people's agents works and is unit-tested
-  against a stubbed client, but has never met a real third-party agent. The *inbound*
-  half — serving our own Agent Card so others can call us — is written
-  (`src/a2a/server.ts`) and never started: nothing calls `createA2AServer`, so
-  `A2A_HTTP_PORT` only composes a URL. `agent_publish` records the opt-in and
-  `a2a_server_info` reports `serving: false`. Wiring up the listener is unfinished
-  work, not a configuration step.
-- **SQLite only.** The Postgres adapter in PLAN.md §13 is not built; every store
-  uses better-sqlite3's synchronous API, so adding one is an async refactor rather
-  than a drop-in.
-- **Single process.** Job state lives in one SQLite file with one scheduler. Two
-  processes against the same database will fight over queued jobs.
+- **A2A has never met a real third-party agent.** Both directions are implemented
+  and tested over a real socket, using the SDK's own serializers — but every peer
+  so far has been ours. Expect to find interop surprises on first contact with
+  someone else's implementation.
+- **SQLite only, and single process.** See [Storage](#storage) below.
