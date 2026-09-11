@@ -382,6 +382,33 @@ export class JobStore {
   }
 
   /**
+   * Atomically take ownership of a queued job. One statement, so two processes
+   * sharing a database cannot both win: the loser gets `undefined` and moves on
+   * rather than running the job a second time or — worse — failing the job the
+   * winner is busy running.
+   *
+   * `nextQueued` still chooses *which* job to go for, carrying the priority,
+   * capacity and starvation rules; this decides whether we actually got it.
+   */
+  claim(id: string): JobRecord | undefined {
+    const now = new Date().toISOString();
+
+    const rows = this.db
+      .prepare(
+        `UPDATE jobs
+            SET state = 'running',
+                started_at = COALESCE(started_at, ?),
+                updated_at = ?
+          WHERE id = ? AND state = 'queued'
+        RETURNING *`
+      )
+      .all(now, now, id) as JobRow[];
+
+    const row = rows[0];
+    return row === undefined ? undefined : toRecord(row);
+  }
+
+  /**
    * Unblock jobs whose dependencies have all succeeded, and report those whose
    * dependencies have not. An unblockable job is deliberately left `blocked`
    * rather than failed: `job_retry` on the dependency re-queues it, and the

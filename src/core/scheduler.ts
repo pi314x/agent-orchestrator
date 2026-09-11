@@ -229,13 +229,24 @@ export class JobScheduler {
     while (this.active.size < ceiling) {
       // Look past the jobs we cannot start: one agent sitting at its own cap
       // must not starve every other agent's queue behind it.
-      const candidates = this.deps.jobs.nextQueued(Math.max(this.deps.maxConcurrency * 2, 20));
-      const next = candidates.find(job => !this.active.has(job.id) && this.hasAgentCapacity(job.agentId));
-      if (next === undefined) break;
+      const candidates = this.deps.jobs
+        .nextQueued(Math.max(this.deps.maxConcurrency * 2, 20))
+        .filter(job => !this.active.has(job.id) && this.hasAgentCapacity(job.agentId));
 
-      // Runs until its first await, which is past the transition out of
-      // `queued` — so the next iteration never picks the same job twice.
-      void this.execute(next);
+      // Taking the job is a separate, atomic step: another instance sharing
+      // this database may have claimed it between our read and now, and the
+      // loser of that race must simply move on to the next candidate.
+      let claimed: JobRecord | undefined;
+      for (const candidate of candidates) {
+        claimed = this.deps.jobs.claim(candidate.id);
+        if (claimed !== undefined) break;
+      }
+
+      if (claimed === undefined) break;
+
+      // Runs until its first await, which is past the claim — so the next
+      // iteration never picks the same job twice.
+      void this.execute(claimed);
     }
   }
 
@@ -245,19 +256,19 @@ export class JobScheduler {
     return cap === undefined || (this.activeByAgent.get(agentId) ?? 0) < cap;
   }
 
-  private async execute(queued: JobRecord): Promise<void> {
+  /** Takes a job this scheduler has already claimed, so it is `running` here. */
+  private async execute(job: JobRecord): Promise<void> {
     const controller = new AbortController();
-    this.active.set(queued.id, controller);
+    this.active.set(job.id, controller);
     // Counted here rather than in `pump`, alongside `active`, so the increment
     // and its decrement in `finally` stay in one place. Both run before the
     // first await, which is what stops `pump` picking this job twice.
-    this.activeByAgent.set(queued.agentId, (this.activeByAgent.get(queued.agentId) ?? 0) + 1);
+    this.activeByAgent.set(job.agentId, (this.activeByAgent.get(job.agentId) ?? 0) + 1);
 
     const startedAtMs = Date.now();
     let timer: NodeJS.Timeout | undefined;
 
     try {
-      const job = this.deps.jobs.transition(queued.id, 'running');
       this.deps.events.append({ type: 'job.started', jobId: job.id, agentId: job.agentId });
       this.notify();
 
@@ -367,14 +378,14 @@ export class JobScheduler {
       });
       this.deps.events.append({ type: 'job.succeeded', jobId: job.id, agentId: job.agentId });
     } catch (error) {
-      this.finishFailed(queued.id, error, Date.now() - startedAtMs);
+      this.finishFailed(job.id, error, Date.now() - startedAtMs);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
-      this.active.delete(queued.id);
-      const remaining = (this.activeByAgent.get(queued.agentId) ?? 1) - 1;
-      if (remaining > 0) this.activeByAgent.set(queued.agentId, remaining);
-      else this.activeByAgent.delete(queued.agentId);
-      this.abortReasons.delete(queued.id);
+      this.active.delete(job.id);
+      const remaining = (this.activeByAgent.get(job.agentId) ?? 1) - 1;
+      if (remaining > 0) this.activeByAgent.set(job.agentId, remaining);
+      else this.activeByAgent.delete(job.agentId);
+      this.abortReasons.delete(job.id);
       this.notify();
       this.pump();
     }
