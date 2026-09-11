@@ -20,3 +20,18 @@ export function denyWithoutAdminScope(ctx: ServerContext, toolName: string): Cal
     )
   );
 }
+
+/**
+ * Guards the grant itself rather than the whole tool: anyone may create or
+ * update an agent, but attaching downstream MCP tools to one is an admin act.
+ * Gating `toolserver_register` alone is half a boundary — the servers it
+ * protects are reachable by granting an agent access to them.
+ */
+export function denyUngrantedToolGrants(
+  ctx: ServerContext,
+  toolName: string,
+  toolGrants: readonly string[] | undefined
+): CallToolResult | undefined {
+  if (toolGrants === undefined || toolGrants.length === 0) return undefined;
+  return denyWithoutAdminScope(ctx, `${toolName} with toolGrants`);
+}

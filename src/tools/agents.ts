@@ -4,6 +4,7 @@ import { RUNNER_NAMES } from '../core/templates.js';
 import { OrchestratorError } from '../errors.js';
 import { AgentViewSchema, CursorSchema, LimitSchema, toAgentView } from '../schemas/common.js';
 import { toolError, toolOk } from './result.js';
+import { denyUngrantedToolGrants } from './scopes.js';
 import type { ToolRegistration } from './types.js';
 
 export const agentCreateTool: ToolRegistration = {
@@ -43,7 +44,10 @@ export const agentCreateTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      (args, ctx) => {
+        const denied = denyUngrantedToolGrants(ctx, 'agent_create', args.toolGrants);
+        if (denied !== undefined) return denied;
+
         try {
           const agent = deps.services.agents.create({
             name: args.name,
@@ -238,7 +242,10 @@ export const agentUpdateTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      (args, ctx) => {
+        const denied = denyUngrantedToolGrants(ctx, 'agent_update', args.patch.toolGrants);
+        if (denied !== undefined) return denied;
+
         try {
           const agent = deps.services.agents.update(args.agentId, args.patch);
           return toolOk(

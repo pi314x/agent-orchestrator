@@ -11,6 +11,13 @@ import { isTerminalTaskState, normalizeTaskResult, taskErrorPayload, userMessage
 import { assertTrusted, validateWebhookUrl, wrapUntrusted, type TrustMode } from './trust.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 500;
+/**
+ * Ceiling on how long we will poll a remote task that never reaches a terminal
+ * state. The scheduler's per-job timer only exists when the job carries a
+ * `timeoutSec`, and job_submit leaves that optional — so without this the loop
+ * hammers a third party forever and holds a concurrency slot for good.
+ */
+const DEFAULT_MAX_POLL_MS = 15 * 60_000;
 
 export type ClientProvider = (card: AgentCard, credentialsRef?: string) => Promise<Client>;
 
@@ -21,6 +28,8 @@ export interface A2AGatewayDeps {
   trustMode: TrustMode;
   allowedWebhookHosts?: readonly string[];
   pollIntervalMs?: number;
+  /** Ceiling on polling a remote task; defaults to 15 minutes. */
+  maxPollMs?: number;
   /** Injectable so tests can point the gateway at an in-repo fixture agent. */
   clientProvider?: ClientProvider;
 }
@@ -32,9 +41,11 @@ export interface A2AGatewayDeps {
  */
 export class A2AGateway {
   private readonly pollIntervalMs: number;
+  private readonly maxPollMs: number;
 
   constructor(private readonly deps: A2AGatewayDeps) {
     this.pollIntervalMs = deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    this.maxPollMs = deps.maxPollMs ?? DEFAULT_MAX_POLL_MS;
   }
 
   private async clientFor(job: JobRecord): Promise<Client> {
@@ -104,8 +115,21 @@ export class A2AGateway {
     this.recordRemoteIds(job.id, task);
     yield { type: 'progress', message: `Remote task ${task.id} created.` };
 
+    // A job's own timeoutSec bounds this when it has one; this deadline is what
+    // bounds it when it does not.
+    const deadline = Date.now() + this.maxPollMs;
+
     while (!isTerminalTaskState(task.status?.state ?? TaskState.TASK_STATE_WORKING)) {
       signal.throwIfAborted();
+
+      if (Date.now() >= deadline) {
+        throw new OrchestratorError(
+          'TIMEOUT',
+          `Remote task ${task.id} on ${job.agentSnapshot.name} did not finish within ${Math.round(this.maxPollMs / 1000)}s.`,
+          'Cancel it with job_cancel, or give the job a longer timeoutSec.'
+        );
+      }
+
       await delay(this.pollIntervalMs, signal);
       signal.throwIfAborted();
 

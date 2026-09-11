@@ -304,3 +304,107 @@ describe('WorkflowEngine', () => {
     await closeServices(services);
   });
 });
+
+describe('failure propagation', () => {
+  const failing = (instruction: string) =>
+    testServices({
+      mockScript: job =>
+        job.instruction === instruction ? { fail: { code: 'RUNNER_FAILED' as const, message: 'boom' } } : {}
+    });
+
+  // Regression: a failed dependency skipped the step below it, but that skip
+  // looked identical to a `when: false` skip — so the step two hops down ran
+  // anyway, on whatever its template rendered to.
+  it('carries a failure down the whole chain, not just one hop', async () => {
+    const services = failing('do a');
+
+    const run = services.workflows.start({
+      spec: {
+        name: 'chain',
+        steps: [step('a'), step('b', { dependsOn: ['a'] }), step('c', { dependsOn: ['b'] })]
+      }
+    });
+
+    await services.scheduler.drain();
+
+    const finished = services.workflows.getRun(run.runId);
+    const states = Object.fromEntries(finished.steps.map(s => [s.stepId, s.state]));
+
+    expect(states).toEqual({ a: 'failed', b: 'skipped', c: 'skipped' });
+    expect(finished.state).toBe('failed');
+    await closeServices(services);
+  });
+
+  it('names the dependency that caused each skip', async () => {
+    const services = failing('do a');
+
+    const run = services.workflows.start({
+      spec: {
+        name: 'chain',
+        steps: [step('a'), step('b', { dependsOn: ['a'] }), step('c', { dependsOn: ['b'] })]
+      }
+    });
+
+    await services.scheduler.drain();
+
+    const steps = services.workflows.getRun(run.runId).steps;
+    const b = steps.find(s => s.stepId === 'b');
+    const c = steps.find(s => s.stepId === 'c');
+
+    expect(b?.error).toMatchObject({ code: 'DEPENDENCY_FAILED' });
+    expect(b?.error?.message).toContain('"a"');
+    expect(c?.error?.message).toContain('"b"');
+    await closeServices(services);
+  });
+
+  // The bug in its most concrete form: a step consuming a dead step's output
+  // used to run with that template rendered to the empty string.
+  it('never runs a step on the empty output of a failed one', async () => {
+    const services = failing('make a plan');
+
+    const run = services.workflows.start({
+      spec: {
+        name: 'consume',
+        steps: [
+          step('plan', { instruction: 'make a plan' }),
+          step('build', { instruction: 'build from {{steps.plan.output}}', dependsOn: ['plan'] }),
+          step('ship', { instruction: 'ship {{steps.build.output}}', dependsOn: ['build'] })
+        ]
+      }
+    });
+
+    await services.scheduler.drain();
+
+    const steps = services.workflows.getRun(run.runId).steps;
+    expect(steps.find(s => s.stepId === 'ship')?.state).toBe('skipped');
+    expect(steps.find(s => s.stepId === 'ship')?.output).toBeUndefined();
+    await closeServices(services);
+  });
+
+  // The other half of the distinction: a `when: false` skip is a branch the
+  // author chose, so what comes after it is still meant to run.
+  it('still runs the steps after a condition-skipped one', async () => {
+    const services = testServices();
+
+    const run = services.workflows.start({
+      spec: {
+        name: 'branching',
+        steps: [
+          step('always'),
+          step('maybe', { dependsOn: ['always'], when: '{{inputs.enabled}}' }),
+          step('after', { dependsOn: ['maybe'] })
+        ]
+      },
+      inputs: { enabled: false }
+    });
+
+    await services.scheduler.drain();
+
+    const finished = services.workflows.getRun(run.runId);
+    const states = Object.fromEntries(finished.steps.map(s => [s.stepId, s.state]));
+
+    expect(states).toEqual({ always: 'succeeded', maybe: 'skipped', after: 'succeeded' });
+    expect(finished.state).toBe('succeeded');
+    await closeServices(services);
+  });
+});

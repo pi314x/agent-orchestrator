@@ -73,6 +73,16 @@ export type WorkflowRunRecord = {
   finishedAt?: string;
 };
 
+/**
+ * A dependency that can never produce an output. A step skipped by its `when`
+ * condition is deliberately NOT dead — that is a branch the author chose, and
+ * the steps after it are meant to run.
+ */
+function isDeadDependency(dep: StepRunRecord): boolean {
+  if (dep.state === 'failed' || dep.state === 'cancelled') return true;
+  return dep.state === 'skipped' && dep.error?.code === 'DEPENDENCY_FAILED';
+}
+
 const STEP_TERMINAL: ReadonlySet<StepState> = new Set<StepState>([
   'succeeded',
   'failed',
@@ -496,13 +506,25 @@ export class WorkflowEngine {
       if (state !== 'pending') continue;
 
       const deps = definition.dependsOn ?? [];
-      const depStates = deps.map(id => this.getRun(runId).steps.find(s => s.stepId === id)?.state);
+      const depRuns = deps.map(id => this.getRun(runId).steps.find(s => s.stepId === id));
 
-      if (depStates.some(s => s === 'failed' || s === 'cancelled')) {
-        this.setStepState(runId, definition.id, 'skipped');
+      // A dependency that died takes this step with it, transitively. Marking
+      // the skip with DEPENDENCY_FAILED is what carries the failure down the
+      // chain: without it a step two hops below a failure ran anyway, on the
+      // empty string its template rendered to.
+      const dead = depRuns.find(dep => dep !== undefined && isDeadDependency(dep));
+
+      if (dead !== undefined) {
+        this.setStepState(runId, definition.id, 'skipped', {
+          error: {
+            code: 'DEPENDENCY_FAILED',
+            message: `Step "${dead.stepId}" ${dead.state === 'skipped' ? 'was skipped after its own dependency failed' : dead.state}, so this step cannot run.`
+          }
+        });
         continue;
       }
-      if (!depStates.every(s => s === 'succeeded' || s === 'skipped')) continue;
+
+      if (!depRuns.every(dep => dep?.state === 'succeeded' || dep?.state === 'skipped')) continue;
 
       const vars = this.templateVars(runId);
 
