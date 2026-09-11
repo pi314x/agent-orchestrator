@@ -246,3 +246,151 @@ describe('JobScheduler.wait', () => {
     await closeServices(services);
   });
 });
+
+describe('per-scope concurrency budgets', () => {
+  /** Counts how many runs overlap, by holding each one open on a shared gate. */
+  function tracker() {
+    const gate = deferred();
+    let live = 0;
+    let peak = 0;
+    const script = () => {
+      live += 1;
+      peak = Math.max(peak, live);
+      return {
+        gate: gate.promise.then(() => {
+          live -= 1;
+        })
+      };
+    };
+    return { gate, script, peak: () => peak };
+  }
+
+  // Regression: budget_set accepted maxConcurrent, stored it, and nothing ever
+  // read it — only the global ORCH_MAX_CONCURRENCY applied.
+  it('honours a per-agent maxConcurrent budget', async () => {
+    const { gate, script, peak } = tracker();
+    const services = testServices({ config: { maxConcurrency: 4 }, mockScript: script });
+    const agent = makeAgent(services);
+
+    services.budgets.set({ scope: 'agent', scopeId: agent.id, maxConcurrent: 1 });
+    for (let i = 0; i < 4; i += 1) submit(services, agent);
+
+    await flush();
+    await flush();
+    expect(peak()).toBe(1);
+
+    gate.resolve();
+    await services.scheduler.drain();
+    await closeServices(services);
+  });
+
+  it('honours a global maxConcurrent budget below the configured limit', async () => {
+    const { gate, script, peak } = tracker();
+    const services = testServices({ config: { maxConcurrency: 4 }, mockScript: script });
+    const agent = makeAgent(services);
+
+    services.budgets.set({ scope: 'global', maxConcurrent: 2 });
+    for (let i = 0; i < 4; i += 1) submit(services, agent);
+
+    await flush();
+    await flush();
+    expect(peak()).toBe(2);
+
+    gate.resolve();
+    await services.scheduler.drain();
+    await closeServices(services);
+  });
+
+  it('does not let one capped agent starve another agent queued behind it', async () => {
+    const { gate, script } = tracker();
+    const services = testServices({ config: { maxConcurrency: 4 }, mockScript: script });
+    const capped = makeAgent(services, 'capped');
+    const other = makeAgent(services, 'other');
+
+    services.budgets.set({ scope: 'agent', scopeId: capped.id, maxConcurrent: 1 });
+    for (let i = 0; i < 3; i += 1) submit(services, capped);
+    const free = submit(services, other);
+
+    await flush();
+    await flush();
+
+    // The capped agent's backlog sits ahead of `free` in the queue; skipping
+    // past it is the whole point.
+    expect(services.jobs.getOrThrow(free.id).state).toBe('running');
+
+    gate.resolve();
+    await services.scheduler.drain();
+    await closeServices(services);
+  });
+
+  it("frees an agent's slot again once its job finishes", async () => {
+    const services = testServices({ mockScript: () => ({}) });
+    const agent = makeAgent(services);
+
+    services.budgets.set({ scope: 'agent', scopeId: agent.id, maxConcurrent: 1 });
+    const jobs = [submit(services, agent), submit(services, agent), submit(services, agent)];
+
+    await services.scheduler.drain();
+
+    // A leaked counter would strand the queue instead of draining it.
+    expect(jobs.map(j => services.jobs.getOrThrow(j.id).state)).toEqual([
+      'succeeded',
+      'succeeded',
+      'succeeded'
+    ]);
+    await closeServices(services);
+  });
+});
+
+describe('a job whose dependency failed', () => {
+  // Regression: the job is deliberately left blocked so job_retry on the
+  // dependency can release it, but it used to say nothing at all — the caller
+  // saw a job that never started and never explained itself.
+  it('reports itself as blocked, once, naming the dependency', async () => {
+    const services = testServices({
+      mockScript: job =>
+        job.instruction === 'boom' ? { fail: { code: 'RUNNER_FAILED', message: 'no' } } : {}
+    });
+    const agent = makeAgent(services);
+
+    const dep = submit(services, agent, { instruction: 'boom' });
+    const child = submit(services, agent, { dependsOn: [dep.id] });
+
+    await services.scheduler.drain();
+    // Extra pumps: the warning must not repeat on every state change.
+    submit(services, agent);
+    await services.scheduler.drain();
+
+    const blocked = services.events.query({ jobId: child.id }).filter(e => e.type === 'job.blocked');
+
+    expect(services.jobs.getOrThrow(child.id).state).toBe('blocked');
+    expect(blocked).toHaveLength(1);
+    expect(blocked[0]?.payload).toMatchObject({ code: 'DEPENDENCY_FAILED' });
+    expect(JSON.stringify(blocked[0]?.payload)).toContain(dep.id);
+    await closeServices(services);
+  });
+
+  it('runs after the dependency is retried and succeeds', async () => {
+    let failNext = true;
+    const services = testServices({
+      mockScript: job => {
+        if (job.instruction !== 'flaky') return {};
+        if (!failNext) return {};
+        failNext = false;
+        return { fail: { code: 'RUNNER_FAILED' as const, message: 'transient' } };
+      }
+    });
+    const agent = makeAgent(services);
+
+    const dep = submit(services, agent, { instruction: 'flaky' });
+    const child = submit(services, agent, { dependsOn: [dep.id] });
+    await services.scheduler.drain();
+
+    services.scheduler.retry(dep.id);
+    await services.scheduler.drain();
+
+    expect(services.jobs.getOrThrow(dep.id).state).toBe('succeeded');
+    expect(services.jobs.getOrThrow(child.id).state).toBe('succeeded');
+    await closeServices(services);
+  });
+});

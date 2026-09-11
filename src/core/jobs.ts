@@ -17,6 +17,14 @@ export const JOB_STATES = [
 export type JobState = (typeof JOB_STATES)[number];
 export type JobBackend = 'local' | 'a2a_remote';
 
+/** A blocked job that cannot proceed until its dependency is retried. */
+export type UnblockableJob = {
+  job: JobRecord;
+  dependencyId: string;
+  /** The dependency's terminal state, or `deleted` if the row is gone. */
+  dependencyState: JobState | 'deleted';
+};
+
 /**
  * PLAN §4. A2A task states map onto this same machine, so remote jobs will
  * reuse it unchanged in M4.
@@ -373,18 +381,43 @@ export class JobStore {
     return rows.map(toRecord);
   }
 
-  /** Unblock jobs whose dependencies have all succeeded. */
-  releaseBlocked(): JobRecord[] {
+  /**
+   * Unblock jobs whose dependencies have all succeeded, and report those whose
+   * dependencies have not. An unblockable job is deliberately left `blocked`
+   * rather than failed: `job_retry` on the dependency re-queues it, and the
+   * dependent is then released normally. What it must not do is sit there
+   * silently — the caller sees a job that never starts and never explains why.
+   */
+  releaseBlocked(): { released: JobRecord[]; unblockable: UnblockableJob[] } {
     const blocked = this.db.prepare(`SELECT * FROM jobs WHERE state = 'blocked'`).all() as JobRow[];
     const released: JobRecord[] = [];
+    const unblockable: UnblockableJob[] = [];
 
     for (const row of blocked) {
       const job = toRecord(row);
-      const ready = job.dependsOn.every(depId => this.get(depId)?.state === 'succeeded');
-      if (ready) released.push(this.transition(job.id, 'queued'));
+      const deps = job.dependsOn.map(depId => ({ id: depId, job: this.get(depId) }));
+
+      // A dependency that ended any way but `succeeded` cannot change state on
+      // its own again. A missing one was deleted, which is the same dead end.
+      const dead = deps.find(
+        dep => dep.job === undefined || (isTerminal(dep.job.state) && dep.job.state !== 'succeeded')
+      );
+
+      if (dead !== undefined) {
+        unblockable.push({
+          job,
+          dependencyId: dead.id,
+          dependencyState: dead.job?.state ?? 'deleted'
+        });
+        continue;
+      }
+
+      if (deps.every(dep => dep.job?.state === 'succeeded')) {
+        released.push(this.transition(job.id, 'queued'));
+      }
     }
 
-    return released;
+    return { released, unblockable };
   }
 
   /**

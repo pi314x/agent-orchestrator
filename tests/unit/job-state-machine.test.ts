@@ -98,12 +98,12 @@ describe('JobStore', () => {
     const first = submit(jobs, agent);
     const second = submit(jobs, agent, { dependsOn: [first.id] });
 
-    expect(jobs.releaseBlocked()).toEqual([]);
+    expect(jobs.releaseBlocked().released).toEqual([]);
 
     jobs.transition(first.id, 'running');
     jobs.transition(first.id, 'succeeded');
 
-    expect(jobs.releaseBlocked().map(j => j.id)).toEqual([second.id]);
+    expect(jobs.releaseBlocked().released.map(j => j.id)).toEqual([second.id]);
     expect(jobs.getOrThrow(second.id).state).toBe('queued');
     db.close();
   });
@@ -116,8 +116,41 @@ describe('JobStore', () => {
     jobs.transition(first.id, 'running');
     jobs.transition(first.id, 'failed', { error: { code: 'RUNNER_FAILED', message: 'boom' } });
 
-    expect(jobs.releaseBlocked()).toEqual([]);
+    // Left blocked on purpose: retrying the dependency releases it. What it
+    // must not be is silent — the caller needs to know why it never starts.
+    const { released, unblockable } = jobs.releaseBlocked();
+
+    expect(released).toEqual([]);
     expect(jobs.getOrThrow(second.id).state).toBe('blocked');
+    expect(unblockable).toMatchObject([{ dependencyId: first.id, dependencyState: 'failed' }]);
+    db.close();
+  });
+
+  it('reports a blocked job whose dependency was deleted', () => {
+    const { jobs, agent, db } = seed();
+    const second = submit(jobs, agent, { dependsOn: ['job_does_not_exist'] });
+
+    const { unblockable } = jobs.releaseBlocked();
+
+    expect(unblockable).toMatchObject([{ job: { id: second.id }, dependencyState: 'deleted' }]);
+    db.close();
+  });
+
+  it('releases a dependent once its failed dependency is retried and succeeds', () => {
+    const { jobs, agent, db } = seed();
+    const first = submit(jobs, agent);
+    const second = submit(jobs, agent, { dependsOn: [first.id] });
+
+    jobs.transition(first.id, 'running');
+    jobs.transition(first.id, 'failed', { error: { code: 'RUNNER_FAILED', message: 'boom' } });
+    expect(jobs.releaseBlocked().released).toEqual([]);
+
+    // The recovery path that leaving the job blocked exists to preserve.
+    jobs.transition(first.id, 'queued');
+    jobs.transition(first.id, 'running');
+    jobs.transition(first.id, 'succeeded');
+
+    expect(jobs.releaseBlocked().released.map(j => j.id)).toEqual([second.id]);
     db.close();
   });
 

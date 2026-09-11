@@ -11,6 +11,7 @@ export const EVENT_TYPES = [
   'job.cancelled',
   'job.timed_out',
   'job.retried',
+  'job.blocked',
   'job.interrupted',
   'workflow.started',
   'workflow.succeeded',

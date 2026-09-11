@@ -72,7 +72,7 @@ export function assertTrusted(trustLevel: TrustLevel, mode: TrustMode, agentLabe
   );
 }
 
-const BLOCKED_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]', '::1', '0.0.0.0']);
+const BLOCKED_HOSTNAMES = new Set(['localhost', '127.0.0.1', '[::1]', '::1', '0.0.0.0', '[::]', '::']);
 
 /**
  * Push-notification callbacks are handed to a third party, so the URL is
@@ -124,23 +124,82 @@ export function validateWebhookUrl(rawUrl: string, allowedHosts: readonly string
   return url;
 }
 
-function isPrivateAddress(hostname: string): boolean {
-  // IPv4 private ranges plus link-local; hostnames fall through untouched.
+function isPrivateIPv4(hostname: string): boolean {
+  // The WHATWG URL parser canonicalises every IPv4 notation — decimal
+  // (2130706433), octal (0177.0.0.1), hex (0x7f.0.0.1), short (127.1) — into
+  // dotted-quad before we see it, so matching that one form is enough.
   const parts = hostname.split('.');
   if (parts.length !== 4 || parts.some(part => !/^\d+$/.test(part))) return false;
 
   const [a, b] = parts.map(Number) as [number, number, number, number];
-  if (a === 10 || a === 127) return true;
+  if (a === 0 || a === 10 || a === 127) return true;
   if (a === 192 && b === 168) return true;
   if (a === 172 && b >= 16 && b <= 31) return true;
   if (a === 169 && b === 254) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;
   return false;
 }
+
+/** Expand a bracketed IPv6 literal into its eight hextets. */
+function ipv6Hextets(hostname: string): number[] | undefined {
+  if (!hostname.startsWith('[') || !hostname.endsWith(']')) return undefined;
+
+  const halves = hostname.slice(1, -1).toLowerCase().split('::');
+  if (halves.length > 2) return undefined;
+
+  const toParts = (part: string): number[] =>
+    part === '' ? [] : part.split(':').map(hextet => Number.parseInt(hextet, 16));
+
+  const left = toParts(halves[0] ?? '');
+  const right = halves.length === 2 ? toParts(halves[1] ?? '') : [];
+  const gap = 8 - left.length - right.length;
+  if (gap < 0 || (halves.length === 1 && gap !== 0)) return undefined;
+
+  const hextets = [...left, ...(Array(gap).fill(0) as number[]), ...right];
+  return hextets.every(h => Number.isInteger(h) && h >= 0 && h <= 0xffff) ? hextets : undefined;
+}
+
+function isPrivateIPv6(hostname: string): boolean {
+  const hextets = ipv6Hextets(hostname);
+  if (hextets === undefined) return false;
+
+  const first = hextets[0] ?? 0;
+
+  // ::/128 unspecified and ::1/128 loopback.
+  if (hextets.every((h, i) => (i === 7 ? h <= 1 : h === 0))) return true;
+  // fc00::/7 unique-local.
+  if (first >= 0xfc00 && first <= 0xfdff) return true;
+  // fe80::/10 link-local.
+  if (first >= 0xfe80 && first <= 0xfebf) return true;
+
+  // ::ffff:0:0/96 — an IPv4 address wearing an IPv6 costume. The URL parser
+  // renders these as hex (::ffff:7f00:1), so the dotted-quad check never saw
+  // them and every loopback and private range was reachable through one.
+  if (hextets.slice(0, 5).every(h => h === 0) && hextets[5] === 0xffff) {
+    const high = hextets[6] ?? 0;
+    const low = hextets[7] ?? 0;
+    return isPrivateIPv4(`${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`);
+  }
+
+  return false;
+}
+
+function isPrivateAddress(hostname: string): boolean {
+  return isPrivateIPv4(hostname) || isPrivateIPv6(hostname);
+}
+
+/** Tolerates the spacing and casing an attacker would try. */
+const CLOSING_TAG = /<\/\s*untrusted_remote_output\s*>/gi;
 
 /**
  * Remote text can contain anything, including something shaped like an
  * instruction. Wrapping it marks the boundary for whoever reads it next.
  */
 export function wrapUntrusted(source: string, text: string): string {
-  return `<untrusted_remote_output source="${source.replace(/"/g, '')}">\n${text}\n</untrusted_remote_output>`;
+  // Text carrying the closing tag would end the wrapper early, and everything
+  // after it would read as trusted — so defang it. Without this the boundary
+  // is advisory, which is no boundary at all.
+  const body = text.replace(CLOSING_TAG, '&lt;/untrusted_remote_output&gt;');
+
+  return `<untrusted_remote_output source="${source.replace(/"/g, '')}">\n${body}\n</untrusted_remote_output>`;
 }

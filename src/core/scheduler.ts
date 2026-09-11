@@ -54,6 +54,10 @@ export interface RemoteExecutor {
 
 export class JobScheduler {
   private readonly active = new Map<string, AbortController>();
+  /** Running jobs per agent, for the per-agent `maxConcurrent` budget. */
+  private readonly activeByAgent = new Map<string, number>();
+  /** Jobs already reported as unblockable, so `pump` warns once, not per tick. */
+  private readonly reportedUnblockable = new Set<string>();
   private readonly abortReasons = new Map<string, AbortReason>();
   private readonly listeners = new Set<() => void>();
   private stopped = false;
@@ -196,11 +200,37 @@ export class JobScheduler {
   private pump(): void {
     if (this.stopped) return;
 
-    this.deps.jobs.releaseBlocked();
+    const { unblockable } = this.deps.jobs.releaseBlocked();
+    for (const stuck of unblockable) {
+      // Once per job: `pump` runs on every state change, and a job stays
+      // unblockable until someone acts on it.
+      if (this.reportedUnblockable.has(stuck.job.id)) continue;
+      this.reportedUnblockable.add(stuck.job.id);
 
-    while (this.active.size < this.deps.maxConcurrency) {
-      const candidates = this.deps.jobs.nextQueued(this.deps.maxConcurrency - this.active.size);
-      const next = candidates.find(job => !this.active.has(job.id));
+      const message = `Dependency ${stuck.dependencyId} ${stuck.dependencyState}, so this job cannot start.`;
+      this.deps.logger.warn({ jobId: stuck.job.id, dependencyId: stuck.dependencyId }, message);
+      this.deps.events.append({
+        type: 'job.blocked',
+        jobId: stuck.job.id,
+        agentId: stuck.job.agentId,
+        payload: {
+          code: 'DEPENDENCY_FAILED',
+          message,
+          hint: `Retry ${stuck.dependencyId} with job_retry and this job releases on its own, or cancel this one.`
+        }
+      });
+    }
+    if (unblockable.length > 0) this.notify();
+
+    const globalCap = this.deps.budgets.maxConcurrentFor('global');
+    const ceiling =
+      globalCap === undefined ? this.deps.maxConcurrency : Math.min(globalCap, this.deps.maxConcurrency);
+
+    while (this.active.size < ceiling) {
+      // Look past the jobs we cannot start: one agent sitting at its own cap
+      // must not starve every other agent's queue behind it.
+      const candidates = this.deps.jobs.nextQueued(Math.max(this.deps.maxConcurrency * 2, 20));
+      const next = candidates.find(job => !this.active.has(job.id) && this.hasAgentCapacity(job.agentId));
       if (next === undefined) break;
 
       // Runs until its first await, which is past the transition out of
@@ -209,9 +239,19 @@ export class JobScheduler {
     }
   }
 
+  /** Per-agent `maxConcurrent`, which is a budget rather than a config limit. */
+  private hasAgentCapacity(agentId: string): boolean {
+    const cap = this.deps.budgets.maxConcurrentFor('agent', agentId);
+    return cap === undefined || (this.activeByAgent.get(agentId) ?? 0) < cap;
+  }
+
   private async execute(queued: JobRecord): Promise<void> {
     const controller = new AbortController();
     this.active.set(queued.id, controller);
+    // Counted here rather than in `pump`, alongside `active`, so the increment
+    // and its decrement in `finally` stay in one place. Both run before the
+    // first await, which is what stops `pump` picking this job twice.
+    this.activeByAgent.set(queued.agentId, (this.activeByAgent.get(queued.agentId) ?? 0) + 1);
 
     const startedAtMs = Date.now();
     let timer: NodeJS.Timeout | undefined;
@@ -316,6 +356,9 @@ export class JobScheduler {
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       this.active.delete(queued.id);
+      const remaining = (this.activeByAgent.get(queued.agentId) ?? 1) - 1;
+      if (remaining > 0) this.activeByAgent.set(queued.agentId, remaining);
+      else this.activeByAgent.delete(queued.agentId);
       this.abortReasons.delete(queued.id);
       this.notify();
       this.pump();
