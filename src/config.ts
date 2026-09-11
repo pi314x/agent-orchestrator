@@ -34,6 +34,12 @@ const ConfigSchema = z.object({
   logLevel: LogLevelSchema,
   defaultRunner: z.enum(RUNNER_NAMES),
   agentsDir: z.string().min(1),
+  cliCommand: z.string().optional(),
+  cliWorkspaceDirs: z.array(z.string()),
+  cliAllowNetwork: z.boolean(),
+  oauthIssuerUrl: z.string().optional(),
+  oauthResourceUrl: z.string().optional(),
+  oauthRequiredScopes: z.array(z.string()),
   anthropicApiKey: z.string().optional(),
   anthropicModel: z.string().optional(),
   openaiApiKey: z.string().optional(),
@@ -47,6 +53,12 @@ const ConfigSchema = z.object({
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
+
+const splitList = (raw: string | undefined): string[] =>
+  (raw ?? '')
+    .split(',')
+    .map(item => item.trim())
+    .filter(item => item !== '');
 
 const intFromEnv = (fallback: number) =>
   z
@@ -74,6 +86,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     logLevel: LogLevelSchema.parse(env.ORCH_LOG_LEVEL?.trim() || 'info'),
     defaultRunner: z.enum(RUNNER_NAMES).parse(env.ORCH_DEFAULT_RUNNER?.trim() || 'anthropic'),
     agentsDir: env.ORCH_AGENTS_DIR?.trim() || 'agents',
+    ...(env.ORCH_CLI_COMMAND?.trim() && { cliCommand: env.ORCH_CLI_COMMAND.trim() }),
+    cliWorkspaceDirs: splitList(env.ORCH_CLI_WORKSPACE_DIRS),
+    cliAllowNetwork: boolish(false).parse(env.ORCH_CLI_ALLOW_NETWORK),
+    ...(env.ORCH_OAUTH_ISSUER_URL?.trim() && { oauthIssuerUrl: env.ORCH_OAUTH_ISSUER_URL.trim() }),
+    ...(env.ORCH_OAUTH_RESOURCE_URL?.trim() && { oauthResourceUrl: env.ORCH_OAUTH_RESOURCE_URL.trim() }),
+    oauthRequiredScopes: splitList(env.ORCH_OAUTH_REQUIRED_SCOPES),
     ...(env.ANTHROPIC_API_KEY?.trim() && { anthropicApiKey: env.ANTHROPIC_API_KEY.trim() }),
     ...(env.ANTHROPIC_MODEL?.trim() && { anthropicModel: env.ANTHROPIC_MODEL.trim() }),
     ...(env.OPENAI_API_KEY?.trim() && { openaiApiKey: env.OPENAI_API_KEY.trim() }),
@@ -83,10 +101,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     a2aTrustMode: z.enum(TRUST_MODES).parse(env.A2A_TRUST_MODE?.trim() || 'verified-only'),
     ...(env.A2A_AGENT_CARD_URL?.trim() && { a2aAgentCardUrl: env.A2A_AGENT_CARD_URL.trim() }),
     ...(env.A2A_REGISTRY_URL?.trim() && { a2aRegistryUrl: env.A2A_REGISTRY_URL.trim() }),
-    a2aWebhookAllowedHosts: (env.A2A_WEBHOOK_ALLOWED_HOSTS?.trim() ?? '')
-      .split(',')
-      .map(host => host.trim().toLowerCase())
-      .filter(host => host !== '')
+    a2aWebhookAllowedHosts: splitList(env.A2A_WEBHOOK_ALLOWED_HOSTS).map(host => host.toLowerCase())
   };
 
   return ConfigSchema.parse(raw);

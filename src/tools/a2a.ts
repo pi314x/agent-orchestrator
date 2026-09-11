@@ -4,6 +4,7 @@ import { buildAgentCard } from '../a2a/server.js';
 import { TRUST_LEVELS } from '../a2a/trust.js';
 import { AgentViewSchema, toAgentView } from '../schemas/common.js';
 import { toolError, toolOk } from './result.js';
+import { denyWithoutAdminScope } from './scopes.js';
 import type { ToolRegistration } from './types.js';
 
 const CardSummarySchema = z.object({
@@ -400,7 +401,10 @@ export const agentPublishTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      (args, ctx) => {
+        const denied = denyWithoutAdminScope(ctx, 'agent_publish');
+        if (denied !== undefined) return denied;
+
         try {
           if (args.agentId === undefined && args.templateName === undefined) {
             return toolError(

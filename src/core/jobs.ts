@@ -57,6 +57,8 @@ export type AgentSnapshot = {
   instructions: string;
   runner?: RunnerName;
   model?: string;
+  /** Downstream MCP tools this agent may use; local agents only. */
+  toolGrants?: string[];
   /** Remote agents only — captured at submit time so a later re-register cannot change a running job. */
   cardId?: string;
   credentialsRef?: string;

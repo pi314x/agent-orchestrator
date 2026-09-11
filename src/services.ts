@@ -16,7 +16,9 @@ import type { Db } from './db/sqlite.js';
 import type { Logger } from './logger.js';
 import { AnthropicRunner } from './runners/anthropic.js';
 import { MockRunner } from './runners/mock.js';
+import { CliRunner } from './runners/cli.js';
 import { OpenAiCompatibleRunner } from './runners/openai.js';
+import { McpProxyPool } from './proxy/pool.js';
 import { RunnerRegistry } from './runners/types.js';
 
 export interface Services {
@@ -34,6 +36,7 @@ export interface Services {
   cards: CardStore;
   publishedSkills: PublishedSkillStore;
   a2aGateway: A2AGateway;
+  proxy: McpProxyPool;
   runners: RunnerRegistry;
   scheduler: JobScheduler;
   workflows: WorkflowEngine;
@@ -72,6 +75,8 @@ export function createServices({ config, db, logger, a2aClientProvider }: Create
     ...(a2aClientProvider !== undefined && { clientProvider: a2aClientProvider })
   });
 
+  const proxy = new McpProxyPool(db, logger);
+
   const runners = new RunnerRegistry([
     new MockRunner(),
     new AnthropicRunner({
@@ -81,6 +86,11 @@ export function createServices({ config, db, logger, a2aClientProvider }: Create
     new OpenAiCompatibleRunner({
       ...(config.openaiApiKey !== undefined && { apiKey: config.openaiApiKey }),
       ...(config.openaiBaseUrl !== undefined && { baseUrl: config.openaiBaseUrl })
+    }),
+    new CliRunner({
+      workspaceDirs: config.cliWorkspaceDirs,
+      allowNetwork: config.cliAllowNetwork,
+      ...(config.cliCommand !== undefined && { command: config.cliCommand })
     })
   ]);
 
@@ -95,6 +105,7 @@ export function createServices({ config, db, logger, a2aClientProvider }: Create
     budgets,
     logger,
     a2aGateway,
+    proxy,
     maxConcurrency: config.maxConcurrency,
     maxDepth: config.maxDepth,
     defaultRunner: config.defaultRunner
@@ -126,6 +137,7 @@ export function createServices({ config, db, logger, a2aClientProvider }: Create
     cards,
     publishedSkills,
     a2aGateway,
+    proxy,
     runners,
     scheduler,
     workflows

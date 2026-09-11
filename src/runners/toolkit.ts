@@ -4,6 +4,7 @@ import type { EventLog } from '../core/events.js';
 import type { JobRecord } from '../core/jobs.js';
 import type { MemoryStore } from '../core/memory.js';
 import { OrchestratorError } from '../errors.js';
+import type { DownstreamTool } from '../proxy/pool.js';
 
 export type ToolkitTool = {
   name: string;
@@ -27,6 +28,18 @@ export interface SpawnJobInput {
   agentId?: string;
 }
 
+/** A downstream MCP tool this agent was granted, resolved before the run. */
+export type DownstreamGrant = {
+  server: string;
+  tool: DownstreamTool;
+  requiresApproval: boolean;
+};
+
+/** Namespaced so two servers offering the same tool name cannot collide. */
+export function grantToolName(server: string, tool: string): string {
+  return `${server}__${tool}`;
+}
+
 export interface ToolkitDeps {
   memory: MemoryStore;
   artifacts: ArtifactStore;
@@ -34,6 +47,9 @@ export interface ToolkitDeps {
   events: EventLog;
   /** Supplied by the scheduler, which owns depth and budget enforcement. */
   spawnJob: (job: JobRecord, input: SpawnJobInput) => { jobId: string };
+  /** Downstream MCP tools granted to this agent, already allow/deny filtered. */
+  downstream?: readonly DownstreamGrant[];
+  callDownstream?: (server: string, tool: string, args: Record<string, unknown>) => Promise<string>;
 }
 
 export interface AgentToolkit {
@@ -245,12 +261,44 @@ export function createAgentToolkit(deps: ToolkitDeps, job: JobRecord): AgentTool
     }
   };
 
+  // Granted downstream tools sit alongside the built-ins, namespaced by server.
+  const grants = new Map<string, DownstreamGrant>();
+  for (const grant of deps.downstream ?? []) {
+    const name = grantToolName(grant.server, grant.tool.name);
+    grants.set(name, grant);
+    tools.push({
+      name,
+      description: `[${grant.server}] ${grant.tool.description}`,
+      inputSchema: grant.tool.inputSchema
+    });
+  }
+
   return {
     tools: () => tools,
     finished: () => finishPayload,
     progress: () => [...progressMessages],
 
     invoke: async (name, input) => {
+      const grant = grants.get(name);
+      if (grant !== undefined) {
+        if (deps.callDownstream === undefined) {
+          return { content: 'No downstream MCP pool is configured.', isError: true };
+        }
+        if (grant.requiresApproval) {
+          // M3 approvals gate workflow steps; a per-call gate inside a running
+          // loop needs the agent to pause, which lands with job-level approvals.
+          return {
+            content: `Tool ${name} requires human approval, which is not available inside a running job yet.`,
+            isError: true
+          };
+        }
+        try {
+          return { content: await deps.callDownstream(grant.server, grant.tool.name, input) };
+        } catch (error) {
+          return { content: error instanceof Error ? error.message : String(error), isError: true };
+        }
+      }
+
       const handler = handlers[name];
       if (handler === undefined) {
         return { content: `No such tool: ${name}`, isError: true };

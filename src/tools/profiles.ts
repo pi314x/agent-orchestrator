@@ -20,6 +20,12 @@ import { jobCancelTool, jobGetTool, jobListTool, jobRetryTool, jobSubmitTool, jo
 import { memoryDeleteTool, memoryReadTool, memorySearchTool, memoryWriteTool } from './memory.js';
 import { channelCreateTool, channelListTool, messageListTool, messageSendTool } from './messaging.js';
 import { budgetSetTool, eventsQueryTool } from './observability.js';
+import {
+  toolserverListTool,
+  toolserverRegisterTool,
+  toolserverRemoveTool,
+  toolserverToolsTool
+} from './toolservers.js';
 import type { ToolDeps, ToolRegistration } from './types.js';
 import {
   workflowDefineTool,
@@ -91,6 +97,11 @@ export const TOOL_REGISTRY: readonly ToolRegistration[] = [
   a2aPushConfigSetTool,
   a2aServerInfoTool,
   agentPublishTool,
+  // §5.10 Downstream MCP tool servers (local agents only)
+  toolserverRegisterTool,
+  toolserverListTool,
+  toolserverToolsTool,
+  toolserverRemoveTool,
   // §5.11 Observability & budgets
   eventsQueryTool,
   budgetSetTool,

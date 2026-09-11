@@ -517,6 +517,50 @@ exports[`tools/list contract > matches the full profile snapshot 1`] = `
     "annotations": {
       "destructiveHint": false,
       "idempotentHint": true,
+      "openWorldHint": true,
+      "readOnlyHint": false,
+    },
+    "description": "Add an MCP server whose tools local agents may be granted, over stdio or HTTP. Grant them per agent with agent_create toolGrants ("server" for all its tools, "server/tool" for one). Remote A2A agents are opaque and never receive these — this never applies to them.",
+    "name": "toolserver_register",
+    "title": "Register a downstream MCP server",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true,
+      "readOnlyHint": true,
+    },
+    "description": "List registered MCP servers and whether each is reachable right now. Use toolserver_tools to see what one offers.",
+    "name": "toolserver_list",
+    "title": "List downstream MCP servers",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": true,
+      "readOnlyHint": true,
+    },
+    "description": "List the tools a registered MCP server offers, after its allow and deny lists are applied. Use it to pick the exact grants for an agent before calling agent_create.",
+    "name": "toolserver_tools",
+    "title": "Inspect a server tools",
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Remove a downstream MCP server and close its connection. Agents still granting its tools will simply stop seeing them on their next run.",
+    "name": "toolserver_remove",
+    "title": "Unregister an MCP server",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": true,
     },

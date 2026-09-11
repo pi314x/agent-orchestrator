@@ -117,6 +117,7 @@ export function toSnapshot(agent: AgentRecord): AgentSnapshot {
     kind: agent.kind,
     instructions: agent.instructions,
     ...(agent.role !== undefined && { role: agent.role }),
+    ...(agent.toolGrants.length > 0 && { toolGrants: agent.toolGrants }),
     ...(agent.runner !== undefined && { runner: agent.runner }),
     ...(agent.model !== undefined && { model: agent.model }),
     ...(agent.cardId !== undefined && { cardId: agent.cardId }),

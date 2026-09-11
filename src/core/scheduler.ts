@@ -1,6 +1,7 @@
 import { OrchestratorError, toErrorPayload } from '../errors.js';
 import type { Logger } from '../logger.js';
-import { createAgentToolkit, type SpawnJobInput } from '../runners/toolkit.js';
+import { createAgentToolkit, type DownstreamGrant, type SpawnJobInput } from '../runners/toolkit.js';
+import type { McpProxyPool } from '../proxy/pool.js';
 import type { RunnerEvent, RunnerRegistry } from '../runners/types.js';
 import type { ArtifactStore } from './artifacts.js';
 import type { BudgetTracker } from './budget.js';
@@ -39,6 +40,8 @@ export interface SchedulerDeps {
   defaultRunner: RunnerName;
   /** Drives jobs whose backend is a2a_remote; absent until M4 is wired. */
   a2aGateway?: RemoteExecutor;
+  /** Grants downstream MCP tools to local agents only. */
+  proxy?: McpProxyPool;
 }
 
 /**
@@ -250,7 +253,10 @@ export class JobScheduler {
         );
       }
 
-      // Only agents we own get a toolkit; remote A2A agents are opaque.
+      // Only agents we own get a toolkit; remote A2A agents are opaque and
+      // never receive downstream tool grants.
+      const downstream = job.backend === 'local' ? await this.resolveGrants(job) : [];
+
       const toolkit =
         job.backend === 'local'
           ? createAgentToolkit(
@@ -259,7 +265,12 @@ export class JobScheduler {
                 artifacts: this.deps.artifacts,
                 bus: this.deps.bus,
                 events: this.deps.events,
-                spawnJob: (parent, input) => this.spawnChild(parent, input)
+                spawnJob: (parent, input) => this.spawnChild(parent, input),
+                downstream,
+                ...(this.deps.proxy !== undefined && {
+                  callDownstream: (server, tool, args) =>
+                    (this.deps.proxy as McpProxyPool).call(server, tool, args)
+                })
               },
               job
             )
@@ -309,6 +320,45 @@ export class JobScheduler {
       this.notify();
       this.pump();
     }
+  }
+
+  /**
+   * Expand an agent's `toolGrants` into concrete downstream tools. A grant is
+   * either a whole server (`files`) or one tool on it (`files/read_file`); an
+   * unreachable server is logged and skipped rather than failing the job.
+   */
+  private async resolveGrants(job: JobRecord): Promise<DownstreamGrant[]> {
+    const grants = job.agentSnapshot.toolGrants ?? [];
+    if (grants.length === 0 || this.deps.proxy === undefined) return [];
+
+    const pool = this.deps.proxy;
+    const resolved: DownstreamGrant[] = [];
+
+    for (const grant of grants) {
+      const [serverName, toolName] = grant.split('/', 2);
+      if (serverName === undefined || serverName === '') continue;
+
+      const server = pool.get(serverName);
+      if (server === undefined) {
+        this.deps.logger.warn({ grant, jobId: job.id }, 'tool grant names an unknown server');
+        continue;
+      }
+
+      try {
+        for (const tool of await pool.tools(serverName)) {
+          if (toolName !== undefined && tool.name !== toolName) continue;
+          resolved.push({
+            server: serverName,
+            tool,
+            requiresApproval: server.requireApprovalFor.includes(tool.name)
+          });
+        }
+      } catch (error) {
+        this.deps.logger.warn({ err: error, grant }, 'could not list tools for a granted server');
+      }
+    }
+
+    return resolved;
   }
 
   /** Backs the toolkit's `spawn_job`; depth and budget rules apply as normal. */

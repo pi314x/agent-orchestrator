@@ -279,6 +279,17 @@ export const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE agents ADD COLUMN source TEXT NOT NULL DEFAULT 'api';
       ALTER TABLE agents ADD COLUMN source_path TEXT;
 
+      CREATE TABLE tool_servers (
+        name                 TEXT PRIMARY KEY,
+        transport            TEXT NOT NULL,
+        auth_ref             TEXT,
+        allow_tools          TEXT NOT NULL DEFAULT '[]',
+        deny_tools           TEXT NOT NULL DEFAULT '[]',
+        require_approval_for TEXT NOT NULL DEFAULT '[]',
+        created_at           TEXT NOT NULL,
+        updated_at           TEXT NOT NULL
+      );
+
       CREATE TABLE published_skills (
         skill_id      TEXT PRIMARY KEY,
         agent_id      TEXT,

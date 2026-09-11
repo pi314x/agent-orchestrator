@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { BUDGET_SCOPES } from '../core/budget.js';
 import { EVENT_TYPES } from '../core/events.js';
 import { toolError, toolOk } from './result.js';
+import { denyWithoutAdminScope } from './scopes.js';
 import type { ToolRegistration } from './types.js';
 
 export const eventsQueryTool: ToolRegistration = {
@@ -93,7 +94,10 @@ export const budgetSetTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      (args, ctx) => {
+        const denied = denyWithoutAdminScope(ctx, 'budget_set');
+        if (denied !== undefined) return denied;
+
         try {
           const budget = deps.services.budgets.set({
             scope: args.scope,

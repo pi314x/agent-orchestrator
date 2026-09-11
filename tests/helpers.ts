@@ -25,6 +25,9 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     // CI never reaches a real model.
     defaultRunner: 'mock',
     agentsDir: 'agents',
+    cliWorkspaceDirs: [],
+    cliAllowNetwork: false,
+    oauthRequiredScopes: [],
     a2aEnabled: false,
     a2aHttpPort: 0,
     // Tests use unsigned fixture cards, so signature checks would block them.
@@ -76,6 +79,7 @@ export function testServices(options: TestServicesOptions = {}): Services {
  */
 export async function closeServices(services: Services): Promise<void> {
   await services.scheduler.shutdown();
+  await services.proxy.close();
   services.db.close();
 }
 

@@ -1,6 +1,17 @@
-import { createServer, type Server, type ServerResponse } from 'node:http';
-import { hostHeaderValidation, originValidation, toNodeHandler } from '@modelcontextprotocol/node';
-import { createMcpHandler, type McpServerFactory } from '@modelcontextprotocol/server';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import {
+  hostHeaderValidation,
+  originValidation,
+  toNodeHandler,
+  toWebRequest
+} from '@modelcontextprotocol/node';
+import {
+  createMcpHandler,
+  getOAuthProtectedResourceMetadataUrl,
+  requireBearerAuth,
+  type McpServerFactory
+} from '@modelcontextprotocol/server';
+import { createJwtVerifier, oauthSettings } from './auth.js';
 import type { Config } from './config.js';
 import type { Logger } from './logger.js';
 import { SERVER_NAME, VERSION } from './version.js';
@@ -15,7 +26,8 @@ export interface HttpServerHandle {
 
 export interface StartHttpServerOptions {
   factory: McpServerFactory;
-  config: Pick<Config, 'httpHost' | 'httpPort'>;
+  config: Pick<Config, 'httpHost' | 'httpPort'> &
+    Partial<Pick<Config, 'oauthIssuerUrl' | 'oauthResourceUrl' | 'oauthRequiredScopes'>>;
   logger: Logger;
 }
 
@@ -41,6 +53,18 @@ export async function startHttpServer({
     onerror: error => logger.error({ err: error }, 'mcp node adapter error')
   });
 
+  // OAuth is opt-in: without an issuer the endpoint stays unauthenticated,
+  // which is the right default for a loopback-bound local server.
+  const oauth = oauthSettings(config as Config);
+  const gate =
+    oauth === undefined
+      ? undefined
+      : requireBearerAuth({
+          verifier: createJwtVerifier(oauth),
+          requiredScopes: oauth.requiredScopes,
+          resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(new URL(oauth.resourceUrl))
+        });
+
   // DNS-rebinding and cross-site protection for a locally bound server.
   const allowedHostnames = Array.from(new Set(['localhost', '127.0.0.1', '[::1]', config.httpHost]));
   const validateHost = hostHeaderValidation(allowedHostnames);
@@ -62,7 +86,28 @@ export async function startHttpServer({
       return;
     }
 
-    void nodeHandler(req, res);
+    if (gate === undefined) {
+      void nodeHandler(req, res);
+      return;
+    }
+
+    void (async () => {
+      const request = await toWebRequest(req);
+      const auth = await gate(request);
+
+      if (auth instanceof Response) {
+        // The SDK already shaped the 401/403 challenge; relay it verbatim.
+        res.writeHead(auth.status, Object.fromEntries(auth.headers));
+        res.end(await auth.text());
+        return;
+      }
+
+      (req as IncomingMessage & { auth?: typeof auth }).auth = auth;
+      await nodeHandler(req, res, request.body === null ? undefined : await request.json());
+    })().catch(error => {
+      logger.error({ err: error }, 'authentication failed');
+      sendJson(res, 500, { error: 'internal' });
+    });
   });
 
   await new Promise<void>((resolve, reject) => {
