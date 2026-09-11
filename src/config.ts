@@ -2,7 +2,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { TRUST_MODES } from './a2a/trust.js';
-import { RUNNER_NAMES } from './core/templates.js';
+import { DEFAULT_RUNNER, RUNNER_NAMES } from './core/templates.js';
 
 export const TOOL_PROFILES = ['core', 'standard', 'full'] as const;
 export const ToolProfileSchema = z.enum(TOOL_PROFILES);
@@ -44,6 +44,7 @@ const ConfigSchema = z.object({
   anthropicModel: z.string().optional(),
   openaiApiKey: z.string().optional(),
   openaiBaseUrl: z.string().optional(),
+  openaiModel: z.string().optional(),
   a2aEnabled: z.boolean(),
   a2aHttpPort: z.number().int().min(1).max(65535),
   a2aTrustMode: z.enum(TRUST_MODES),
@@ -84,7 +85,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     maxDepth: intFromEnv(2).parse(env.ORCH_MAX_DEPTH),
     maxConcurrency: intFromEnv(4).parse(env.ORCH_MAX_CONCURRENCY),
     logLevel: LogLevelSchema.parse(env.ORCH_LOG_LEVEL?.trim() || 'info'),
-    defaultRunner: z.enum(RUNNER_NAMES).parse(env.ORCH_DEFAULT_RUNNER?.trim() || 'anthropic'),
+    defaultRunner: z.enum(RUNNER_NAMES).parse(env.ORCH_DEFAULT_RUNNER?.trim() || DEFAULT_RUNNER),
     agentsDir: env.ORCH_AGENTS_DIR?.trim() || 'agents',
     ...(env.ORCH_CLI_COMMAND?.trim() && { cliCommand: env.ORCH_CLI_COMMAND.trim() }),
     cliWorkspaceDirs: splitList(env.ORCH_CLI_WORKSPACE_DIRS),
@@ -96,6 +97,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     ...(env.ANTHROPIC_MODEL?.trim() && { anthropicModel: env.ANTHROPIC_MODEL.trim() }),
     ...(env.OPENAI_API_KEY?.trim() && { openaiApiKey: env.OPENAI_API_KEY.trim() }),
     ...(env.OPENAI_BASE_URL?.trim() && { openaiBaseUrl: env.OPENAI_BASE_URL.trim() }),
+    ...(env.OPENAI_MODEL?.trim() && { openaiModel: env.OPENAI_MODEL.trim() }),
     a2aEnabled: boolish(false).parse(env.A2A_ENABLED),
     a2aHttpPort: intFromEnv(3334).parse(env.A2A_HTTP_PORT),
     a2aTrustMode: z.enum(TRUST_MODES).parse(env.A2A_TRUST_MODE?.trim() || 'verified-only'),

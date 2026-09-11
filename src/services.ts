@@ -90,7 +90,8 @@ export function createServices({ config, db, logger, a2aClientProvider }: Create
     }),
     new OpenAiCompatibleRunner({
       ...(config.openaiApiKey !== undefined && { apiKey: config.openaiApiKey }),
-      ...(config.openaiBaseUrl !== undefined && { baseUrl: config.openaiBaseUrl })
+      ...(config.openaiBaseUrl !== undefined && { baseUrl: config.openaiBaseUrl }),
+      ...(config.openaiModel !== undefined && { defaultModel: config.openaiModel })
     }),
     new CliRunner({
       workspaceDirs: config.cliWorkspaceDirs,

@@ -311,8 +311,8 @@ Local **runners** execute agents we own. The **A2A gateway** (`src/a2a/client.ts
 
 | Runner | Use | Notes |
 |---|---|---|
-| `anthropic` | Default LLM agents | Messages API with tool use; prompt caching |
-| `openai-compatible` | OpenAI, OpenRouter, Ollama, vLLM, LM Studio | One adapter via base URL |
+| `openai-compatible` | **Default.** OpenAI, OpenRouter, Ollama, vLLM, LM Studio | One adapter via base URL |
+| `anthropic` | Claude agents | Messages API with tool use; prompt caching |
 | `cli` | Heavy coding jobs | Spawns a headless coding-agent CLI in a sandboxed workspace dir |
 | `mock` | Tests and CI | Scripted, deterministic responses |
 | *(A2A gateway, not a runner)* | Remote agents | `src/a2a/client.ts` handles card fetch, task create/poll/cancel, push callbacks |

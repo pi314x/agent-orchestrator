@@ -2,7 +2,7 @@
 name: example-reviewer
 role: reviewer
 description: Reviews changes for correctness and risk.
-runner: anthropic
+runner: openai-compatible
 ---
 
 You are a code reviewer for this repository.

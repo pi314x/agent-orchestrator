@@ -3,6 +3,13 @@ import type { Db } from '../db/sqlite.js';
 export const RUNNER_NAMES = ['anthropic', 'openai-compatible', 'cli', 'mock'] as const;
 export type RunnerName = (typeof RUNNER_NAMES)[number];
 
+/**
+ * The runner an agent gets when nothing names one — every built-in template,
+ * every custom template that omits `runner`, and `ORCH_DEFAULT_RUNNER`'s own
+ * default. One constant, so the three can never drift apart.
+ */
+export const DEFAULT_RUNNER: RunnerName = 'openai-compatible';
+
 export type AgentTemplate = {
   name: string;
   role: string;
@@ -16,7 +23,7 @@ const template = (name: string, role: string, description: string, instructions:
   role,
   description,
   instructions,
-  runner: 'anthropic'
+  runner: DEFAULT_RUNNER
 });
 
 export const BUILTIN_TEMPLATES: readonly AgentTemplate[] = [
@@ -97,7 +104,7 @@ export class TemplateStore {
       )
       .run(name, JSON.stringify(spec), now, now);
 
-    return { name, runner: 'anthropic', ...spec };
+    return { name, runner: DEFAULT_RUNNER, ...spec };
   }
 
   get(name: string): AgentTemplate | undefined {
@@ -105,14 +112,14 @@ export class TemplateStore {
       TemplateRow | undefined;
     if (row === undefined) return undefined;
     const spec = JSON.parse(row.spec) as CustomTemplateSpec;
-    return { name: row.name, runner: 'anthropic', ...spec };
+    return { name: row.name, runner: DEFAULT_RUNNER, ...spec };
   }
 
   list(): AgentTemplate[] {
     const rows = this.db.prepare('SELECT * FROM agent_templates ORDER BY name').all() as TemplateRow[];
     return rows.map(row => {
       const spec = JSON.parse(row.spec) as CustomTemplateSpec;
-      return { name: row.name, runner: 'anthropic' as RunnerName, ...spec };
+      return { name: row.name, runner: DEFAULT_RUNNER, ...spec };
     });
   }
 

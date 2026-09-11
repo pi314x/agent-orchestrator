@@ -1,5 +1,7 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../../src/config.js';
+import { BUILTIN_TEMPLATES, DEFAULT_RUNNER } from '../../src/core/templates.js';
 
 describe('loadConfig', () => {
   it('applies documented defaults', () => {
@@ -13,6 +15,32 @@ describe('loadConfig', () => {
     expect(config.maxConcurrency).toBe(4);
     expect(config.a2aEnabled).toBe(false);
     expect(config.dbUrl).toBe('/data/orchestrator.sqlite');
+    expect(config.defaultRunner).toBe('openai-compatible');
+  });
+
+  // The same choice is written down in three places — the config default, the
+  // built-in templates and `.env.example`. Only the first two share a constant,
+  // so the documented one is easy to leave behind.
+  it('keeps the default runner, the templates and .env.example in agreement', () => {
+    const config = loadConfig({ ORCH_DATA_DIR: '/data' });
+
+    expect(config.defaultRunner).toBe(DEFAULT_RUNNER);
+    expect([...new Set(BUILTIN_TEMPLATES.map(t => t.runner))]).toEqual([DEFAULT_RUNNER]);
+
+    const example = readFileSync(new URL('../../.env.example', import.meta.url), 'utf8');
+    expect(example).toMatch(new RegExp(`^ORCH_DEFAULT_RUNNER=${DEFAULT_RUNNER}\\b`, 'm'));
+  });
+
+  it('still honours an explicit runner choice', () => {
+    expect(loadConfig({ ORCH_DATA_DIR: '/data', ORCH_DEFAULT_RUNNER: 'anthropic' }).defaultRunner).toBe(
+      'anthropic'
+    );
+  });
+
+  it('reads the model for the default runner from the environment', () => {
+    const config = loadConfig({ ORCH_DATA_DIR: '/data', OPENAI_MODEL: 'gpt-4.1-mini' });
+
+    expect(config.openaiModel).toBe('gpt-4.1-mini');
   });
 
   it('reads the transport and port used for Streamable HTTP', () => {
