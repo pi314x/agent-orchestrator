@@ -394,3 +394,39 @@ describe('a job whose dependency failed', () => {
     await closeServices(services);
   });
 });
+
+describe('runner readiness', () => {
+  // Regression: the scheduler ran whatever runner was named without asking
+  // whether it could work, so a fresh deployment's first delegate made an
+  // unauthenticated call to a vendor and surfaced the network's answer
+  // instead of "OPENAI_API_KEY is not set".
+  it('fails a job with the runner own reason instead of calling out unconfigured', async () => {
+    const services = testServices({ config: { defaultRunner: 'openai-compatible' } });
+    const agent = services.agents.create({ name: 'w', instructions: 'x', runner: 'openai-compatible' });
+
+    const job = services.scheduler.submit({
+      backend: 'local',
+      agentId: agent.id,
+      agentSnapshot: toSnapshot(agent),
+      instruction: 'say hi'
+    });
+
+    await services.scheduler.drain();
+
+    const done = services.jobs.getOrThrow(job.id);
+    expect(done.state).toBe('failed');
+    expect(done.error?.message).toContain('OPENAI_API_KEY');
+    expect(done.error?.hint).toContain('runner_list');
+    await closeServices(services);
+  });
+
+  it('still runs a job whose runner is ready', async () => {
+    const services = testServices();
+    const job = submit(services, makeAgent(services));
+
+    await services.scheduler.drain();
+
+    expect(services.jobs.getOrThrow(job.id).state).toBe('succeeded');
+    await closeServices(services);
+  });
+});

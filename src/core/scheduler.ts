@@ -275,11 +275,26 @@ export class JobScheduler {
       this.deps.budgets.assertWithinBudget('job', job.id);
 
       const runnerName = job.agentSnapshot.runner ?? this.deps.defaultRunner;
+      const runner = job.backend === 'a2a_remote' ? undefined : this.deps.runners.get(runnerName);
+
+      // Ask the runner whether it can work before handing it a job. It already
+      // knows why not — "OPENAI_API_KEY is not set" — and that is far more
+      // use than whatever a credential-less call to a vendor returns.
+      if (runner !== undefined) {
+        const health = runner.health();
+        if (!health.available) {
+          throw new OrchestratorError(
+            'RUNNER_FAILED',
+            `The ${runnerName} runner is not configured: ${health.reason ?? 'unavailable'}`,
+            'Call runner_list to see what each runner needs, or submit against a runner that is ready.'
+          );
+        }
+      }
 
       // One path, two backends: the gateway and a local runner expose the same
       // `run` shape, so nothing below here knows which one it is talking to.
       const executor: RemoteExecutor | undefined =
-        job.backend === 'a2a_remote' ? this.deps.a2aGateway : this.deps.runners.get(runnerName);
+        job.backend === 'a2a_remote' ? this.deps.a2aGateway : runner;
 
       if (executor === undefined) {
         throw new OrchestratorError(
