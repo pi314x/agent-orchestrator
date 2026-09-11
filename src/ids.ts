@@ -1,4 +1,8 @@
-import { ulid } from 'ulid';
+import { monotonicFactory } from 'ulid';
+
+// Plain ulid() can emit out-of-order ids within a single millisecond, which
+// would break the id-as-cursor pagination in JobStore and AgentRegistry.
+const ulid = monotonicFactory();
 
 export const ID_PREFIXES = {
   agent: 'agt_',

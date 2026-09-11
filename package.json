@@ -22,6 +22,7 @@
     "inspect": "ORCH_TRANSPORT=http tsx src/index.ts & npx @modelcontextprotocol/inspector"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.125.0",
     "@modelcontextprotocol/core": "^2.0.0",
     "@modelcontextprotocol/node": "^2.0.0",
     "@modelcontextprotocol/server": "^2.0.0",

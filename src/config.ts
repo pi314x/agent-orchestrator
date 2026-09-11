@@ -1,6 +1,7 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { RUNNER_NAMES } from './core/templates.js';
 
 export const TOOL_PROFILES = ['core', 'standard', 'full'] as const;
 export const ToolProfileSchema = z.enum(TOOL_PROFILES);
@@ -30,6 +31,9 @@ const ConfigSchema = z.object({
   maxDepth: z.number().int().min(0),
   maxConcurrency: z.number().int().min(1),
   logLevel: LogLevelSchema,
+  defaultRunner: z.enum(RUNNER_NAMES),
+  anthropicApiKey: z.string().optional(),
+  anthropicModel: z.string().optional(),
   a2aEnabled: z.boolean()
 });
 
@@ -59,6 +63,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     maxDepth: intFromEnv(2).parse(env.ORCH_MAX_DEPTH),
     maxConcurrency: intFromEnv(4).parse(env.ORCH_MAX_CONCURRENCY),
     logLevel: LogLevelSchema.parse(env.ORCH_LOG_LEVEL?.trim() || 'info'),
+    defaultRunner: z.enum(RUNNER_NAMES).parse(env.ORCH_DEFAULT_RUNNER?.trim() || 'anthropic'),
+    ...(env.ANTHROPIC_API_KEY?.trim() && { anthropicApiKey: env.ANTHROPIC_API_KEY.trim() }),
+    ...(env.ANTHROPIC_MODEL?.trim() && { anthropicModel: env.ANTHROPIC_MODEL.trim() }),
     a2aEnabled: boolish(false).parse(env.A2A_ENABLED)
   };
 

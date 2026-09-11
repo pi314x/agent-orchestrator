@@ -22,4 +22,11 @@ describe('ids', () => {
   it('rejects a bare prefix', () => {
     expect(isId('job', 'job_')).toBe(false);
   });
+
+  // Ids double as pagination cursors, so same-millisecond ids must still sort.
+  it('mints strictly increasing ids within one millisecond', () => {
+    const ids = Array.from({ length: 200 }, () => newId('job'));
+
+    expect(ids).toEqual([...ids].sort());
+  });
 });

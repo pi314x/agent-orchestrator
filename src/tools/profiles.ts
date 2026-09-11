@@ -1,14 +1,35 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import type { ToolProfile } from '../config.js';
-import { orchestratorStatusTool } from './admin.js';
+import { orchestratorStatusTool, runnerListTool } from './admin.js';
+import { agentCreateTool, agentGetTool, agentListTool, agentTemplateListTool } from './agents.js';
+import { delegateTool } from './delegation.js';
+import { jobCancelTool, jobGetTool, jobListTool, jobRetryTool, jobSubmitTool, jobWaitTool } from './jobs.js';
 import type { ToolDeps, ToolRegistration } from './types.js';
 
 /**
- * The single ordered source of truth for the tool catalog. `tools/list` order
- * follows this array, so additions go in a deliberate position rather than
- * wherever a module import happens to land.
+ * The single ordered source of truth for the tool catalog, following the
+ * PLAN.md §5 section order. `tools/list` order follows this array, so additions
+ * go in a deliberate position rather than wherever an import happens to land.
  */
-export const TOOL_REGISTRY: readonly ToolRegistration[] = [orchestratorStatusTool] as const;
+export const TOOL_REGISTRY: readonly ToolRegistration[] = [
+  // §5.1 Agents
+  agentCreateTool,
+  agentListTool,
+  agentGetTool,
+  agentTemplateListTool,
+  // §5.2 Jobs
+  jobSubmitTool,
+  jobGetTool,
+  jobListTool,
+  jobWaitTool,
+  jobCancelTool,
+  jobRetryTool,
+  // §5.3 Delegation shortcuts
+  delegateTool,
+  // §5.12 Admin
+  orchestratorStatusTool,
+  runnerListTool
+] as const;
 
 const PROFILE_RANK: Record<ToolProfile, number> = { core: 0, standard: 1, full: 2 };
 
@@ -18,7 +39,7 @@ export function toolsForProfile(profile: ToolProfile): readonly ToolRegistration
 }
 
 export function registerTools(server: McpServer, deps: ToolDeps): readonly string[] {
-  const tools = toolsForProfile(deps.config.toolProfile);
+  const tools = toolsForProfile(deps.services.config.toolProfile);
   for (const tool of tools) tool.register(server, deps);
   return tools.map(tool => tool.name);
 }

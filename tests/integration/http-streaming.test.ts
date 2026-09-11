@@ -3,21 +3,22 @@ import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/cli
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startHttpServer, type HttpServerHandle } from '../../src/http.js';
 import { createServerFactory } from '../../src/server.js';
+import { LATEST_SCHEMA_VERSION } from '../../src/db/migrations.js';
 import type { Db } from '../../src/db/sqlite.js';
-import { testDeps } from '../helpers.js';
+import { testServices } from '../helpers.js';
 
 let server: HttpServerHandle;
 let client: Client;
 let db: Db;
 
 beforeAll(async () => {
-  const deps = testDeps('standard');
-  db = deps.db;
+  const services = testServices({ profile: 'standard' });
+  db = services.db;
 
   server = await startHttpServer({
-    factory: createServerFactory(deps),
+    factory: createServerFactory({ services, startedAt: Date.now() }),
     config: { httpHost: '127.0.0.1', httpPort: 0 },
-    logger: deps.logger
+    logger: services.logger
   });
 
   client = new Client({ name: 'integration-test', version: '0.0.0' });
@@ -57,7 +58,7 @@ describe('MCP over Streamable HTTP', () => {
       status: 'ok',
       toolProfile: 'standard',
       transport: 'http',
-      database: { schemaVersion: 1, migrationsPending: false },
+      database: { schemaVersion: LATEST_SCHEMA_VERSION, migrationsPending: false },
       a2a: { enabled: false }
     });
   });

@@ -9,6 +9,7 @@ export interface StatusInputs {
   maxConcurrency: number;
   maxDepth: number;
   uptimeSec: number;
+  jobs: { queued: number; running: number; blocked: number };
 }
 
 // A type alias, not an interface: object-literal types carry an implicit index
@@ -24,6 +25,11 @@ export type OrchestratorStatus = {
     schemaVersion: number;
     latestSchemaVersion: number;
     migrationsPending: boolean;
+  };
+  jobs: {
+    queued: number;
+    running: number;
+    blocked: number;
   };
   limits: {
     maxConcurrency: number;
@@ -49,6 +55,7 @@ export function buildStatus(inputs: StatusInputs): OrchestratorStatus {
       latestSchemaVersion: inputs.latestSchemaVersion,
       migrationsPending
     },
+    jobs: inputs.jobs,
     limits: {
       maxConcurrency: inputs.maxConcurrency,
       maxDepth: inputs.maxDepth

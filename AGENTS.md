@@ -34,7 +34,8 @@ Before finishing any task run: `pnpm typecheck && pnpm lint && pnpm test`.
 
 ## Layout
 
-- `src/core/` — business logic. **Must not import the MCP SDK or the A2A SDK.** Fully unit-testable, backend-agnostic.
+- `src/core/` — business logic. **Must not import the MCP SDK or the A2A SDK.** Fully unit-testable, backend-agnostic. Enforced by ESLint, not just convention.
+- `src/services.ts` — builds the long-lived handles (DB, registry, job store, runners, scheduler) once per process. The MCP server factory closes over this; nothing per-request goes in it.
 - `src/tools/` — thin MCP adapters, one file per tool group. Validate → call core → shape output. No business logic here.
 - `src/a2a/` — the A2A gateway. **Must not import the MCP SDK.** `client.ts` calls remote agents; `server.ts` publishes our Agent Card and serves tasks; `card.ts` and `trust.ts` handle fetch/verify/cache.
 - `src/schemas/` — Zod schemas shared by tools and core.
@@ -55,6 +56,10 @@ Verified against the installed SDK — check here before guessing at an API.
 - **pino.** Import `destination` as a named export (`import { destination, pino } from 'pino'`); it is not typed on the named `pino` export.
 - **better-sqlite3** is a native module; it only builds because `pnpm.onlyBuiltDependencies` in `package.json` allows its install script. After a fresh clone run `pnpm rebuild better-sqlite3` if the binding is missing.
 - **Testing the Host guard.** Node's `fetch` silently drops a forbidden `host` header — drive `node:http` directly when asserting on host validation.
+- **IDs must be monotonic.** `src/ids.ts` uses ulid's `monotonicFactory`, not bare `ulid()`. Ids double as pagination cursors (`WHERE id < ?`), and plain `ulid()` can emit out-of-order ids inside one millisecond, which silently corrupts a page boundary.
+- **Await `scheduler.shutdown()` before closing the DB.** An aborted run still writes its outcome on the way out; closing the connection first turns that into an unhandled `The database connection is not open`. Tests use the `closeServices` helper for the same reason.
+- **Structured output is enforced by the model, not by us.** A job's `outputSchema` is a JSON Schema handed to the anthropic runner via `jsonSchemaOutputFormat`, so constrained decoding guarantees the shape. There is no local JSON-Schema validator in the dependency tree — do not add a second validation pass without a reason.
+- **Scheduling is notification-driven, never polled.** `job_wait` and `drain` resolve off scheduler state-change events; the only timers are the per-job timeout and the wait deadline. Tests gate the mock runner on a promise (`deferred()`) so completion is controlled without any sleep.
 
 ## Hard rules — protocol (MCP)
 

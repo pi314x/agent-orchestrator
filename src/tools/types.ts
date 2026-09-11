@@ -1,14 +1,11 @@
 import type { McpServer } from '@modelcontextprotocol/server';
-import type { Config, ToolProfile } from '../config.js';
-import type { Db } from '../db/sqlite.js';
-import type { Logger } from '../logger.js';
+import type { ToolProfile } from '../config.js';
+import type { Services } from '../services.js';
 
 export interface ToolDeps {
-  config: Config;
-  db: Db;
-  logger: Logger;
+  services: Services;
   version: string;
-  /** Process start, as `performance.now()`-independent epoch ms. */
+  /** Process start as epoch ms. */
   startedAt: number;
   /** Protocol era this serving unit was constructed for. */
   era: 'legacy' | 'modern';

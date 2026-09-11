@@ -11,7 +11,8 @@ const inputs: StatusInputs = {
   a2aEnabled: false,
   maxConcurrency: 4,
   maxDepth: 2,
-  uptimeSec: 12.4
+  uptimeSec: 12.4,
+  jobs: { queued: 0, running: 0, blocked: 0 }
 };
 
 describe('buildStatus', () => {
