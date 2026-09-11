@@ -319,10 +319,13 @@ export const a2aServerInfoTool: ToolRegistration = {
       {
         title: 'Show our published Agent Card',
         description:
-          'Show the Agent Card this orchestrator publishes and which local agents are exposed through it. Nothing appears here until agent_publish opts it in explicitly.',
+          'Show the Agent Card this orchestrator would publish and which local agents are exposed through it. Nothing appears here until agent_publish opts it in explicitly. Note that no inbound A2A listener is running yet: the card is composed on request, not served, so a remote agent cannot reach these skills.',
         inputSchema: z.object({}),
         outputSchema: z.object({
           enabled: z.boolean(),
+          serving: z
+            .boolean()
+            .describe('Whether an inbound A2A listener is actually running. Currently always false.'),
           publicUrl: z.string().optional(),
           card: z.record(z.string(), z.unknown()),
           exposedSkills: z.array(z.object({ skillId: z.string(), description: z.string() }))
@@ -352,13 +355,18 @@ export const a2aServerInfoTool: ToolRegistration = {
         return toolOk(
           {
             enabled: config.a2aEnabled,
+            // The inbound half of A2A is built but never started: nothing calls
+            // createA2AServer, so a2aHttpPort only composes this URL. Saying
+            // "server enabled" here told operators they were reachable when a
+            // remote agent would get connection refused.
+            serving: false,
             ...(config.a2aAgentCardUrl !== undefined && { publicUrl: config.a2aAgentCardUrl }),
             card: card as unknown as Record<string, unknown>,
             exposedSkills: exposed.map(s => ({ skillId: s.skillId, description: s.description }))
           },
           config.a2aEnabled
-            ? `A2A server enabled; ${exposed.length} skill(s) published.`
-            : 'A2A server is disabled (set A2A_ENABLED=true).'
+            ? `${exposed.length} skill(s) opted in, but no inbound A2A listener is running — this card is composed on request, not served. Outbound calls to other agents work normally.`
+            : 'A2A is disabled (set A2A_ENABLED=true). Outbound interop tools are hidden entirely.'
         );
       }
     );

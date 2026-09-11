@@ -114,8 +114,13 @@ anything under `src/`.
 - **The live path is tested against a protocol-level fake, not a real vendor.**
   `tests/live/` exists and is written, but has never been executed — it needs a key.
   Run `pnpm test:live` once before trusting this with real work.
-- **A2A has never been pointed at a third-party agent.** The gateway is covered by
-  unit tests with a stubbed client only.
+- **A2A is outbound only.** Calling other people's agents works and is unit-tested
+  against a stubbed client, but has never met a real third-party agent. The *inbound*
+  half — serving our own Agent Card so others can call us — is written
+  (`src/a2a/server.ts`) and never started: nothing calls `createA2AServer`, so
+  `A2A_HTTP_PORT` only composes a URL. `agent_publish` records the opt-in and
+  `a2a_server_info` reports `serving: false`. Wiring up the listener is unfinished
+  work, not a configuration step.
 - **SQLite only.** The Postgres adapter in PLAN.md §13 is not built; every store
   uses better-sqlite3's synchronous API, so adding one is an async refactor rather
   than a drop-in.
