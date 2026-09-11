@@ -2,10 +2,25 @@ node_modules/
 dist/
 coverage/
 *.log
+*.tsbuildinfo
+
 .env
 .env.*
 !.env.example
+
+# SQLite, in both spellings ORCH_DB_URL is commonly pointed at, plus the
+# WAL sidecars — the database is opened in WAL mode.
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+*.db
+*.db-shm
+*.db-wal
+
+# The default ORCH_DATA_DIR lives in $HOME, but it lands here if anyone points
+# it at the checkout.
+.agent-orchestrator/
+
 .DS_Store
+Thumbs.db
+.idea/
