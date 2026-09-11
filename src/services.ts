@@ -10,6 +10,7 @@ import { EventLog } from './core/events.js';
 import { JobStore } from './core/jobs.js';
 import { MemoryStore } from './core/memory.js';
 import { AgentRegistry } from './core/registry.js';
+import { TemplateStore } from './core/templates.js';
 import { JobScheduler } from './core/scheduler.js';
 import { WorkflowEngine } from './core/workflow-engine.js';
 import type { Db } from './db/sqlite.js';
@@ -33,6 +34,7 @@ export interface Services {
   bus: MessageBus;
   budgets: BudgetTracker;
   approvals: ApprovalStore;
+  templates: TemplateStore;
   cards: CardStore;
   publishedSkills: PublishedSkillStore;
   a2aGateway: A2AGateway;
@@ -63,6 +65,9 @@ export function createServices({ config, db, logger, a2aClientProvider }: Create
   const bus = new MessageBus(db);
   const budgets = new BudgetTracker(db);
   const approvals = new ApprovalStore(db);
+  const templates = new TemplateStore(db);
+  // Saved templates shadow built-ins wherever a template name is resolved.
+  agents.resolveTemplate = name => templates.resolve(name);
   const cards = new CardStore(db);
   const publishedSkills = new PublishedSkillStore(db);
 
@@ -134,6 +139,7 @@ export function createServices({ config, db, logger, a2aClientProvider }: Create
     bus,
     budgets,
     approvals,
+    templates,
     cards,
     publishedSkills,
     a2aGateway,

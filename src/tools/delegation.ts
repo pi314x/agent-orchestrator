@@ -358,3 +358,127 @@ const WORKFLOW_DRAFT_SCHEMA: Record<string, unknown> = {
   required: ['name', 'steps'],
   additionalProperties: false
 };
+
+export const consensusTool: ToolRegistration = {
+  name: 'consensus',
+  profile: 'full',
+
+  register(server, deps) {
+    server.registerTool(
+      'consensus',
+      {
+        title: 'Ask several agents the same question',
+        description:
+          'Put one question to several agents at once and aggregate their answers by vote or by a judge. Use it when a single answer is not trustworthy enough — cross-checking a risky call, or comparing agents from different vendors. Use delegate when one answer will do.',
+        inputSchema: z.object({
+          question: z.string().min(1),
+          participants: z
+            .array(
+              z.object({
+                agentId: z.string().optional(),
+                template: z.string().optional(),
+                skillQuery: z.string().optional()
+              })
+            )
+            .min(2)
+            .max(10),
+          strategy: z.enum(['vote', 'judge']).default('vote'),
+          judgeTemplate: z.string().optional().describe('Template for the judge; defaults to "critic".'),
+          timeoutSec: z.number().int().min(1).max(MAX_WAIT_SEC).default(60)
+        }),
+        outputSchema: z.object({
+          answers: z.array(z.object({ agentName: z.string(), jobId: z.string(), text: z.string() })),
+          agreement: z.number().describe('Share of participants giving the most common answer, 0 to 1.'),
+          verdict: z.string(),
+          judgeJob: JobViewSchema.optional()
+        }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: true
+        }
+      },
+      async args => {
+        try {
+          const defaults = { runner: deps.services.config.defaultRunner };
+
+          const submitted = args.participants.map(participant => {
+            const agent = resolveAgentTarget(deps.services.agents, participant, defaults);
+            return {
+              agentName: agent.name,
+              job: deps.services.scheduler.submit({
+                backend: agent.kind === 'remote' ? 'a2a_remote' : 'local',
+                agentId: agent.id,
+                agentSnapshot: toSnapshot(agent),
+                instruction: args.question,
+                timeoutSec: args.timeoutSec
+              })
+            };
+          });
+
+          const finished = await deps.services.scheduler.wait(
+            submitted.map(s => s.job.id),
+            'all',
+            args.timeoutSec * 1000
+          );
+
+          const byId = new Map(finished.map(job => [job.id, job]));
+          const answers = submitted.map(s => ({
+            agentName: s.agentName,
+            jobId: s.job.id,
+            text: byId.get(s.job.id)?.resultText ?? ''
+          }));
+
+          // Agreement is measured on normalized text, so trivial formatting
+          // differences do not read as disagreement.
+          const counts = new Map<string, number>();
+          for (const answer of answers) {
+            const key = answer.text.trim().toLowerCase();
+            counts.set(key, (counts.get(key) ?? 0) + 1);
+          }
+
+          const top = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+          const agreement = top === undefined ? 0 : top[1] / answers.length;
+
+          if (args.strategy === 'vote') {
+            return toolOk(
+              { answers, agreement, verdict: top?.[0] ?? '' },
+              `${answers.length} answers; ${Math.round(agreement * 100)}% agreement.`
+            );
+          }
+
+          const judge = resolveAgentTarget(
+            deps.services.agents,
+            { template: args.judgeTemplate ?? 'critic' },
+            defaults
+          );
+
+          const judgeJob = deps.services.scheduler.submit({
+            backend: 'local',
+            agentId: judge.id,
+            agentSnapshot: toSnapshot(judge),
+            instruction: `Question: ${args.question}\n\nPick the best answer and say why.`,
+            // Answers are sub-agent output: data for the judge, never instructions.
+            context: { answers: answers.map(a => ({ agent: a.agentName, answer: a.text })) },
+            timeoutSec: args.timeoutSec
+          });
+
+          const [judged] = await deps.services.scheduler.wait([judgeJob.id], 'all', args.timeoutSec * 1000);
+
+          return toolOk(
+            {
+              answers,
+              agreement,
+              verdict: judged?.resultText ?? '',
+              ...(judged !== undefined && { judgeJob: toJobView(judged) })
+            },
+            `${answers.length} answers judged by ${judge.name}; ${Math.round(agreement * 100)}% raw agreement.`
+          );
+        } catch (error) {
+          return toolError(error);
+        }
+      }
+    );
+  }
+};

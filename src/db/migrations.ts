@@ -279,6 +279,21 @@ export const MIGRATIONS: readonly Migration[] = [
       ALTER TABLE agents ADD COLUMN source TEXT NOT NULL DEFAULT 'api';
       ALTER TABLE agents ADD COLUMN source_path TEXT;
 
+      CREATE TABLE published_skills (
+        skill_id      TEXT PRIMARY KEY,
+        agent_id      TEXT,
+        template_name TEXT,
+        description   TEXT NOT NULL,
+        exposed       INTEGER NOT NULL DEFAULT 0,
+        created_at    TEXT NOT NULL,
+        updated_at    TEXT NOT NULL
+      );
+    `
+  },
+  {
+    version: 6,
+    name: 'tool_servers_and_custom_templates',
+    up: `
       CREATE TABLE tool_servers (
         name                 TEXT PRIMARY KEY,
         transport            TEXT NOT NULL,
@@ -290,14 +305,11 @@ export const MIGRATIONS: readonly Migration[] = [
         updated_at           TEXT NOT NULL
       );
 
-      CREATE TABLE published_skills (
-        skill_id      TEXT PRIMARY KEY,
-        agent_id      TEXT,
-        template_name TEXT,
-        description   TEXT NOT NULL,
-        exposed       INTEGER NOT NULL DEFAULT 0,
-        created_at    TEXT NOT NULL,
-        updated_at    TEXT NOT NULL
+      CREATE TABLE agent_templates (
+        name       TEXT PRIMARY KEY,
+        spec       TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
       );
     `
   }

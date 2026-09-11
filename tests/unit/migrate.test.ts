@@ -55,3 +55,50 @@ describe('migrate', () => {
     db.close();
   });
 });
+
+describe('migration integrity', () => {
+  it('never edits a shipped migration: every version is unique and ordered', () => {
+    const versions = MIGRATIONS.map(m => m.version);
+
+    expect(versions).toEqual([...versions].sort((a, b) => a - b));
+    expect(new Set(versions).size).toBe(versions.length);
+  });
+
+  // Regression: tool_servers and agent_templates were once appended to an
+  // already-shipped migration 5, so a database created at v5 never got them.
+  it('upgrades a database that stopped at an older version', () => {
+    const db = openDatabase({ url: ':memory:' });
+
+    const upTo5 = MIGRATIONS.filter(m => m.version <= 5);
+    migrate(db, upTo5);
+    expect(getSchemaVersion(db)).toBe(5);
+
+    migrate(db);
+
+    const tables = (
+      db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as { name: string }[]
+    ).map(row => row.name);
+
+    expect(tables).toContain('tool_servers');
+    expect(tables).toContain('agent_templates');
+    expect(getSchemaVersion(db)).toBe(LATEST_SCHEMA_VERSION);
+    db.close();
+  });
+
+  it('reaches the same schema whether applied at once or in stages', () => {
+    const fresh = openDatabase({ url: ':memory:' });
+    migrate(fresh);
+
+    const staged = openDatabase({ url: ':memory:' });
+    for (const migration of MIGRATIONS) migrate(staged, [migration]);
+
+    const tablesOf = (db: ReturnType<typeof openDatabase>) =>
+      (db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as { name: string }[])
+        .map(row => row.name)
+        .sort();
+
+    expect(tablesOf(staged)).toEqual(tablesOf(fresh));
+    fresh.close();
+    staged.close();
+  });
+});

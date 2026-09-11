@@ -121,3 +121,203 @@ export const budgetSetTool: ToolRegistration = {
     );
   }
 };
+
+export const traceGetTool: ToolRegistration = {
+  name: 'trace_get',
+  profile: 'standard',
+
+  register(server, deps) {
+    server.registerTool(
+      'trace_get',
+      {
+        title: 'Get a trace',
+        description:
+          'Build a span tree for a job or workflow run from the event log, with timings and usage where the backend reported them. Use it to see where a run spent its time, or why it stalled; use events_query for the raw entries.',
+        inputSchema: z.object({
+          jobId: z.string().optional(),
+          runId: z.string().optional()
+        }),
+        outputSchema: z.object({
+          spans: z.array(
+            z.object({
+              jobId: z.string(),
+              agentName: z.string(),
+              state: z.string(),
+              depth: z.number(),
+              parentJobId: z.string().optional(),
+              startedAt: z.string().optional(),
+              finishedAt: z.string().optional(),
+              durationMs: z.number().optional(),
+              inputTokens: z.number().optional(),
+              outputTokens: z.number().optional(),
+              costUsd: z.number().optional()
+            })
+          ),
+          totalDurationMs: z.number(),
+          totalCostUsd: z.number()
+        }),
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false
+        }
+      },
+      args => {
+        try {
+          if (args.jobId === undefined && args.runId === undefined) {
+            return toolError(new Error('Provide either jobId or runId.'));
+          }
+
+          // A job span plus every job it spawned, so the tree mirrors delegation.
+          const roots =
+            args.jobId !== undefined
+              ? [deps.services.jobs.getOrThrow(args.jobId)]
+              : deps.services.workflows
+                  .getRun(args.runId as string)
+                  .steps.flatMap(step =>
+                    step.jobId === undefined ? [] : [deps.services.jobs.getOrThrow(step.jobId)]
+                  );
+
+          const collected = [...roots];
+          for (let index = 0; index < collected.length; index += 1) {
+            const parent = collected[index];
+            if (parent === undefined) continue;
+            collected.push(...deps.services.jobs.list({ parentJobId: parent.id, limit: 100 }).jobs);
+          }
+
+          const spans = collected.map(job => ({
+            jobId: job.id,
+            agentName: job.agentSnapshot.name,
+            state: job.state,
+            depth: job.depth,
+            ...(job.parentJobId !== undefined && { parentJobId: job.parentJobId }),
+            ...(job.startedAt !== undefined && { startedAt: job.startedAt }),
+            ...(job.finishedAt !== undefined && { finishedAt: job.finishedAt }),
+            ...(job.usage?.durationMs !== undefined && { durationMs: job.usage.durationMs }),
+            ...(job.usage?.inputTokens !== undefined && { inputTokens: job.usage.inputTokens }),
+            ...(job.usage?.outputTokens !== undefined && { outputTokens: job.usage.outputTokens }),
+            ...(job.usage?.costUsd !== undefined && { costUsd: job.usage.costUsd })
+          }));
+
+          const totalDurationMs = spans.reduce((sum, span) => sum + (span.durationMs ?? 0), 0);
+          const totalCostUsd = spans.reduce((sum, span) => sum + (span.costUsd ?? 0), 0);
+
+          return toolOk(
+            { spans, totalDurationMs, totalCostUsd },
+            `${spans.length} span(s), ${totalDurationMs}ms, $${totalCostUsd.toFixed(4)}.`
+          );
+        } catch (error) {
+          return toolError(error);
+        }
+      }
+    );
+  }
+};
+
+export const usageReportTool: ToolRegistration = {
+  name: 'usage_report',
+  profile: 'standard',
+
+  register(server, deps) {
+    server.registerTool(
+      'usage_report',
+      {
+        title: 'Report usage',
+        description:
+          'Summarize job counts, tokens and cost grouped by agent, model or backend. Remote agents show call counts and only whatever cost they self-report, since we cannot see their token usage. Use trace_get for one run in detail.',
+        inputSchema: z.object({
+          groupBy: z.enum(['agent', 'model', 'backend']).default('agent'),
+          since: z.string().optional().describe('ISO timestamp; defaults to all time.'),
+          limit: z.number().int().min(1).max(1000).default(500)
+        }),
+        outputSchema: z.object({
+          groups: z.array(
+            z.object({
+              key: z.string(),
+              jobs: z.number(),
+              succeeded: z.number(),
+              failed: z.number(),
+              inputTokens: z.number(),
+              outputTokens: z.number(),
+              costUsd: z.number(),
+              durationMs: z.number()
+            })
+          ),
+          totals: z.object({ jobs: z.number(), costUsd: z.number(), tokens: z.number() })
+        }),
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false
+        }
+      },
+      args => {
+        try {
+          const { jobs } = deps.services.jobs.list({ limit: args.limit });
+          const since = args.since;
+          const scoped = since === undefined ? jobs : jobs.filter(job => job.createdAt >= since);
+
+          const groups = new Map<
+            string,
+            {
+              key: string;
+              jobs: number;
+              succeeded: number;
+              failed: number;
+              inputTokens: number;
+              outputTokens: number;
+              costUsd: number;
+              durationMs: number;
+            }
+          >();
+
+          for (const job of scoped) {
+            const key =
+              args.groupBy === 'agent'
+                ? job.agentSnapshot.name
+                : args.groupBy === 'model'
+                  ? (job.agentSnapshot.model ?? job.agentSnapshot.runner ?? 'unknown')
+                  : job.backend;
+
+            const group = groups.get(key) ?? {
+              key,
+              jobs: 0,
+              succeeded: 0,
+              failed: 0,
+              inputTokens: 0,
+              outputTokens: 0,
+              costUsd: 0,
+              durationMs: 0
+            };
+
+            group.jobs += 1;
+            if (job.state === 'succeeded') group.succeeded += 1;
+            if (job.state === 'failed' || job.state === 'timed_out') group.failed += 1;
+            group.inputTokens += job.usage?.inputTokens ?? 0;
+            group.outputTokens += job.usage?.outputTokens ?? 0;
+            group.costUsd += job.usage?.costUsd ?? 0;
+            group.durationMs += job.usage?.durationMs ?? 0;
+
+            groups.set(key, group);
+          }
+
+          const list = [...groups.values()].sort((a, b) => b.jobs - a.jobs);
+          const totals = {
+            jobs: scoped.length,
+            costUsd: list.reduce((sum, g) => sum + g.costUsd, 0),
+            tokens: list.reduce((sum, g) => sum + g.inputTokens + g.outputTokens, 0)
+          };
+
+          return toolOk(
+            { groups: list, totals },
+            `${totals.jobs} job(s) across ${list.length} ${args.groupBy}(s); $${totals.costUsd.toFixed(4)}.`
+          );
+        } catch (error) {
+          return toolError(error);
+        }
+      }
+    );
+  }
+};

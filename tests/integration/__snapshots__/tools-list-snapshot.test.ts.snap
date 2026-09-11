@@ -166,11 +166,44 @@ exports[`tools/list contract > matches the full profile snapshot 1`] = `
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Patch a local agent configuration. Only future jobs see the change — jobs already submitted keep the snapshot they were created with, so a run in flight never shifts underneath itself.",
+    "name": "agent_update",
+    "title": "Update an agent",
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Remove a local agent, or unregister a remote one. Refuses while the agent still has live jobs unless force is set, which cancels them first. Job history is kept either way.",
+    "name": "agent_delete",
+    "title": "Delete an agent",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
       "readOnlyHint": true,
     },
     "description": "List the built-in role templates that delegate and job_submit accept. Call this first when you want a one-shot agent and do not already have an agentId. Use agent_create to define a persistent agent of your own instead.",
     "name": "agent_template_list",
     "title": "List agent templates",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Create or overwrite a reusable role template that delegate and workflow steps can name. A saved template shadows a built-in of the same name. Use agent_create when you want one persistent agent rather than a reusable role.",
+    "name": "agent_template_save",
+    "title": "Save an agent template",
   },
   {
     "annotations": {
@@ -242,6 +275,17 @@ exports[`tools/list contract > matches the full profile snapshot 1`] = `
     "annotations": {
       "destructiveHint": false,
       "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Send guidance to a job that is already running; the agent picks it up on its next turn via its message inbox. Only works while the job is live — use job_cancel and a fresh job_submit once it has finished.",
+    "name": "job_steer",
+    "title": "Steer a running job",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
       "openWorldHint": true,
       "readOnlyHint": false,
     },
@@ -259,6 +303,17 @@ exports[`tools/list contract > matches the full profile snapshot 1`] = `
     "description": "Run the same instruction over many items in parallel, optionally reducing the results with a final step. Use it for per-file review, per-record extraction, or any map-style workload; use delegate for a single item. Concurrency is capped by the orchestrator and by any budget you set.",
     "name": "fan_out",
     "title": "Fan out over items",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": false,
+    },
+    "description": "Put one question to several agents at once and aggregate their answers by vote or by a judge. Use it when a single answer is not trustworthy enough — cross-checking a risky call, or comparing agents from different vendors. Use delegate when one answer will do.",
+    "name": "consensus",
+    "title": "Ask several agents the same question",
   },
   {
     "annotations": {
@@ -573,6 +628,28 @@ exports[`tools/list contract > matches the full profile snapshot 1`] = `
       "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "Build a span tree for a job or workflow run from the event log, with timings and usage where the backend reported them. Use it to see where a run spent its time, or why it stalled; use events_query for the raw entries.",
+    "name": "trace_get",
+    "title": "Get a trace",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "Summarize job counts, tokens and cost grouped by agent, model or backend. Remote agents show call counts and only whatever cost they self-report, since we cannot see their token usage. Use trace_get for one run in detail.",
+    "name": "usage_report",
+    "title": "Report usage",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
       "readOnlyHint": false,
     },
     "description": "Set a hard cap on spend for the whole orchestrator, one agent, or one job. Token and cost caps suit local agents; call-count and concurrency caps suit remote ones. Caps are enforced before each run starts, so work already running is never killed mid-flight.",
@@ -715,6 +792,17 @@ exports[`tools/list contract > matches the standard profile snapshot 1`] = `
     "description": "Re-queue a failed, cancelled or timed-out job, clearing the previous attempt result. Succeeded jobs cannot be retried — submit a new job instead. Check the failure with job_get before retrying, since a logic error will simply recur.",
     "name": "job_retry",
     "title": "Retry a job",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Send guidance to a job that is already running; the agent picks it up on its next turn via its message inbox. Only works while the job is live — use job_cancel and a fresh job_submit once it has finished.",
+    "name": "job_steer",
+    "title": "Steer a running job",
   },
   {
     "annotations": {
@@ -913,6 +1001,28 @@ exports[`tools/list contract > matches the standard profile snapshot 1`] = `
     "description": "Read the append-only audit trail across both backends, filtered by job, agent, run or event type. Use it to explain what happened during a run; use job_get for the outcome alone.",
     "name": "events_query",
     "title": "Query the event log",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "Build a span tree for a job or workflow run from the event log, with timings and usage where the backend reported them. Use it to see where a run spent its time, or why it stalled; use events_query for the raw entries.",
+    "name": "trace_get",
+    "title": "Get a trace",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "Summarize job counts, tokens and cost grouped by agent, model or backend. Remote agents show call counts and only whatever cost they self-report, since we cannot see their token usage. Use trace_get for one run in detail.",
+    "name": "usage_report",
+    "title": "Report usage",
   },
   {
     "annotations": {

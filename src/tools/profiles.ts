@@ -12,14 +12,30 @@ import {
   agentRegisterTool
 } from './a2a.js';
 import { orchestratorStatusTool, runnerListTool } from './admin.js';
-import { agentCreateTool, agentGetTool, agentListTool, agentTemplateListTool } from './agents.js';
+import {
+  agentCreateTool,
+  agentDeleteTool,
+  agentGetTool,
+  agentListTool,
+  agentTemplateListTool,
+  agentTemplateSaveTool,
+  agentUpdateTool
+} from './agents.js';
 import { approvalListTool, approvalResolveTool } from './approvals.js';
 import { artifactDeleteTool, artifactGetTool, artifactListTool, artifactPutTool } from './artifacts.js';
-import { delegateTool, fanOutTool, planCreateTool } from './delegation.js';
-import { jobCancelTool, jobGetTool, jobListTool, jobRetryTool, jobSubmitTool, jobWaitTool } from './jobs.js';
+import { consensusTool, delegateTool, fanOutTool, planCreateTool } from './delegation.js';
+import {
+  jobCancelTool,
+  jobGetTool,
+  jobListTool,
+  jobRetryTool,
+  jobSteerTool,
+  jobSubmitTool,
+  jobWaitTool
+} from './jobs.js';
 import { memoryDeleteTool, memoryReadTool, memorySearchTool, memoryWriteTool } from './memory.js';
 import { channelCreateTool, channelListTool, messageListTool, messageSendTool } from './messaging.js';
-import { budgetSetTool, eventsQueryTool } from './observability.js';
+import { budgetSetTool, eventsQueryTool, traceGetTool, usageReportTool } from './observability.js';
 import {
   toolserverListTool,
   toolserverRegisterTool,
@@ -49,7 +65,10 @@ export const TOOL_REGISTRY: readonly ToolRegistration[] = [
   agentRegisterTool,
   agentListTool,
   agentGetTool,
+  agentUpdateTool,
+  agentDeleteTool,
   agentTemplateListTool,
+  agentTemplateSaveTool,
   // §5.2 Jobs
   jobSubmitTool,
   jobGetTool,
@@ -57,9 +76,11 @@ export const TOOL_REGISTRY: readonly ToolRegistration[] = [
   jobWaitTool,
   jobCancelTool,
   jobRetryTool,
+  jobSteerTool,
   // §5.3 Delegation shortcuts
   delegateTool,
   fanOutTool,
+  consensusTool,
   planCreateTool,
   // §5.4 Workflows
   workflowDefineTool,
@@ -104,6 +125,8 @@ export const TOOL_REGISTRY: readonly ToolRegistration[] = [
   toolserverRemoveTool,
   // §5.11 Observability & budgets
   eventsQueryTool,
+  traceGetTool,
+  usageReportTool,
   budgetSetTool,
   // §5.12 Admin
   orchestratorStatusTool,

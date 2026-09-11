@@ -28,6 +28,7 @@ Create these scripts in `package.json` during M0 and keep them working:
 | `pnpm test` | Unit + integration (mock runner, fixture A2A agent only) |
 | `pnpm test:live` | Opt-in live tests against real runners/agents (`RUN_LIVE_TESTS=1`) |
 | `pnpm db:migrate` | Apply migrations |
+| Profile sizes | core 11 · standard 37 · full 59 (A2A on); 11 / 33 / 50 with `A2A_ENABLED=false` |
 | `pnpm inspect` | Launch MCP Inspector against the dev server |
 
 Before finishing any task run: `pnpm typecheck && pnpm lint && pnpm test`.
@@ -58,6 +59,7 @@ Verified against the installed SDK — check here before guessing at an API.
 - **A2A is optional and gated.** `A2A_ENABLED=false` (the default) removes every tool marked `requiresA2A` from the catalog — the `a2a_*` group, `agent_register`, `agent_publish`. A local-only deployment never sees them, which keeps the tool list small for model tool selection. Mark any new interop tool `requiresA2A: true`.
 - **Agents can live in the repo as Markdown.** `ORCH_AGENTS_DIR` (default `agents/`) is scanned at startup: frontmatter sets `name`/`role`/`runner`/`model`/`tools`, the body is the system prompt. The directory is the source of truth — `syncFromFiles` creates, updates and soft-deletes `source='file'` agents, and never touches ones made through `agent_create`.
 - **Downstream tools are granted per agent, never globally.** `toolserver_register` adds an MCP server; an agent reaches its tools only through `toolGrants` (`"server"` for all, `"server/tool"` for one). Tools arrive in the agent loop namespaced `server__tool`. Deny-list beats allow-list, and an empty allow-list means everything that server offers.
+- **Migrations are append-only, and this has bitten us.** `tool_servers` and `agent_templates` were once added to migration 5 *after* it shipped, so a database already at v5 never received them. Always add a new version. `tests/unit/migrate.test.ts` now guards this by upgrading a v5 database and comparing a staged migration against a fresh one.
 - **Testing the Host guard.** Node's `fetch` silently drops a forbidden `host` header — drive `node:http` directly when asserting on host validation.
 - **IDs must be monotonic.** `src/ids.ts` uses ulid's `monotonicFactory`, not bare `ulid()`. Ids double as pagination cursors (`WHERE id < ?`), and plain `ulid()` can emit out-of-order ids inside one millisecond, which silently corrupts a page boundary.
 - **Await `scheduler.shutdown()` before closing the DB.** An aborted run still writes its outcome on the way out; closing the connection first turns that into an unhandled `The database connection is not open`. Tests use the `closeServices` helper for the same reason.

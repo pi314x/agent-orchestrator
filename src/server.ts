@@ -1,4 +1,6 @@
 import { McpServer, type McpServerFactory } from '@modelcontextprotocol/server';
+import { registerPrompts } from './prompts/index.js';
+import { registerResources } from './resources/index.js';
 import type { Services } from './services.js';
 import { registerTools } from './tools/profiles.js';
 import { SERVER_NAME, VERSION } from './version.js';
@@ -23,6 +25,9 @@ export function createServerFactory(deps: ServerDeps): McpServerFactory {
       startedAt: deps.startedAt,
       era: ctx.era
     });
+
+    registerResources(server, deps.services, VERSION);
+    registerPrompts(server, deps.services);
 
     return server;
   };

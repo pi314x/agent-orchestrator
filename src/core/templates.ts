@@ -1,3 +1,5 @@
+import type { Db } from '../db/sqlite.js';
+
 export const RUNNER_NAMES = ['anthropic', 'openai-compatible', 'cli', 'mock'] as const;
 export type RunnerName = (typeof RUNNER_NAMES)[number];
 
@@ -70,4 +72,58 @@ export const BUILTIN_TEMPLATES: readonly AgentTemplate[] = [
 
 export function getTemplate(name: string): AgentTemplate | undefined {
   return BUILTIN_TEMPLATES.find(t => t.name === name);
+}
+
+export type CustomTemplateSpec = {
+  role: string;
+  description: string;
+  instructions: string;
+  runner?: RunnerName;
+  model?: string;
+};
+
+type TemplateRow = { name: string; spec: string; created_at: string; updated_at: string };
+
+/** Custom templates live in the DB and shadow a built-in of the same name. */
+export class TemplateStore {
+  constructor(private readonly db: Db) {}
+
+  save(name: string, spec: CustomTemplateSpec): AgentTemplate {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO agent_templates (name, spec, created_at, updated_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT (name) DO UPDATE SET spec = excluded.spec, updated_at = excluded.updated_at`
+      )
+      .run(name, JSON.stringify(spec), now, now);
+
+    return { name, runner: 'anthropic', ...spec };
+  }
+
+  get(name: string): AgentTemplate | undefined {
+    const row = this.db.prepare('SELECT * FROM agent_templates WHERE name = ?').get(name) as
+      TemplateRow | undefined;
+    if (row === undefined) return undefined;
+    const spec = JSON.parse(row.spec) as CustomTemplateSpec;
+    return { name: row.name, runner: 'anthropic', ...spec };
+  }
+
+  list(): AgentTemplate[] {
+    const rows = this.db.prepare('SELECT * FROM agent_templates ORDER BY name').all() as TemplateRow[];
+    return rows.map(row => {
+      const spec = JSON.parse(row.spec) as CustomTemplateSpec;
+      return { name: row.name, runner: 'anthropic' as RunnerName, ...spec };
+    });
+  }
+
+  /** Custom first, so a saved template can replace a built-in by name. */
+  resolve(name: string): AgentTemplate | undefined {
+    return this.get(name) ?? getTemplate(name);
+  }
+
+  all(): AgentTemplate[] {
+    const custom = this.list();
+    const names = new Set(custom.map(t => t.name));
+    return [...custom, ...BUILTIN_TEMPLATES.filter(t => !names.has(t.name))];
+  }
 }

@@ -3,7 +3,9 @@ import { OrchestratorError } from '../errors.js';
 import { newId } from '../ids.js';
 import type { AgentFileDefinition } from './agent-files.js';
 import type { AgentSnapshot } from './jobs.js';
-import { getTemplate, type RunnerName } from './templates.js';
+import { getTemplate, type AgentTemplate, type RunnerName } from './templates.js';
+
+type AgentTemplateLike = AgentTemplate;
 
 export type AgentKind = 'local' | 'remote';
 export type AgentStatus = 'active' | 'deleted';
@@ -177,6 +179,9 @@ export function resolveAgentTarget(
 }
 
 export class AgentRegistry {
+  /** Resolves custom templates first, then built-ins. Set by createServices. */
+  resolveTemplate: (name: string) => AgentTemplateLike | undefined = getTemplate;
+
   constructor(private readonly db: Db) {}
 
   create(input: CreateAgentInput): AgentRecord {
@@ -296,9 +301,57 @@ export class AgentRegistry {
     return { created, updated, removed };
   }
 
+  /** Patch a local agent. Running jobs keep their submit-time snapshot. */
+  update(
+    agentId: string,
+    patch: {
+      role?: string;
+      instructions?: string;
+      runner?: RunnerName;
+      model?: string;
+      toolGrants?: readonly string[];
+    }
+  ): AgentRecord {
+    const agent = this.getOrThrow(agentId);
+
+    if (agent.kind === 'remote') {
+      throw new OrchestratorError(
+        'INVALID_INPUT',
+        'A remote agent is defined by its Agent Card, not by local config.',
+        'Re-register it with agent_register to pick up card changes.'
+      );
+    }
+
+    this.db
+      .prepare(
+        `UPDATE agents SET role = ?, instructions = ?, runner = ?, model = ?, tool_grants = ?, updated_at = ?
+         WHERE id = ?`
+      )
+      .run(
+        patch.role ?? agent.role ?? null,
+        patch.instructions ?? agent.instructions,
+        patch.runner ?? agent.runner ?? null,
+        patch.model ?? agent.model ?? null,
+        JSON.stringify(patch.toolGrants === undefined ? agent.toolGrants : [...patch.toolGrants]),
+        new Date().toISOString(),
+        agentId
+      );
+
+    return this.getOrThrow(agentId);
+  }
+
+  /** Soft-delete, so job history keeps resolving the agent it ran on. */
+  delete(agentId: string): boolean {
+    return (
+      this.db
+        .prepare(`UPDATE agents SET status = 'deleted', updated_at = ? WHERE id = ? AND status = 'active'`)
+        .run(new Date().toISOString(), agentId).changes > 0
+    );
+  }
+
   /** Materialize a built-in template as a throwaway agent for a one-shot job. */
   createFromTemplate(templateName: string, overrides: Partial<CreateAgentInput> = {}): AgentRecord {
-    const template = getTemplate(templateName);
+    const template = this.resolveTemplate(templateName);
     if (template === undefined) {
       throw new OrchestratorError(
         'NOT_FOUND',

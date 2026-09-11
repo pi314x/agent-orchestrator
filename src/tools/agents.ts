@@ -1,5 +1,7 @@
+import { acceptedContent, inputRequired } from '@modelcontextprotocol/server';
 import { z } from 'zod';
-import { BUILTIN_TEMPLATES, RUNNER_NAMES } from '../core/templates.js';
+import { RUNNER_NAMES } from '../core/templates.js';
+import { OrchestratorError } from '../errors.js';
 import { AgentViewSchema, CursorSchema, LimitSchema, toAgentView } from '../schemas/common.js';
 import { toolError, toolOk } from './result.js';
 import type { ToolRegistration } from './types.js';
@@ -164,7 +166,7 @@ export const agentTemplateListTool: ToolRegistration = {
   name: 'agent_template_list',
   profile: 'core',
 
-  register(server) {
+  register(server, deps) {
     server.registerTool(
       'agent_template_list',
       {
@@ -189,18 +191,203 @@ export const agentTemplateListTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      () =>
-        toolOk(
+      () => {
+        const all = deps.services.templates.all();
+        return toolOk(
           {
-            templates: BUILTIN_TEMPLATES.map(t => ({
+            templates: all.map(t => ({
               name: t.name,
               role: t.role,
               description: t.description,
               runner: t.runner
             }))
           },
-          `${BUILTIN_TEMPLATES.length} built-in templates: ${BUILTIN_TEMPLATES.map(t => t.name).join(', ')}.`
-        )
+          `${all.length} template(s): ${all.map(t => t.name).join(', ')}.`
+        );
+      }
+    );
+  }
+};
+
+export const agentUpdateTool: ToolRegistration = {
+  name: 'agent_update',
+  profile: 'full',
+
+  register(server, deps) {
+    server.registerTool(
+      'agent_update',
+      {
+        title: 'Update an agent',
+        description:
+          'Patch a local agent configuration. Only future jobs see the change — jobs already submitted keep the snapshot they were created with, so a run in flight never shifts underneath itself.',
+        inputSchema: z.object({
+          agentId: z.string(),
+          patch: z.object({
+            role: z.string().optional(),
+            instructions: z.string().optional(),
+            runner: z.enum(RUNNER_NAMES).optional(),
+            model: z.string().optional(),
+            toolGrants: z.array(z.string()).optional()
+          })
+        }),
+        outputSchema: z.object({ agent: AgentViewSchema }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false
+        }
+      },
+      args => {
+        try {
+          const agent = deps.services.agents.update(args.agentId, args.patch);
+          return toolOk(
+            { agent: toAgentView(agent) },
+            `Updated ${agent.name}; future jobs use the new config.`
+          );
+        } catch (error) {
+          return toolError(error);
+        }
+      }
+    );
+  }
+};
+
+export const agentDeleteTool: ToolRegistration = {
+  name: 'agent_delete',
+  profile: 'full',
+
+  register(server, deps) {
+    server.registerTool(
+      'agent_delete',
+      {
+        title: 'Delete an agent',
+        description:
+          'Remove a local agent, or unregister a remote one. Refuses while the agent still has live jobs unless force is set, which cancels them first. Job history is kept either way.',
+        inputSchema: z.object({
+          agentId: z.string(),
+          force: z.boolean().default(false).describe('Cancel the agent live jobs first.')
+        }),
+        outputSchema: z.object({ deleted: z.boolean(), cancelledJobs: z.array(z.string()) }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: true,
+          openWorldHint: false
+        }
+      },
+      (args, ctx) => {
+        try {
+          const agent = deps.services.agents.getOrThrow(args.agentId);
+          const live = deps.services.jobs
+            .list({ agentId: agent.id, limit: 100 })
+            .jobs.filter(job => job.finishedAt === undefined);
+
+          // Destructive and irreversible for live work, so confirm through MRTR.
+          const confirmed = acceptedContent<{ confirm: boolean }>(ctx.mcpReq.inputResponses, 'confirm');
+          if (confirmed?.confirm !== true) {
+            return inputRequired({
+              inputRequests: {
+                confirm: inputRequired.elicit({
+                  message: `Delete agent ${agent.name}? ${live.length} job(s) are still live${live.length > 0 && !args.force ? ' — pass force to cancel them' : ''}.`,
+                  requestedSchema: {
+                    type: 'object',
+                    properties: { confirm: { type: 'boolean', description: 'Confirm deletion.' } },
+                    required: ['confirm']
+                  }
+                })
+              }
+            });
+          }
+
+          if (live.length > 0 && !args.force) {
+            return toolError(
+              new OrchestratorError(
+                'CONFLICT',
+                `${agent.name} still has ${live.length} live job(s).`,
+                'Pass force: true to cancel them, or wait for them to finish.'
+              )
+            );
+          }
+
+          const cancelledJobs: string[] = [];
+          for (const job of live) {
+            deps.services.scheduler.cancel(job.id, 'Agent deleted.');
+            cancelledJobs.push(job.id);
+          }
+
+          const deleted = deps.services.agents.delete(agent.id);
+          return toolOk(
+            { deleted, cancelledJobs },
+            `Deleted ${agent.name}${cancelledJobs.length > 0 ? `, cancelling ${cancelledJobs.length} job(s)` : ''}.`
+          );
+        } catch (error) {
+          return toolError(error);
+        }
+      }
+    );
+  }
+};
+
+export const agentTemplateSaveTool: ToolRegistration = {
+  name: 'agent_template_save',
+  profile: 'full',
+
+  register(server, deps) {
+    server.registerTool(
+      'agent_template_save',
+      {
+        title: 'Save an agent template',
+        description:
+          'Create or overwrite a reusable role template that delegate and workflow steps can name. A saved template shadows a built-in of the same name. Use agent_create when you want one persistent agent rather than a reusable role.',
+        inputSchema: z.object({
+          name: z.string().min(1),
+          role: z.string().min(1),
+          description: z.string().min(1),
+          instructions: z.string().min(1),
+          runner: z.enum(RUNNER_NAMES).optional(),
+          model: z.string().optional()
+        }),
+        outputSchema: z.object({
+          template: z.object({
+            name: z.string(),
+            role: z.string(),
+            description: z.string(),
+            runner: z.enum(RUNNER_NAMES)
+          })
+        }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false
+        }
+      },
+      args => {
+        try {
+          const saved = deps.services.templates.save(args.name, {
+            role: args.role,
+            description: args.description,
+            instructions: args.instructions,
+            ...(args.runner !== undefined && { runner: args.runner }),
+            ...(args.model !== undefined && { model: args.model })
+          });
+
+          return toolOk(
+            {
+              template: {
+                name: saved.name,
+                role: saved.role,
+                description: saved.description,
+                runner: saved.runner
+              }
+            },
+            `Saved template ${saved.name}.`
+          );
+        } catch (error) {
+          return toolError(error);
+        }
+      }
     );
   }
 };

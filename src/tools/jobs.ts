@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { JOB_STATES } from '../core/jobs.js';
+import { OrchestratorError } from '../errors.js';
 import { resolveAgentTarget, toSnapshot } from '../core/registry.js';
 import {
   CursorSchema,
@@ -296,6 +297,72 @@ export const jobRetryTool: ToolRegistration = {
         try {
           const job = deps.services.scheduler.retry(args.jobId);
           return toolOk({ job: toJobView(job) }, `Job ${job.id} re-queued (attempt ${job.attempt}).`);
+        } catch (error) {
+          return toolError(error);
+        }
+      }
+    );
+  }
+};
+
+export const jobSteerTool: ToolRegistration = {
+  name: 'job_steer',
+  profile: 'standard',
+
+  register(server, deps) {
+    server.registerTool(
+      'job_steer',
+      {
+        title: 'Steer a running job',
+        description:
+          'Send guidance to a job that is already running; the agent picks it up on its next turn via its message inbox. Only works while the job is live — use job_cancel and a fresh job_submit once it has finished.',
+        inputSchema: z.object({ jobId: z.string(), message: z.string().min(1) }),
+        outputSchema: z.object({ delivered: z.boolean(), state: z.enum(JOB_STATES) }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: false
+        }
+      },
+      args => {
+        try {
+          const job = deps.services.jobs.getOrThrow(args.jobId);
+
+          if (job.finishedAt !== undefined) {
+            return toolError(
+              new OrchestratorError(
+                'CONFLICT',
+                `Job ${job.id} already finished (${job.state}).`,
+                'Submit a new job with the revised instruction.'
+              )
+            );
+          }
+
+          if (job.backend === 'a2a_remote') {
+            return toolError(
+              new OrchestratorError(
+                'INVALID_INPUT',
+                'This remote agent does not advertise steering.',
+                'Cancel the job and submit a revised one instead.'
+              )
+            );
+          }
+
+          // Delivered through the inbox the agent already polls with message_list.
+          deps.services.bus.send({
+            toJobId: job.id,
+            toAgentId: job.agentId,
+            body: args.message
+          });
+
+          deps.services.events.append({
+            type: 'job.progress',
+            jobId: job.id,
+            payload: { message: `steered: ${args.message}` }
+          });
+
+          return toolOk({ delivered: true, state: job.state }, `Guidance queued for job ${job.id}.`);
         } catch (error) {
           return toolError(error);
         }
