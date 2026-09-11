@@ -22,6 +22,7 @@ Create these scripts in `package.json` during M0 and keep them working:
 | `pnpm dev:http` | Run MCP over Streamable HTTP on `ORCH_HTTP_PORT` |
 | `pnpm dev:a2a` | Run the A2A server surface on `A2A_HTTP_PORT` (from M4) |
 | `pnpm build` | Compile to `dist/` |
+| `pnpm start` | Run the compiled server from `dist/` |
 | `pnpm typecheck` | `tsc --noEmit` |
 | `pnpm lint` / `pnpm format` | ESLint / Prettier |
 | `pnpm test` | Unit + integration (mock runner, fixture A2A agent only) |
@@ -41,6 +42,19 @@ Before finishing any task run: `pnpm typecheck && pnpm lint && pnpm test`.
 - `src/proxy/` — downstream MCP client pool, used only to grant tools to **local** agents.
 - `src/db/` — schema, migrations, SQLite/Postgres adapters.
 - `tests/` — `unit/`, `integration/`, `snapshots/`.
+
+## Stack notes
+
+Verified against the installed SDK — check here before guessing at an API.
+
+- **Packages.** The v2 TypeScript SDK is split: `@modelcontextprotocol/server` (`McpServer`, `createMcpHandler`, `serveStdio` from `/stdio`), `@modelcontextprotocol/node` (`toNodeHandler`, `hostHeaderValidation`, `originValidation`), `@modelcontextprotocol/client` (tests). There is no single `@modelcontextprotocol/sdk` v2.
+- **Two protocol eras.** `createMcpHandler` serves *modern* (`2026-07-28`, negotiated via `server/discover`, `_meta` envelope per request) and falls back to *legacy* (`2025-11-25` and earlier, via `initialize`) statelessly from the same factory. Exported `LATEST_PROTOCOL_VERSION` is `2025-11-25` — it names the legacy ceiling, not the modern era, so don't assert on it.
+- **Statelessness comes free.** `createMcpHandler` builds a fresh `McpServer` per request via `McpServerFactory`, which is exactly protocol rule 1. Never hoist per-request state into the factory's closure — only long-lived handles (DB, logger, config) belong there.
+- **HTTP surface.** MCP is served at `/mcp`; `/health` is a plain JSON probe outside the protocol. Host *and* Origin are validated before the handler sees the request.
+- **`structuredContent` needs an index signature.** Type a tool's output shape with a `type` alias, not an `interface` — object-literal aliases get an implicit index signature and stay assignable to `Record<string, unknown>`; interfaces do not.
+- **pino.** Import `destination` as a named export (`import { destination, pino } from 'pino'`); it is not typed on the named `pino` export.
+- **better-sqlite3** is a native module; it only builds because `pnpm.onlyBuiltDependencies` in `package.json` allows its install script. After a fresh clone run `pnpm rebuild better-sqlite3` if the binding is missing.
+- **Testing the Host guard.** Node's `fetch` silently drops a forbidden `host` header — drive `node:http` directly when asserting on host validation.
 
 ## Hard rules — protocol (MCP)
 

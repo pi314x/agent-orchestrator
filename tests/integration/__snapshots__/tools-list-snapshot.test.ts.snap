@@ -1,0 +1,49 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`tools/list contract > matches the core profile snapshot 1`] = `
+[
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "Report orchestrator health, version, active tool profile, schema state and limits. Use it to confirm the server is reachable and correctly configured, or to check whether migrations are pending. Not for inspecting individual work — use job_get or events_query for that.",
+    "name": "orchestrator_status",
+    "title": "Orchestrator status",
+  },
+]
+`;
+
+exports[`tools/list contract > matches the full profile snapshot 1`] = `
+[
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "Report orchestrator health, version, active tool profile, schema state and limits. Use it to confirm the server is reachable and correctly configured, or to check whether migrations are pending. Not for inspecting individual work — use job_get or events_query for that.",
+    "name": "orchestrator_status",
+    "title": "Orchestrator status",
+  },
+]
+`;
+
+exports[`tools/list contract > matches the standard profile snapshot 1`] = `
+[
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "Report orchestrator health, version, active tool profile, schema state and limits. Use it to confirm the server is reachable and correctly configured, or to check whether migrations are pending. Not for inspecting individual work — use job_get or events_query for that.",
+    "name": "orchestrator_status",
+    "title": "Orchestrator status",
+  },
+]
+`;

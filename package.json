@@ -1,0 +1,51 @@
+{
+  "name": "agent-orchestrator",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Agent orchestrator — MCP inward, A2A outward",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "dev:http": "ORCH_TRANSPORT=http tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "test": "vitest run",
+    "test:live": "RUN_LIVE_TESTS=1 vitest run",
+    "db:migrate": "tsx src/db/migrate-cli.ts",
+    "inspect": "ORCH_TRANSPORT=http tsx src/index.ts & npx @modelcontextprotocol/inspector"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/core": "^2.0.0",
+    "@modelcontextprotocol/node": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.0.0",
+    "better-sqlite3": "^12.0.0",
+    "pino": "^9.0.0",
+    "ulid": "^3.0.0",
+    "zod": "^4.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.0.0",
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.0.0",
+    "eslint": "^9.0.0",
+    "prettier": "^3.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.6.0",
+    "typescript-eslint": "^8.0.0",
+    "vitest": "^3.0.0"
+  }
+}
