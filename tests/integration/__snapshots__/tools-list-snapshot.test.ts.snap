@@ -97,6 +97,28 @@ exports[`tools/list contract > matches the core profile snapshot 1`] = `
       "openWorldHint": false,
       "readOnlyHint": true,
     },
+    "description": "List approval gates waiting on a human — paused workflow steps, jobs that asked for confirmation, and unverified remote agent cards. Check this when a workflow run is paused. Resolve them with approval_resolve.",
+    "name": "approval_list",
+    "title": "List approvals",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Approve or reject a pending gate, optionally with a comment or edited input. Approving a paused workflow step resumes the run on the next tick. An approval can only be resolved once.",
+    "name": "approval_resolve",
+    "title": "Resolve an approval",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
     "description": "Report orchestrator health, version, active tool profile, queue depth and schema state. Use it to confirm the server is reachable and correctly configured, or to check whether migrations are pending. Not for inspecting individual work — use job_get or job_list for that.",
     "name": "orchestrator_status",
     "title": "Orchestrator status",
@@ -242,6 +264,105 @@ exports[`tools/list contract > matches the full profile snapshot 1`] = `
     "annotations": {
       "destructiveHint": false,
       "idempotentHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": false,
+    },
+    "description": "Turn a goal into a draft workflow spec using a planner agent. The draft is returned, never executed — review it, then pass it to workflow_define or workflow_start. Use delegate when you want the work done rather than planned.",
+    "name": "plan_create",
+    "title": "Draft a workflow plan",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Create or replace a named DAG of steps, validating references and rejecting cycles before anything runs. Use plan_create to draft one from a goal, and workflow_start to execute it. Re-defining an existing name replaces its spec; past runs keep the spec they started with.",
+    "name": "workflow_define",
+    "title": "Define a workflow",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "List defined workflows. Use workflow_get for one spec in full, or workflow_run_list for runs.",
+    "name": "workflow_list",
+    "title": "List workflows",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "Fetch one workflow spec by id. Use workflow_run_get for the state of a particular run.",
+    "name": "workflow_get",
+    "title": "Get a workflow",
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Remove a workflow definition. Past runs stay in history and keep the spec they started with, so this never rewrites what already happened.",
+    "name": "workflow_delete",
+    "title": "Delete a workflow",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Start a run from a defined workflow or an inline spec, and return immediately with a run handle. Steps run as their dependencies complete. Poll with workflow_run_get; a step marked approval pauses the run until approval_resolve.",
+    "name": "workflow_start",
+    "title": "Start a workflow run",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "Fetch per-step state and outputs for a run, including which job ran each step. Use it to poll progress; use events_query or approval_list when a run is stuck.",
+    "name": "workflow_run_get",
+    "title": "Get a workflow run",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "List runs, optionally filtered by workflow or state. Use workflow_run_get for one run in full.",
+    "name": "workflow_run_list",
+    "title": "List workflow runs",
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Pause, resume, cancel a run, or retry one failed step. Cancelling also cancels the jobs still running under it and cannot be undone — retry_step is the way to recover a single failure.",
+    "name": "workflow_run_control",
+    "title": "Control a workflow run",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
       "openWorldHint": false,
       "readOnlyHint": false,
     },
@@ -369,6 +490,28 @@ exports[`tools/list contract > matches the full profile snapshot 1`] = `
     "description": "Permanently delete an artifact. Irreversible, and any job that referenced it will no longer resolve the id.",
     "name": "artifact_delete",
     "title": "Delete an artifact",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "List approval gates waiting on a human — paused workflow steps, jobs that asked for confirmation, and unverified remote agent cards. Check this when a workflow run is paused. Resolve them with approval_resolve.",
+    "name": "approval_list",
+    "title": "List approvals",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Approve or reject a pending gate, optionally with a comment or edited input. Approving a paused workflow step resumes the run on the next tick. An approval can only be resolved once.",
+    "name": "approval_resolve",
+    "title": "Resolve an approval",
   },
   {
     "annotations": {
@@ -554,6 +697,83 @@ exports[`tools/list contract > matches the standard profile snapshot 1`] = `
   {
     "annotations": {
       "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": true,
+      "readOnlyHint": false,
+    },
+    "description": "Turn a goal into a draft workflow spec using a planner agent. The draft is returned, never executed — review it, then pass it to workflow_define or workflow_start. Use delegate when you want the work done rather than planned.",
+    "name": "plan_create",
+    "title": "Draft a workflow plan",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Create or replace a named DAG of steps, validating references and rejecting cycles before anything runs. Use plan_create to draft one from a goal, and workflow_start to execute it. Re-defining an existing name replaces its spec; past runs keep the spec they started with.",
+    "name": "workflow_define",
+    "title": "Define a workflow",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "List defined workflows. Use workflow_get for one spec in full, or workflow_run_list for runs.",
+    "name": "workflow_list",
+    "title": "List workflows",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "Fetch one workflow spec by id. Use workflow_run_get for the state of a particular run.",
+    "name": "workflow_get",
+    "title": "Get a workflow",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Start a run from a defined workflow or an inline spec, and return immediately with a run handle. Steps run as their dependencies complete. Poll with workflow_run_get; a step marked approval pauses the run until approval_resolve.",
+    "name": "workflow_start",
+    "title": "Start a workflow run",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "Fetch per-step state and outputs for a run, including which job ran each step. Use it to poll progress; use events_query or approval_list when a run is stuck.",
+    "name": "workflow_run_get",
+    "title": "Get a workflow run",
+  },
+  {
+    "annotations": {
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Pause, resume, cancel a run, or retry one failed step. Cancelling also cancels the jobs still running under it and cannot be undone — retry_step is the way to recover a single failure.",
+    "name": "workflow_run_control",
+    "title": "Control a workflow run",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
       "idempotentHint": true,
       "openWorldHint": false,
       "readOnlyHint": false,
@@ -616,6 +836,28 @@ exports[`tools/list contract > matches the standard profile snapshot 1`] = `
     "description": "List stored artifacts, filtered by job, workflow run or tags. Metadata only — fetch content with artifact_get.",
     "name": "artifact_list",
     "title": "List artifacts",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false,
+      "readOnlyHint": true,
+    },
+    "description": "List approval gates waiting on a human — paused workflow steps, jobs that asked for confirmation, and unverified remote agent cards. Check this when a workflow run is paused. Resolve them with approval_resolve.",
+    "name": "approval_list",
+    "title": "List approvals",
+  },
+  {
+    "annotations": {
+      "destructiveHint": false,
+      "idempotentHint": false,
+      "openWorldHint": false,
+      "readOnlyHint": false,
+    },
+    "description": "Approve or reject a pending gate, optionally with a comment or edited input. Approving a paused workflow step resumes the run on the next tick. An approval can only be resolved once.",
+    "name": "approval_resolve",
+    "title": "Resolve an approval",
   },
   {
     "annotations": {

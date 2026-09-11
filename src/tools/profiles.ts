@@ -2,13 +2,24 @@ import type { McpServer } from '@modelcontextprotocol/server';
 import type { ToolProfile } from '../config.js';
 import { orchestratorStatusTool, runnerListTool } from './admin.js';
 import { agentCreateTool, agentGetTool, agentListTool, agentTemplateListTool } from './agents.js';
+import { approvalListTool, approvalResolveTool } from './approvals.js';
 import { artifactDeleteTool, artifactGetTool, artifactListTool, artifactPutTool } from './artifacts.js';
-import { delegateTool, fanOutTool } from './delegation.js';
+import { delegateTool, fanOutTool, planCreateTool } from './delegation.js';
 import { jobCancelTool, jobGetTool, jobListTool, jobRetryTool, jobSubmitTool, jobWaitTool } from './jobs.js';
 import { memoryDeleteTool, memoryReadTool, memorySearchTool, memoryWriteTool } from './memory.js';
 import { channelCreateTool, channelListTool, messageListTool, messageSendTool } from './messaging.js';
 import { budgetSetTool, eventsQueryTool } from './observability.js';
 import type { ToolDeps, ToolRegistration } from './types.js';
+import {
+  workflowDefineTool,
+  workflowDeleteTool,
+  workflowGetTool,
+  workflowListTool,
+  workflowRunControlTool,
+  workflowRunGetTool,
+  workflowRunListTool,
+  workflowStartTool
+} from './workflows.js';
 
 /**
  * The single ordered source of truth for the tool catalog, following the
@@ -31,6 +42,16 @@ export const TOOL_REGISTRY: readonly ToolRegistration[] = [
   // §5.3 Delegation shortcuts
   delegateTool,
   fanOutTool,
+  planCreateTool,
+  // §5.4 Workflows
+  workflowDefineTool,
+  workflowListTool,
+  workflowGetTool,
+  workflowDeleteTool,
+  workflowStartTool,
+  workflowRunGetTool,
+  workflowRunListTool,
+  workflowRunControlTool,
   // §5.5 Messaging
   messageSendTool,
   messageListTool,
@@ -46,6 +67,9 @@ export const TOOL_REGISTRY: readonly ToolRegistration[] = [
   artifactGetTool,
   artifactListTool,
   artifactDeleteTool,
+  // §5.8 Human-in-the-loop
+  approvalListTool,
+  approvalResolveTool,
   // §5.11 Observability & budgets
   eventsQueryTool,
   budgetSetTool,

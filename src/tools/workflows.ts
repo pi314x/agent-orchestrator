@@ -1,0 +1,352 @@
+import { acceptedContent, inputRequired } from '@modelcontextprotocol/server';
+import { z } from 'zod';
+import { RUN_STATES, STEP_STATES, type WorkflowSpec } from '../core/workflow-engine.js';
+import { toolError, toolOk } from './result.js';
+import type { ToolRegistration } from './types.js';
+
+const StepSchema = z.object({
+  id: z.string().min(1),
+  instruction: z.string().min(1).describe('Supports {{inputs.x}} and {{steps.<id>.output}}.'),
+  agentId: z.string().optional(),
+  template: z.string().optional(),
+  skillQuery: z.string().optional(),
+  dependsOn: z.array(z.string()).optional(),
+  when: z
+    .string()
+    .optional()
+    .describe('Template; the step is skipped when it renders empty, "false" or "0".'),
+  retries: z.number().int().min(0).max(5).optional(),
+  approval: z.boolean().optional().describe('Pause for a human before this step runs.'),
+  outputSchema: z.record(z.string(), z.unknown()).optional()
+});
+
+const SpecSchema = z.object({
+  name: z.string().min(1),
+  inputsSchema: z.record(z.string(), z.unknown()).optional(),
+  steps: z.array(StepSchema).min(1)
+});
+
+const StepRunSchema = z.object({
+  stepId: z.string(),
+  state: z.enum(STEP_STATES),
+  jobId: z.string().optional(),
+  output: z.unknown().optional(),
+  error: z.object({ code: z.string(), message: z.string(), hint: z.string().optional() }).optional(),
+  attempt: z.number(),
+  updatedAt: z.string()
+});
+
+const RunSchema = z.object({
+  runId: z.string(),
+  workflowId: z.string().optional(),
+  name: z.string(),
+  state: z.enum(RUN_STATES),
+  inputs: z.record(z.string(), z.unknown()),
+  steps: z.array(StepRunSchema),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  finishedAt: z.string().optional()
+});
+
+const WorkflowSchema = z.object({
+  workflowId: z.string(),
+  name: z.string(),
+  spec: z.record(z.string(), z.unknown()),
+  createdAt: z.string(),
+  updatedAt: z.string()
+});
+
+export const workflowDefineTool: ToolRegistration = {
+  name: 'workflow_define',
+  profile: 'standard',
+
+  register(server, deps) {
+    server.registerTool(
+      'workflow_define',
+      {
+        title: 'Define a workflow',
+        description:
+          'Create or replace a named DAG of steps, validating references and rejecting cycles before anything runs. Use plan_create to draft one from a goal, and workflow_start to execute it. Re-defining an existing name replaces its spec; past runs keep the spec they started with.',
+        inputSchema: SpecSchema,
+        outputSchema: z.object({ workflow: WorkflowSchema }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false
+        }
+      },
+      args => {
+        try {
+          const workflow = deps.services.workflows.define(args as WorkflowSpec);
+          return toolOk(
+            { workflow: { ...workflow, spec: workflow.spec as unknown as Record<string, unknown> } },
+            `Defined ${workflow.name} with ${workflow.spec.steps.length} step(s).`
+          );
+        } catch (error) {
+          return toolError(error);
+        }
+      }
+    );
+  }
+};
+
+export const workflowListTool: ToolRegistration = {
+  name: 'workflow_list',
+  profile: 'standard',
+
+  register(server, deps) {
+    server.registerTool(
+      'workflow_list',
+      {
+        title: 'List workflows',
+        description:
+          'List defined workflows. Use workflow_get for one spec in full, or workflow_run_list for runs.',
+        inputSchema: z.object({ limit: z.number().int().min(1).max(100).optional() }),
+        outputSchema: z.object({ workflows: z.array(WorkflowSchema) }),
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false
+        }
+      },
+      args => {
+        const workflows = deps.services.workflows.listWorkflows(args.limit ?? 20);
+        return toolOk(
+          { workflows: workflows.map(w => ({ ...w, spec: w.spec as unknown as Record<string, unknown> })) },
+          `${workflows.length} workflow(s).`
+        );
+      }
+    );
+  }
+};
+
+export const workflowGetTool: ToolRegistration = {
+  name: 'workflow_get',
+  profile: 'standard',
+
+  register(server, deps) {
+    server.registerTool(
+      'workflow_get',
+      {
+        title: 'Get a workflow',
+        description: 'Fetch one workflow spec by id. Use workflow_run_get for the state of a particular run.',
+        inputSchema: z.object({ workflowId: z.string() }),
+        outputSchema: z.object({ workflow: WorkflowSchema }),
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false
+        }
+      },
+      args => {
+        try {
+          const workflow = deps.services.workflows.getWorkflowOrThrow(args.workflowId);
+          return toolOk(
+            { workflow: { ...workflow, spec: workflow.spec as unknown as Record<string, unknown> } },
+            `${workflow.name}: ${workflow.spec.steps.length} step(s).`
+          );
+        } catch (error) {
+          return toolError(error);
+        }
+      }
+    );
+  }
+};
+
+export const workflowDeleteTool: ToolRegistration = {
+  name: 'workflow_delete',
+  profile: 'full',
+
+  register(server, deps) {
+    server.registerTool(
+      'workflow_delete',
+      {
+        title: 'Delete a workflow',
+        description:
+          'Remove a workflow definition. Past runs stay in history and keep the spec they started with, so this never rewrites what already happened.',
+        inputSchema: z.object({ workflowId: z.string() }),
+        outputSchema: z.object({ deleted: z.boolean() }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: true,
+          openWorldHint: false
+        }
+      },
+      args => {
+        const deleted = deps.services.workflows.deleteWorkflow(args.workflowId);
+        return toolOk({ deleted }, deleted ? 'Deleted.' : 'Nothing to delete.');
+      }
+    );
+  }
+};
+
+export const workflowStartTool: ToolRegistration = {
+  name: 'workflow_start',
+  profile: 'standard',
+
+  register(server, deps) {
+    server.registerTool(
+      'workflow_start',
+      {
+        title: 'Start a workflow run',
+        description:
+          'Start a run from a defined workflow or an inline spec, and return immediately with a run handle. Steps run as their dependencies complete. Poll with workflow_run_get; a step marked approval pauses the run until approval_resolve.',
+        inputSchema: z.object({
+          workflowId: z.string().optional(),
+          spec: SpecSchema.optional(),
+          inputs: z.record(z.string(), z.unknown()).optional(),
+          idempotencyKey: z.string().optional()
+        }),
+        outputSchema: z.object({ run: RunSchema }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: false
+        }
+      },
+      args => {
+        try {
+          const run = deps.services.workflows.start({
+            ...(args.workflowId !== undefined && { workflowId: args.workflowId }),
+            ...(args.spec !== undefined && { spec: args.spec as WorkflowSpec }),
+            ...(args.inputs !== undefined && { inputs: args.inputs }),
+            ...(args.idempotencyKey !== undefined && { idempotencyKey: args.idempotencyKey })
+          });
+          return toolOk({ run }, `Run ${run.runId} is ${run.state}.`);
+        } catch (error) {
+          return toolError(error);
+        }
+      }
+    );
+  }
+};
+
+export const workflowRunGetTool: ToolRegistration = {
+  name: 'workflow_run_get',
+  profile: 'standard',
+
+  register(server, deps) {
+    server.registerTool(
+      'workflow_run_get',
+      {
+        title: 'Get a workflow run',
+        description:
+          'Fetch per-step state and outputs for a run, including which job ran each step. Use it to poll progress; use events_query or approval_list when a run is stuck.',
+        inputSchema: z.object({ runId: z.string() }),
+        outputSchema: z.object({ run: RunSchema }),
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false
+        }
+      },
+      args => {
+        try {
+          const run = deps.services.workflows.getRun(args.runId);
+          const done = run.steps.filter(s => s.state === 'succeeded').length;
+          return toolOk({ run }, `${run.state}: ${done}/${run.steps.length} step(s) succeeded.`);
+        } catch (error) {
+          return toolError(error);
+        }
+      }
+    );
+  }
+};
+
+export const workflowRunListTool: ToolRegistration = {
+  name: 'workflow_run_list',
+  profile: 'full',
+
+  register(server, deps) {
+    server.registerTool(
+      'workflow_run_list',
+      {
+        title: 'List workflow runs',
+        description:
+          'List runs, optionally filtered by workflow or state. Use workflow_run_get for one run in full.',
+        inputSchema: z.object({
+          workflowId: z.string().optional(),
+          state: z.enum(RUN_STATES).optional(),
+          limit: z.number().int().min(1).max(100).optional()
+        }),
+        outputSchema: z.object({ runs: z.array(RunSchema) }),
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false
+        }
+      },
+      args => {
+        const runs = deps.services.workflows.listRuns(args);
+        return toolOk({ runs }, `${runs.length} run(s).`);
+      }
+    );
+  }
+};
+
+export const workflowRunControlTool: ToolRegistration = {
+  name: 'workflow_run_control',
+  profile: 'standard',
+
+  register(server, deps) {
+    server.registerTool(
+      'workflow_run_control',
+      {
+        title: 'Control a workflow run',
+        description:
+          'Pause, resume, cancel a run, or retry one failed step. Cancelling also cancels the jobs still running under it and cannot be undone — retry_step is the way to recover a single failure.',
+        inputSchema: z.object({
+          runId: z.string(),
+          action: z.enum(['pause', 'resume', 'cancel', 'retry_step']),
+          stepId: z.string().optional().describe('Required for retry_step.')
+        }),
+        outputSchema: z.object({ run: RunSchema }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: false
+        }
+      },
+      (args, ctx) => {
+        try {
+          // Cancelling discards in-flight work, so confirm it through MRTR.
+          // approval_list / approval_resolve remain the fallback path.
+          if (args.action === 'cancel') {
+            const confirmed = acceptedContent<{ confirm: boolean }>(ctx.mcpReq.inputResponses, 'confirm');
+
+            if (confirmed?.confirm !== true) {
+              const run = deps.services.workflows.getRun(args.runId);
+              const live = run.steps.filter(s => s.state === 'running').length;
+
+              return inputRequired({
+                inputRequests: {
+                  confirm: inputRequired.elicit({
+                    message: `Cancel run ${args.runId} (${run.name})? ${live} step(s) are still running and their work will be discarded.`,
+                    requestedSchema: {
+                      type: 'object',
+                      properties: { confirm: { type: 'boolean', description: 'Confirm cancellation.' } },
+                      required: ['confirm']
+                    }
+                  })
+                }
+              });
+            }
+          }
+
+          const run = deps.services.workflows.control(args.runId, args.action, args.stepId);
+          return toolOk({ run }, `Run ${run.runId} is ${run.state}.`);
+        } catch (error) {
+          return toolError(error);
+        }
+      }
+    );
+  }
+};

@@ -255,3 +255,106 @@ export const fanOutTool: ToolRegistration = {
     );
   }
 };
+
+export const planCreateTool: ToolRegistration = {
+  name: 'plan_create',
+  profile: 'standard',
+
+  register(server, deps) {
+    server.registerTool(
+      'plan_create',
+      {
+        title: 'Draft a workflow plan',
+        description:
+          'Turn a goal into a draft workflow spec using a planner agent. The draft is returned, never executed — review it, then pass it to workflow_define or workflow_start. Use delegate when you want the work done rather than planned.',
+        inputSchema: z.object({
+          goal: z.string().min(1),
+          constraints: z.array(z.string()).optional(),
+          allowedTemplates: z.array(z.string()).optional(),
+          timeoutSec: z.number().int().min(1).max(MAX_WAIT_SEC).default(60)
+        }),
+        outputSchema: z.object({
+          draft: z.unknown().describe('A workflow spec when the planner returned one, otherwise its prose.'),
+          job: JobViewSchema
+        }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: false,
+          openWorldHint: true
+        }
+      },
+      async args => {
+        try {
+          const agent = resolveAgentTarget(
+            deps.services.agents,
+            { template: 'planner' },
+            { runner: deps.services.config.defaultRunner }
+          );
+
+          const instruction = [
+            `Produce a workflow plan for this goal: ${args.goal}`,
+            args.constraints === undefined ? '' : `Constraints: ${args.constraints.join('; ')}`,
+            args.allowedTemplates === undefined
+              ? ''
+              : `Use only these agent templates: ${args.allowedTemplates.join(', ')}`,
+            'Return a workflow spec: a name, and steps each with an id, an instruction, a template, and dependsOn.'
+          ]
+            .filter(line => line !== '')
+            .join('\n');
+
+          const submitted = deps.services.scheduler.submit({
+            backend: 'local',
+            agentId: agent.id,
+            agentSnapshot: toSnapshot(agent),
+            instruction,
+            timeoutSec: args.timeoutSec,
+            outputSchema: WORKFLOW_DRAFT_SCHEMA
+          });
+
+          const [job] = await deps.services.scheduler.wait([submitted.id], 'all', args.timeoutSec * 1000);
+          if (job === undefined) {
+            return toolOk({ draft: null, job: toJobView(submitted) }, 'Planner is still running.');
+          }
+
+          // The planner is a sub-agent: its output is a draft to review, never
+          // something the orchestrator acts on by itself.
+          const draft = job.resultStructured ?? job.resultText ?? null;
+
+          return toolOk(
+            { draft, job: toJobView(job) },
+            job.state === 'succeeded'
+              ? 'Draft plan ready — review it, then call workflow_define or workflow_start.'
+              : `Planner ${job.state}: ${job.error?.message ?? 'no output'}`
+          );
+        } catch (error) {
+          return toolError(error);
+        }
+      }
+    );
+  }
+};
+
+/** The shape a planner is asked to return; also what workflow_define accepts. */
+const WORKFLOW_DRAFT_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  properties: {
+    name: { type: 'string' },
+    steps: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          instruction: { type: 'string' },
+          template: { type: 'string' },
+          dependsOn: { type: 'array', items: { type: 'string' } }
+        },
+        required: ['id', 'instruction', 'template'],
+        additionalProperties: false
+      }
+    }
+  },
+  required: ['name', 'steps'],
+  additionalProperties: false
+};

@@ -1,4 +1,5 @@
 import type { Config } from './config.js';
+import { ApprovalStore } from './core/approvals.js';
 import { ArtifactStore } from './core/artifacts.js';
 import { BudgetTracker } from './core/budget.js';
 import { MessageBus } from './core/bus.js';
@@ -7,6 +8,7 @@ import { JobStore } from './core/jobs.js';
 import { MemoryStore } from './core/memory.js';
 import { AgentRegistry } from './core/registry.js';
 import { JobScheduler } from './core/scheduler.js';
+import { WorkflowEngine } from './core/workflow-engine.js';
 import type { Db } from './db/sqlite.js';
 import type { Logger } from './logger.js';
 import { AnthropicRunner } from './runners/anthropic.js';
@@ -25,8 +27,10 @@ export interface Services {
   artifacts: ArtifactStore;
   bus: MessageBus;
   budgets: BudgetTracker;
+  approvals: ApprovalStore;
   runners: RunnerRegistry;
   scheduler: JobScheduler;
+  workflows: WorkflowEngine;
 }
 
 export interface CreateServicesInput {
@@ -47,6 +51,7 @@ export function createServices({ config, db, logger }: CreateServicesInput): Ser
   const artifacts = new ArtifactStore(db);
   const bus = new MessageBus(db);
   const budgets = new BudgetTracker(db);
+  const approvals = new ApprovalStore(db);
 
   const runners = new RunnerRegistry([
     new MockRunner(),
@@ -75,5 +80,31 @@ export function createServices({ config, db, logger }: CreateServicesInput): Ser
     defaultRunner: config.defaultRunner
   });
 
-  return { config, db, logger, events, agents, jobs, memory, artifacts, bus, budgets, runners, scheduler };
+  const workflows = new WorkflowEngine({
+    db,
+    jobs,
+    scheduler,
+    agents,
+    approvals,
+    events,
+    logger,
+    defaultRunner: config.defaultRunner
+  });
+
+  return {
+    config,
+    db,
+    logger,
+    events,
+    agents,
+    jobs,
+    memory,
+    artifacts,
+    bus,
+    budgets,
+    approvals,
+    runners,
+    scheduler,
+    workflows
+  };
 }

@@ -11,7 +11,12 @@ export const EVENT_TYPES = [
   'job.cancelled',
   'job.timed_out',
   'job.retried',
-  'job.interrupted'
+  'job.interrupted',
+  'workflow.started',
+  'workflow.succeeded',
+  'workflow.failed',
+  'approval.created',
+  'approval.resolved'
 ] as const;
 
 export type EventType = (typeof EVENT_TYPES)[number];

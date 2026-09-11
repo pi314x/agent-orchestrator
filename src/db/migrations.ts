@@ -181,6 +181,72 @@ export const MIGRATIONS: readonly Migration[] = [
 
       CREATE UNIQUE INDEX idx_budgets_scope ON budgets (scope, scope_id);
     `
+  },
+  {
+    version: 4,
+    name: 'workflows_and_approvals',
+    up: `
+      CREATE TABLE workflows (
+        id         TEXT PRIMARY KEY,
+        name       TEXT NOT NULL UNIQUE,
+        spec       TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE workflow_runs (
+        id              TEXT PRIMARY KEY,
+        workflow_id     TEXT,
+        spec            TEXT NOT NULL,
+        inputs          TEXT NOT NULL DEFAULT '{}',
+        state           TEXT NOT NULL CHECK (state IN (
+                          'running', 'paused', 'succeeded', 'failed', 'cancelled')),
+        idempotency_key TEXT,
+        created_at      TEXT NOT NULL,
+        updated_at      TEXT NOT NULL,
+        finished_at     TEXT
+      );
+
+      CREATE UNIQUE INDEX idx_runs_idempotency ON workflow_runs (idempotency_key)
+        WHERE idempotency_key IS NOT NULL;
+      CREATE INDEX idx_runs_workflow ON workflow_runs (workflow_id, created_at);
+
+      CREATE TABLE step_runs (
+        id         TEXT PRIMARY KEY,
+        run_id     TEXT NOT NULL REFERENCES workflow_runs (id),
+        step_id    TEXT NOT NULL,
+        job_id     TEXT,
+        state      TEXT NOT NULL CHECK (state IN (
+                     'pending', 'awaiting_approval', 'running', 'succeeded',
+                     'failed', 'skipped', 'cancelled')),
+        output     TEXT,
+        error      TEXT,
+        attempt    INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (run_id, step_id)
+      );
+
+      CREATE INDEX idx_step_runs_run ON step_runs (run_id);
+
+      CREATE TABLE approvals (
+        id           TEXT PRIMARY KEY,
+        status       TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected')),
+        scope        TEXT NOT NULL,
+        summary      TEXT NOT NULL,
+        job_id       TEXT,
+        run_id       TEXT,
+        step_id      TEXT,
+        payload      TEXT NOT NULL DEFAULT '{}',
+        decision     TEXT,
+        comment      TEXT,
+        edited_input TEXT,
+        created_at   TEXT NOT NULL,
+        resolved_at  TEXT
+      );
+
+      CREATE INDEX idx_approvals_status ON approvals (status, created_at);
+    `
   }
 ] as const;
 
