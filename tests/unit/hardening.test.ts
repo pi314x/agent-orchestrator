@@ -74,11 +74,18 @@ describe('agent registry', () => {
     await closeServices(services);
   });
 
-  it('does not let a skill query with SQL metacharacters break listing', async () => {
+  // Regression: this called agents.list({ skillQuery: q }) — but
+  // AgentListFilter has no skillQuery field at all, so list() silently
+  // ignored it and the test passed regardless of what q was. The `as never`
+  // cast needed to get past the type error was the tell. skillQuery is only
+  // ever handled by findBySkill, which is what actually builds the LIKE
+  // query these metacharacters could threaten.
+  it('does not let a skill query with SQL metacharacters break matching', async () => {
     const services = testServices();
     services.agents.create({ name: 'rev', role: 'reviewer', instructions: 'x' });
+    const admin = { ownerId: '', isAdmin: true };
     for (const q of ["' OR 1=1 --", '%', '_', '\\', '"']) {
-      expect(() => services.agents.list({ skillQuery: q } as never)).not.toThrow();
+      expect(() => services.agents.findBySkill(q, admin)).not.toThrow();
     }
     await closeServices(services);
   });
