@@ -148,7 +148,11 @@ Turning it on enables both directions:
 
 **Outbound** — calling agents other people run. `A2A_TRUST_MODE` (`verified-only` by
 default) decides whether an unsigned Agent Card is usable, and remote output always
-arrives wrapped as untrusted data.
+arrives wrapped as untrusted data. Every URL this orchestrator itself fetches on a
+caller's behalf — a card URL (`agent_register`, `a2a_card_get`), a card signature's
+key location, a push-notification callback — is HTTPS-only and refuses a private,
+loopback or cloud-metadata address, so registering a remote agent can't be used to
+probe your internal network.
 
 **Inbound** — letting them call you. A second HTTP server starts on
 `A2A_HTTP_PORT` (3334), serving the Agent Card at `/.well-known/agent-card.json`
@@ -333,7 +337,7 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 433 tests, no network, no model calls
+pnpm test        # 439 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 pnpm typecheck && pnpm lint && pnpm build
 ```

@@ -2,7 +2,7 @@ import { AGENT_CARD_PATH, type AgentCard } from '@a2a-js/sdk';
 import type { Db } from '../db/sqlite.js';
 import { OrchestratorError } from '../errors.js';
 import { newId } from '../ids.js';
-import { verifyCard, type TrustLevel } from './trust.js';
+import { validateFetchUrl, verifyCard, type TrustLevel } from './trust.js';
 
 export type CachedCard = {
   cardId: string;
@@ -56,6 +56,14 @@ export class CardStore {
   /** Fetch a card, verify its signature, and cache the result. */
   async fetchAndCache(url: string): Promise<CachedCard> {
     const cardUrl = cardUrlFor(url);
+    // cardUrl is caller-supplied (agent_register's cardUrl, a2a_card_get's
+    // url) and reaches a real fetch() below, exactly like a webhook callback
+    // or a card signature's jku — both of which already go through this same
+    // check. Without it, any authenticated caller could point this at an
+    // internal service or the cloud metadata endpoint and learn whether it's
+    // reachable (and sometimes its response) from the orchestrator's network
+    // position, neither profile nor admin scope gating this tool at all.
+    validateFetchUrl(cardUrl);
 
     let response: Response;
     try {
