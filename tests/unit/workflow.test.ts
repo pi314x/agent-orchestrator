@@ -361,6 +361,35 @@ describe('WorkflowEngine', () => {
     await closeServices(services);
   });
 
+  // Regression: retry_step reset the step_runs row unconditionally — state,
+  // job_id and all — with no check that the step was actually in a state
+  // retrying makes sense for. Calling it on a step whose job was still
+  // running left that job going in the background (never cancelled, still
+  // holding a concurrency slot and spending budget) while the very next
+  // advance() pass started a brand new job for the same step, since the row
+  // now read 'pending' with its dependencies already satisfied — two jobs
+  // racing for one step, the original's result silently discarded because
+  // the step's job_id no longer pointed at it.
+  it('retry_step on a still-running step cancels the original job instead of orphaning it', async () => {
+    const services = testServices({ mockScript: () => ({ gate: new Promise<void>(() => {}) }) });
+
+    const run = services.workflows.start({ spec: { name: 'retry-while-running', steps: [step('a')] } });
+    const originalJobId = services.workflows.getRun(run.runId).steps[0]?.jobId;
+    expect(originalJobId).toBeDefined();
+    expect(services.jobs.getOrThrow(originalJobId as string).state).toBe('running');
+
+    services.workflows.control(run.runId, 'retry_step', 'a');
+
+    // cancel() only signals the abort; the job settles asynchronously as the
+    // runner observes it, same as any other cancellation. Wait on this one
+    // job specifically rather than drain(), which would hang forever on the
+    // brand new retry job's own never-resolving gate.
+    await services.scheduler.wait([originalJobId as string], 'all', 2000);
+    expect(services.jobs.getOrThrow(originalJobId as string).state).toBe('cancelled');
+
+    await closeServices(services);
+  });
+
   it('keeps run history after the definition is deleted', async () => {
     const services = testServices();
 

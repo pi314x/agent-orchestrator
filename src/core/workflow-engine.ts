@@ -471,6 +471,21 @@ export class WorkflowEngine {
         if (stepId === undefined) {
           throw new OrchestratorError('INVALID_INPUT', 'retry_step needs a stepId.');
         }
+        const target = run.steps.find(step => step.stepId === stepId);
+        if (target === undefined) {
+          throw new OrchestratorError('INVALID_INPUT', `Step "${stepId}" is not part of this run.`);
+        }
+        // A step retried while its job is still running would otherwise
+        // orphan that job — it keeps running, still holding a concurrency
+        // slot and spending budget, while advance()'s next pass starts a
+        // brand new job for the same step right behind it (the row now
+        // reads 'pending' with dependencies already satisfied), the
+        // original's eventual result silently discarded because job_id no
+        // longer points at it. Cancel any live job first, exactly like the
+        // 'cancel' action already does for every non-terminal step.
+        if (target.jobId !== undefined && !STEP_TERMINAL.has(target.state)) {
+          this.deps.scheduler.cancel(target.jobId, 'Retried by workflow_run_control.');
+        }
         this.deps.db
           .prepare(
             `UPDATE step_runs SET state = 'pending', job_id = NULL, error = NULL, output = NULL, updated_at = ?
