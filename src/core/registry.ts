@@ -453,11 +453,12 @@ export class AgentRegistry {
 
   /**
    * Fetch an agent the caller may modify or delete. Stricter than
-   * `getVisible`: a shared agent is readable by everyone but writable only by
-   * an admin, so there is no owner-match fallback for it here. Refusing with
-   * POLICY_DENIED rather than NOT_FOUND for a shared agent is deliberate —
-   * the caller can already see it exists via agent_get/agent_list, so
-   * pretending otherwise would just be a worse answer.
+   * `getVisible`: a shared or peer-granted agent is readable but writable
+   * only by its owner (or an admin), so there is no owner-match fallback for
+   * either here. Refusing with POLICY_DENIED rather than NOT_FOUND in both
+   * cases is deliberate — the caller can already see the agent exists via
+   * agent_get/agent_list/delegate, so pretending otherwise would just be a
+   * worse answer, not a safer one.
    */
   getManaged(agentId: string, principal: { ownerId: string; isAdmin: boolean }): AgentRecord {
     const agent = this.getOrThrow(agentId);
@@ -468,6 +469,13 @@ export class AgentRegistry {
         'POLICY_DENIED',
         `Agent ${agentId} is a shared agent; only an admin may modify or delete it.`,
         'Ask an operator with the orch:admin scope, or create your own agent instead.'
+      );
+    }
+    if (this.grants.hasGrant('agent', agentId, agent.ownerId, principal.ownerId)) {
+      throw new OrchestratorError(
+        'POLICY_DENIED',
+        `Agent ${agentId} was shared with you for use, not for modifying or deleting; only its owner or an admin may do that.`,
+        'Ask the owner, or create your own agent instead.'
       );
     }
     throw new OrchestratorError('NOT_FOUND', `No agent with id ${agentId}.`);

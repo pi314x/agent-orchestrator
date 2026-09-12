@@ -887,6 +887,36 @@ describe('peer-to-peer sharing', () => {
     await closeServices(services);
   });
 
+  // Regression: getManaged already refused a grantee's write with
+  // POLICY_DENIED for the admin-wide shared sentinel, on the stated grounds
+  // that pretending the agent doesn't exist would be a worse answer than
+  // saying no — the grantee already saw it via agent_get/delegate. A
+  // peer-granted agent fell through to the generic NOT_FOUND branch instead,
+  // contradicting the exact same reasoning: Bob had just read and used this
+  // agent, then got told it does not exist the moment he tried to write it.
+  it('a grantee can see and use a shared agent but cannot manage it, and hears why', async () => {
+    const services = testServices();
+    const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
+      name: 'alice-shareable-2',
+      instructions: 'x'
+    });
+    const agentId = (created.out['agent'] as { agentId: string }).agentId;
+    await callAs(services, alice, agentShareTool, 'agent_share', { agentId, granteeId: bob.ownerId });
+
+    const updatedByBob = await callAs(services, bob, agentUpdateTool, 'agent_update', {
+      agentId,
+      patch: { instructions: 'y' }
+    });
+    const deletedByBob = await callAs(services, bob, agentDeleteTool, 'agent_delete', { agentId });
+
+    expect(updatedByBob.isError).toBe(true);
+    expect(updatedByBob.text).not.toContain('NOT_FOUND');
+    expect(updatedByBob.text).toContain('owner');
+    expect(deletedByBob.isError).toBe(true);
+    expect(deletedByBob.text).not.toContain('NOT_FOUND');
+    await closeServices(services);
+  });
+
   it('agent_unshare revokes access again', async () => {
     const services = testServices();
     const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
