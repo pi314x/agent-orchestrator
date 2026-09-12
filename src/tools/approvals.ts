@@ -28,7 +28,7 @@ export const approvalListTool: ToolRegistration = {
       {
         title: 'List approvals',
         description:
-          'List approval gates waiting on a human — paused workflow steps, jobs that asked for confirmation, and unverified remote agent cards. Check this when a workflow run is paused. Resolve them with approval_resolve.',
+          'List approval gates waiting on a human. Only a workflow step marked approval: true creates one today — a downstream tool marked requireApprovalFor fails the call outright rather than pausing for a human, and an unverified remote agent card is only ever allowed or blocked by A2A_TRUST_MODE, never gated here. Check this when a workflow run is paused. Resolve them with approval_resolve.',
         inputSchema: z.object({
           status: z.enum(APPROVAL_STATUSES).optional().describe('Defaults to pending.'),
           scope: z.enum(APPROVAL_SCOPES).optional(),

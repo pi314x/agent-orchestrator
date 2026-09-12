@@ -26,7 +26,7 @@ Non-goals for v1: hosted multi-tenant SaaS, model training, a general chat UI (a
 | Spec change | Consequence for this server |
 |---|---|
 | No `initialize` handshake, no `Mcp-Session-Id` | All state lives in the orchestrator's DB and is addressed by explicit handles (`agentId`, `jobId`, `runId`) passed as tool arguments. Any instance can serve any request. |
-| MRTR replaces server→client elicitation/sampling/roots | Confirmations/approvals return `resultType: "input_required"`; the client retries with `inputResponses`. Fallback: `approval_list` / `approval_resolve`. This is also where A2A's `input-required` task state surfaces. |
+| MRTR replaces server→client elicitation/sampling/roots | Used directly by one tool today: `workflow_run_control`'s cancel confirmation returns `resultType: "input_required"` and the client retries with `inputResponses`. A paused `workflow_step` approval gate is different — it never surfaces as MRTR at all, only as a DB row a caller discovers by polling `approval_list` / resolves with `approval_resolve`; there is no in-protocol signal to fall back from. A2A's `input-required` task state does not surface here either — nothing maps an inbound task into that state yet. |
 | Sampling, Roots, Logging deprecated | Local sub-agents call provider APIs/CLIs directly. Observability via our own `events_query` / `trace_get`. |
 | Tasks moved to extension `io.modelcontextprotocol/tasks` | Long-running tools are task-capable when negotiated; otherwise return a handle and the client uses `job_wait`. |
 | List results cacheable (`ttlMs`, `cacheScope`) | Tool catalog is static per profile and deterministically ordered. |
@@ -212,7 +212,7 @@ A2A file/data parts returned by a remote task are normalized into artifacts, sam
 
 | Tool | Purpose | Key inputs | Ann. | Prof. |
 |---|---|---|---|---|
-| `approval_list` | Pending approvals (local `requireApproval`, remote `input-required`, unverified-card gate) | status, scope | RO | C |
+| `approval_list` | Pending approvals. Only paused `workflow_step` gates create one today — a downstream tool marked `requireApprovalFor` fails the call outright rather than pausing for a human, an unverified remote agent card is only ever allowed or blocked by `A2A_TRUST_MODE`, and no A2A task ever reaches `input-required`; `scope: 'job' \| 'unverified_card' \| 'budget'` exist in the schema but nothing creates one yet | status, scope | RO | C |
 | `approval_resolve` | Approve, reject or edit | approvalId, decision, editedInput?, comment | — | C |
 
 ### 5.9 A2A interoperability (8)
@@ -267,7 +267,7 @@ Rationale: large tool lists degrade model tool selection — MCP's own roadmap f
 
 ### 5.14 Agent-side toolkit (internal — not exposed over MCP or A2A)
 
-Tools **local** sub-agents get inside the runner loop: `report_progress`, `finish` (validated against outputSchema), `memory_read`/`memory_write`/`memory_search`, `artifact_put`/`artifact_get`, `message_send`/`message_list`, `request_approval`, `spawn_job` (depth-limited), plus granted downstream MCP tools. Remote A2A agents have none of this — they only see what we send in the task's `context`/message parts.
+Tools **local** sub-agents get inside the runner loop: `report_progress`, `finish` (validated against outputSchema), `memory_read`/`memory_write`/`memory_search`, `artifact_put`/`artifact_get`, `message_send`/`message_list`, `spawn_job` (depth-limited), plus granted downstream MCP tools. Remote A2A agents have none of this — they only see what we send in the task's `context`/message parts. `request_approval` is not implemented: a running job cannot pause for a human mid-loop today; a granted tool with `requireApprovalFor` set fails the call outright instead (see §5.8).
 
 ---
 
