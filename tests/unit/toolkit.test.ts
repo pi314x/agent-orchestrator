@@ -90,4 +90,110 @@ describe('agent toolkit ownership', () => {
     expect(got.content).toBe('alice content');
     await closeServices(services);
   });
+
+  // Regression: message_send took a model-supplied toAgentId with no
+  // visibility check at all. Tool-call arguments are untrusted model output
+  // — the same reasoning as artifact_get above — so without isAgentVisible a
+  // job could message any agentId system-wide, not just one its own owner
+  // could reach, bypassing the exact protection message_send/message_list
+  // (the MCP tools) were just given.
+  it("message_send cannot target an agent invisible to the job's owner", async () => {
+    const services = testServices();
+
+    const bobsAgent = services.agents.create({
+      ownerId: 'user_bob',
+      name: 'bobs-agent',
+      instructions: 'x',
+      runner: 'mock'
+    });
+
+    const agent = services.agents.create({
+      ownerId: 'user_alice',
+      name: 'a',
+      instructions: 'x',
+      runner: 'mock'
+    });
+    const job = services.jobs.create({
+      ownerId: 'user_alice',
+      backend: 'local',
+      agentId: agent.id,
+      agentSnapshot: toSnapshot(agent),
+      instruction: 'x'
+    });
+
+    const toolkit = createAgentToolkit(
+      {
+        memory: services.memory,
+        artifacts: services.artifacts,
+        bus: services.bus,
+        events: services.events,
+        spawnJob: () => ({ jobId: 'job_stub' }),
+        isAgentVisible: agentId => {
+          try {
+            services.agents.getVisible(agentId, { ownerId: job.ownerId, isAdmin: false });
+            return true;
+          } catch {
+            return false;
+          }
+        }
+      },
+      job
+    );
+
+    const result = await toolkit.invoke('message_send', { toAgentId: bobsAgent.id, body: 'injected' });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain(`No agent with id ${bobsAgent.id}`);
+    expect(services.bus.list({ agentId: bobsAgent.id })).toEqual([]);
+    await closeServices(services);
+  });
+
+  it('message_send still reaches an agent visible to the same owner', async () => {
+    const services = testServices();
+
+    const teammate = services.agents.create({
+      ownerId: 'user_alice',
+      name: 'teammate',
+      instructions: 'x',
+      runner: 'mock'
+    });
+    const agent = services.agents.create({
+      ownerId: 'user_alice',
+      name: 'a',
+      instructions: 'x',
+      runner: 'mock'
+    });
+    const job = services.jobs.create({
+      ownerId: 'user_alice',
+      backend: 'local',
+      agentId: agent.id,
+      agentSnapshot: toSnapshot(agent),
+      instruction: 'x'
+    });
+
+    const toolkit = createAgentToolkit(
+      {
+        memory: services.memory,
+        artifacts: services.artifacts,
+        bus: services.bus,
+        events: services.events,
+        spawnJob: () => ({ jobId: 'job_stub' }),
+        isAgentVisible: agentId => {
+          try {
+            services.agents.getVisible(agentId, { ownerId: job.ownerId, isAdmin: false });
+            return true;
+          } catch {
+            return false;
+          }
+        }
+      },
+      job
+    );
+
+    const result = await toolkit.invoke('message_send', { toAgentId: teammate.id, body: 'hello' });
+
+    expect(result.isError).toBeUndefined();
+    expect(services.bus.list({ agentId: teammate.id })).toHaveLength(1);
+    await closeServices(services);
+  });
 });

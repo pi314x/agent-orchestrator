@@ -50,6 +50,14 @@ export interface ToolkitDeps {
   /** Downstream MCP tools granted to this agent, already allow/deny filtered. */
   downstream?: readonly DownstreamGrant[];
   callDownstream?: (server: string, tool: string, args: Record<string, unknown>) => Promise<string>;
+  /**
+   * Whether this job's owner may see the given agent — checked before
+   * `message_send` targets it. `toAgentId` is model-supplied, and this loop
+   * runs untrusted model output, so without this an agent could message any
+   * agentId system-wide, not just one its own owner can reach, the same way
+   * an MCP caller could before message_send/message_list were scoped.
+   */
+  isAgentVisible?: (agentId: string) => boolean;
 }
 
 export interface AgentToolkit {
@@ -256,10 +264,15 @@ export function createAgentToolkit(deps: ToolkitDeps, job: JobRecord): AgentTool
     },
 
     message_send: input => {
+      const toAgentId = typeof input['toAgentId'] === 'string' ? input['toAgentId'] : undefined;
+      if (toAgentId !== undefined && deps.isAgentVisible?.(toAgentId) === false) {
+        throw new OrchestratorError('NOT_FOUND', `No agent with id ${toAgentId}.`);
+      }
+
       const message = deps.bus.send({
         body: asString(input['body'], 'body'),
         fromAgentId: job.agentId,
-        ...(typeof input['toAgentId'] === 'string' && { toAgentId: input['toAgentId'] }),
+        ...(toAgentId !== undefined && { toAgentId }),
         ...(typeof input['toChannel'] === 'string' && { toChannel: input['toChannel'] })
       });
       return { content: `sent ${message.messageId}` };

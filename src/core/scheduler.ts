@@ -343,6 +343,14 @@ export class JobScheduler {
                 events: this.deps.events,
                 spawnJob: (parent, input) => this.spawnChild(parent, input),
                 downstream,
+                isAgentVisible: agentId => {
+                  try {
+                    this.deps.agents.getVisible(agentId, { ownerId: job.ownerId, isAdmin: false });
+                    return true;
+                  } catch {
+                    return false;
+                  }
+                },
                 ...(this.deps.proxy !== undefined && {
                   callDownstream: (server, tool, args) =>
                     (this.deps.proxy as McpProxyPool).call(server, tool, args)
