@@ -103,6 +103,56 @@ describe('A2A gateway polling', () => {
     expect(polls()).toBeLessThanOrEqual(11);
   });
 
+  // Regression: TASK_STATE_INPUT_REQUIRED is not terminal, so the poll loop
+  // just kept polling a task that will never change on its own until
+  // maxPollMs ran out and reported a plain TIMEOUT - hiding that the remote
+  // agent was waiting on us to answer something, not just slow, and burning
+  // the whole poll budget to find that out. There is no code path that can
+  // answer such a task, so it must fail fast and say why.
+  it('fails immediately, not after the poll budget, when a remote task needs more input', async () => {
+    vi.useFakeTimers();
+    const cards = new CardStore(db);
+    const jobs = new JobStore(db);
+    const inputRequiredTask: Task = {
+      id: 'task_stuck',
+      contextId: 'ctx',
+      status: { state: TaskState.TASK_STATE_INPUT_REQUIRED, message: undefined, timestamp: undefined },
+      artifacts: [],
+      history: [],
+      metadata: undefined
+    } as Task;
+    let polls = 0;
+    const client = {
+      sendMessage: async () => inputRequiredTask,
+      getTask: async () => {
+        polls += 1;
+        return inputRequiredTask;
+      }
+    };
+
+    const gateway = new A2AGateway({
+      db,
+      cards,
+      logger: silentLogger(),
+      trustMode: 'allow-unverified',
+      pollIntervalMs: 1_000,
+      maxPollMs: 60_000,
+      clientProvider: async () => client as never
+    });
+
+    const job = await remoteJob(cards, jobs, new AgentRegistry(db));
+
+    const drain = async (): Promise<RunnerEvent[]> => {
+      const events: RunnerEvent[] = [];
+      for await (const event of gateway.run({ job }, new AbortController().signal)) events.push(event);
+      return events;
+    };
+
+    await expect(drain()).rejects.toThrow(/waiting for more input/);
+    // Failed on the first observation of the state, not after polling for it.
+    expect(polls).toBe(0);
+  });
+
   // Regression: delay()'s abort listener was only ever removed via
   // { once: true }, which self-removes when the listener actually FIRES — on
   // the far more common path (the timer just elapses normally, no abort),

@@ -1,31 +1,5 @@
 import { Role, TaskState, type Message, type Part, type Task } from '@a2a-js/sdk';
-import type { JobState } from '../core/jobs.js';
 import type { ErrorPayload } from '../errors.js';
-
-/**
- * A2A task states map straight onto the shared job state machine (PLAN §4), so
- * a caller reading job_get cannot tell which backend ran the work.
- */
-export function taskStateToJobState(state: TaskState): JobState {
-  switch (state) {
-    case TaskState.TASK_STATE_SUBMITTED:
-      return 'queued';
-    case TaskState.TASK_STATE_WORKING:
-      return 'running';
-    case TaskState.TASK_STATE_INPUT_REQUIRED:
-    case TaskState.TASK_STATE_AUTH_REQUIRED:
-      return 'awaiting_input';
-    case TaskState.TASK_STATE_COMPLETED:
-      return 'succeeded';
-    case TaskState.TASK_STATE_CANCELED:
-      return 'cancelled';
-    case TaskState.TASK_STATE_REJECTED:
-    case TaskState.TASK_STATE_FAILED:
-      return 'failed';
-    default:
-      return 'running';
-  }
-}
 
 export function isTerminalTaskState(state: TaskState): boolean {
   return (

@@ -122,6 +122,21 @@ export class A2AGateway {
     while (!isTerminalTaskState(task.status?.state ?? TaskState.TASK_STATE_WORKING)) {
       signal.throwIfAborted();
 
+      // Neither state is terminal, so the loop would otherwise poll a task
+      // that is not going to change on its own until maxPollMs runs out and
+      // reports a plain TIMEOUT - hiding that the remote agent is waiting on
+      // us, not just slow. There is no code path yet that can answer an
+      // input-required task, so fail fast and say why instead of polling for
+      // up to 15 minutes to find out the same thing.
+      const state = task.status?.state;
+      if (state === TaskState.TASK_STATE_INPUT_REQUIRED || state === TaskState.TASK_STATE_AUTH_REQUIRED) {
+        throw new OrchestratorError(
+          'RUNNER_FAILED',
+          `Remote task ${task.id} on ${job.agentSnapshot.name} is waiting for more input, which this orchestrator cannot provide.`,
+          'Cancel it with job_cancel; resuming an input-required A2A task is not supported yet.'
+        );
+      }
+
       if (Date.now() >= deadline) {
         throw new OrchestratorError(
           'TIMEOUT',
