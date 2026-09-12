@@ -63,6 +63,8 @@ export type StepRunRecord = {
 
 export type WorkflowRunRecord = {
   runId: string;
+  /** Who started the run; its spawned jobs inherit this, same as spawn_job. */
+  ownerId: string;
   workflowId?: string;
   name: string;
   state: RunState;
@@ -161,6 +163,7 @@ function isTruthy(rendered: string): boolean {
 type WorkflowRow = { id: string; name: string; spec: string; created_at: string; updated_at: string };
 type RunRow = {
   id: string;
+  owner_id: string;
   workflow_id: string | null;
   spec: string;
   inputs: string;
@@ -252,6 +255,8 @@ export class WorkflowEngine {
   }
 
   start(input: {
+    /** Owner of the new run and everything it spawns. Omitted means '' (single-owner). */
+    ownerId?: string;
     workflowId?: string;
     spec?: WorkflowSpec;
     inputs?: Record<string, unknown>;
@@ -282,11 +287,12 @@ export class WorkflowEngine {
     const create = this.deps.db.transaction(() => {
       this.deps.db
         .prepare(
-          `INSERT INTO workflow_runs (id, workflow_id, spec, inputs, state, idempotency_key, created_at, updated_at)
-           VALUES (?, ?, ?, ?, 'running', ?, ?, ?)`
+          `INSERT INTO workflow_runs (id, owner_id, workflow_id, spec, inputs, state, idempotency_key, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?)`
         )
         .run(
           runId,
+          input.ownerId ?? '',
           workflow?.workflowId ?? null,
           JSON.stringify(spec),
           JSON.stringify(input.inputs ?? {}),
@@ -329,6 +335,7 @@ export class WorkflowEngine {
 
     return {
       runId: row.id,
+      ownerId: row.owner_id,
       name: spec.name,
       state: row.state as RunState,
       inputs: JSON.parse(row.inputs) as Record<string, unknown>,
@@ -565,7 +572,7 @@ export class WorkflowEngine {
         }
       }
 
-      this.startStep(runId, definition, vars);
+      this.startStep(runId, definition, vars, run.ownerId);
     }
 
     // 4. Close the run out when nothing is left to do.
@@ -577,7 +584,12 @@ export class WorkflowEngine {
     this.finishRun(runId, failed ? 'failed' : 'succeeded');
   }
 
-  private startStep(runId: string, definition: WorkflowStep, vars: Record<string, unknown>): void {
+  private startStep(
+    runId: string,
+    definition: WorkflowStep,
+    vars: Record<string, unknown>,
+    ownerId: string
+  ): void {
     const agent = resolveAgentTarget(
       this.deps.agents,
       {
@@ -589,6 +601,7 @@ export class WorkflowEngine {
     );
 
     const job = this.deps.scheduler.submit({
+      ownerId,
       backend: 'local',
       agentId: agent.id,
       agentSnapshot: toSnapshot(agent),

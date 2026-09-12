@@ -227,6 +227,7 @@ new tool cannot forget:
 | Jobs | listed, fetched, cancelled and retried only by their owner |
 | Artifacts | read and listed only by their owner |
 | Memory | `namespace`/`key` uniqueness is per owner, so two users can both use `"notes"`; reads, writes, deletes and full-text search are all scoped |
+| Workflow jobs | a workflow's spawned jobs belong to whoever started it, so `job_list` finds them like any other job |
 
 A job spawned by an agent inherits the parent's owner, and artifacts and memory
 an agent writes belong to the job's owner. Asking for something another user
@@ -244,7 +245,7 @@ regardless of who owned the row.
 
 | | |
 |---|---|
-| Workflows | the columns exist; the store and tools are not wired to them |
+| Workflow definitions and runs | `workflow_get`/`workflow_run_get` have no visibility check — anyone who knows a run id can read it. Only the *jobs* a run spawns are owned. |
 | Messages and channels | agent-to-agent messaging is shared |
 | Approvals | the review queue is shared, which may well be what you want |
 | Events | the audit log is global; an admin-only view is the intended shape |

@@ -212,6 +212,7 @@ export const workflowStartTool: ToolRegistration = {
       args => {
         try {
           const run = deps.services.workflows.start({
+            ownerId: deps.principal.ownerId,
             ...(args.workflowId !== undefined && { workflowId: args.workflowId }),
             ...(args.spec !== undefined && { spec: args.spec as WorkflowSpec }),
             ...(args.inputs !== undefined && { inputs: args.inputs }),

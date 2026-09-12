@@ -408,3 +408,80 @@ describe('failure propagation', () => {
     await closeServices(services);
   });
 });
+
+describe('workflow ownership', () => {
+  const alice = 'user_alice';
+
+  // Regression: workflow_runs.owner_id existed since migration 7 but was never
+  // read or written, and every job a workflow step submitted carried no owner
+  // at all — so in any OAuth-enabled deployment, the person who started the
+  // workflow could not find its jobs through job_list, which filters by their
+  // own ownerId. Workflows were not merely "unisolated" (visible to everyone)
+  // but invisible to their own creator.
+  it('stamps the run with its owner, and every job it spawns inherits it', async () => {
+    const services = testServices();
+
+    const run = services.workflows.start({
+      ownerId: alice,
+      spec: { name: 'w', steps: [step('a'), step('b', { dependsOn: ['a'] })] }
+    });
+
+    expect(run.ownerId).toBe(alice);
+
+    await services.scheduler.drain();
+
+    const finished = services.workflows.getRun(run.runId);
+    expect(finished.ownerId).toBe(alice);
+
+    const jobIds = finished.steps.map(s => s.jobId).filter((id): id is string => id !== undefined);
+    expect(jobIds).toHaveLength(2);
+    for (const jobId of jobIds) {
+      expect(services.jobs.getOrThrow(jobId).ownerId).toBe(alice);
+    }
+
+    // The point of the fix: the starting user can now find these through the
+    // same job_list path every other owned job goes through.
+    const aliceJobs = services.jobs.list({ ownerId: alice });
+    expect(aliceJobs.jobs.map(j => j.id).sort()).toEqual([...jobIds].sort());
+
+    await closeServices(services);
+  });
+
+  it('retrying a step keeps the job owned by the run starter', async () => {
+    let failNext = true;
+    const services = testServices({
+      mockScript: job => {
+        if (job.instruction !== 'do a' || !failNext) return {};
+        failNext = false;
+        return { fail: { code: 'RUNNER_FAILED' as const, message: 'transient' } };
+      }
+    });
+
+    const run = services.workflows.start({ ownerId: alice, spec: { name: 'w', steps: [step('a')] } });
+    await services.scheduler.drain();
+    expect(services.workflows.getRun(run.runId).steps[0]?.state).toBe('failed');
+
+    services.workflows.control(run.runId, 'retry_step', 'a');
+    await services.scheduler.drain();
+
+    const retried = services.workflows.getRun(run.runId);
+    const jobId = retried.steps[0]?.jobId;
+    expect(jobId).toBeDefined();
+    expect(services.jobs.getOrThrow(jobId as string).ownerId).toBe(alice);
+
+    await closeServices(services);
+  });
+
+  it('omitting ownerId falls back to the single-owner sentinel', async () => {
+    const services = testServices();
+
+    const run = services.workflows.start({ spec: { name: 'w', steps: [step('a')] } });
+    await services.scheduler.drain();
+
+    expect(run.ownerId).toBe('');
+    const jobId = services.workflows.getRun(run.runId).steps[0]?.jobId;
+    expect(services.jobs.getOrThrow(jobId as string).ownerId).toBe('');
+
+    await closeServices(services);
+  });
+});
