@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { agentRegisterTool } from '../../src/tools/a2a.js';
 import {
   agentCreateTool,
   agentDeleteTool,
@@ -304,6 +305,37 @@ describe('multi-user isolation', () => {
     const listed = await callAs(services, single, jobListTool, 'job_list', {});
 
     expect((listed.out['jobs'] as unknown[]).length).toBe(1);
+    await closeServices(services);
+  });
+});
+
+describe('agent_register defaults to private', () => {
+  // Regression: agent_register's create() call never set ownerId, so every
+  // registered remote agent landed on the owner_id === '' sentinel — the
+  // same value that means "shared with everyone" once OAuth is on. Any user
+  // registering a remote agent (with its own credentialsRef attached)
+  // unintentionally made it visible to and delegatable by every other user,
+  // without shared: true ever being set and without the admin gate that
+  // guards it on agent_create ever running.
+  it("a registered remote agent is private to whoever registered it, not visible to another user", async () => {
+    const services = testServices();
+    services.cards.fetchAndCache = (url: string) =>
+      services.cards.cache(url, { name: 'alice-remote-bot', description: 'a remote agent', skills: [] } as never);
+
+    const registered = await callAs(services, alice, agentRegisterTool, 'agent_register', {
+      cardUrl: 'https://example.test/card'
+    });
+    expect(registered.isError, registered.text).toBe(false);
+    const agentId = (registered.out['agent'] as { agentId: string }).agentId;
+
+    const seenByAlice = await callAs(services, alice, agentGetTool, 'agent_get', { agentId });
+    const seenByBob = await callAs(services, bob, agentGetTool, 'agent_get', { agentId });
+    const listedByBob = await callAs(services, bob, agentListTool, 'agent_list', {});
+
+    expect(seenByAlice.isError).toBe(false);
+    expect(seenByBob.isError).toBe(true);
+    expect(seenByBob.text).toContain('NOT_FOUND');
+    expect((listedByBob.out['agents'] as { name: string }[]).map(a => a.name)).not.toContain('alice-remote-bot');
     await closeServices(services);
   });
 });

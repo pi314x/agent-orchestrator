@@ -75,6 +75,7 @@ export const agentRegisterTool: ToolRegistration = {
           const name = args.alias ?? cached.card.name;
 
           const agent = deps.services.agents.create({
+            ownerId: deps.principal.ownerId,
             kind: 'remote',
             name,
             role: 'remote',
