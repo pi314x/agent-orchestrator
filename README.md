@@ -89,20 +89,42 @@ requires the `orch:admin` scope once OAuth is configured.
 
 ## Agents as Markdown
 
-`ORCH_AGENTS_DIR` (default `agents/`) is scanned at startup. The directory is the
-source of truth: edits land on restart, deleting a file withdraws the agent, and
+`ORCH_AGENTS_DIR` (default `agents/`) is scanned once at startup — there is no
+file watcher, so an edit takes effect on the next restart, not live. The
+directory is the source of truth: deleting a file withdraws the agent, and
 agents made through `agent_create` are never touched.
+
+**This is plain local filesystem access** (`readdirSync`/`readFileSync`), not a
+remote fetch. The file has to already be on the disk the server process reads
+from before it restarts — there is no git-clone, no network mount, no upload
+endpoint built in. Getting a laptop-local file there means `scp`/`rsync` to the
+box, a git push the deploy pulls, or a CI sync — whatever your deploy already
+uses. A user with no way to get a file onto the server's disk cannot use this
+path at all; give them `agent_create` over MCP instead, which needs nothing
+more than the client they already have.
+
+`agents/` ships with one file per built-in role — `planner.md`, `researcher.md`,
+`coder.md`, `reviewer.md`, `tester.md`, `writer.md`, `critic.md`,
+`summarizer.md` — each the same persona as `delegate { template: "..." }`, as a
+concrete, editable, tool-grantable starting point:
 
 ```markdown
 ---
-name: example-reviewer
+name: reviewer
 role: reviewer
-runner: openai-compatible
+description: Reviews work for correctness and risk.
 ---
 
-You are a code reviewer for this repository.
-Look for correctness bugs and security risk, most severe first.
+You are a reviewer. Look for correctness bugs, unhandled cases and security
+risk, most severe first. Report only issues you can justify from the material
+in front of you.
 ```
+
+None of the eight set `runner:`, so each follows whatever `ORCH_DEFAULT_RUNNER`
+the deployment configures — matching how the built-in templates behave when
+delegated to, rather than locking in one runner regardless of how the server is
+set up. Set `runner:` explicitly only when an agent genuinely needs a specific
+one.
 
 ## Runners
 
