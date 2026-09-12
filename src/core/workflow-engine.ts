@@ -45,6 +45,8 @@ export type RunState = (typeof RUN_STATES)[number];
 
 export type WorkflowRecord = {
   workflowId: string;
+  /** Who defined it; '' in a single-owner deployment. */
+  ownerId: string;
   name: string;
   spec: WorkflowSpec;
   createdAt: string;
@@ -160,7 +162,14 @@ function isTruthy(rendered: string): boolean {
   return value !== '' && value !== 'false' && value !== '0' && value !== 'null' && value !== 'undefined';
 }
 
-type WorkflowRow = { id: string; name: string; spec: string; created_at: string; updated_at: string };
+type WorkflowRow = {
+  id: string;
+  owner_id: string;
+  name: string;
+  spec: string;
+  created_at: string;
+  updated_at: string;
+};
 type RunRow = {
   id: string;
   owner_id: string;
@@ -201,33 +210,33 @@ export class WorkflowEngine {
     this.deps.scheduler.onChange(() => this.advanceAll());
   }
 
-  define(spec: WorkflowSpec): WorkflowRecord {
+  define(spec: WorkflowSpec, ownerId = ''): WorkflowRecord {
     validateWorkflow(spec);
 
     const now = new Date().toISOString();
-    const existing = this.deps.db.prepare('SELECT id FROM workflows WHERE name = ?').get(spec.name) as
-      { id: string } | undefined;
+    // A name is only unique within one owner (idx would reject otherwise),
+    // so redefining an existing name must look within that same owner too —
+    // never overwrite (or fail on) a different owner's workflow of that name.
+    const existing = this.deps.db
+      .prepare('SELECT id FROM workflows WHERE name = ? AND owner_id = ?')
+      .get(spec.name, ownerId) as { id: string } | undefined;
 
     const id = existing?.id ?? newId('workflow');
 
     this.deps.db
       .prepare(
-        `INSERT INTO workflows (id, name, spec, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT (name) DO UPDATE SET spec = excluded.spec, updated_at = excluded.updated_at`
+        `INSERT INTO workflows (id, owner_id, name, spec, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (owner_id, name) DO UPDATE SET spec = excluded.spec, updated_at = excluded.updated_at`
       )
-      .run(id, spec.name, JSON.stringify(spec), now, now);
+      .run(id, ownerId, spec.name, JSON.stringify(spec), now, now);
 
     return this.getWorkflowOrThrow(id);
   }
 
-  getWorkflowOrThrow(workflowId: string): WorkflowRecord {
-    const row = this.deps.db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId) as
-      WorkflowRow | undefined;
-    if (row === undefined) {
-      throw new OrchestratorError('NOT_FOUND', `No workflow with id ${workflowId}.`, 'Call workflow_list.');
-    }
+  private toWorkflowRecord(row: WorkflowRow): WorkflowRecord {
     return {
       workflowId: row.id,
+      ownerId: row.owner_id,
       name: row.name,
       spec: JSON.parse(row.spec) as WorkflowSpec,
       createdAt: row.created_at,
@@ -235,21 +244,38 @@ export class WorkflowEngine {
     };
   }
 
-  listWorkflows(limit = 20): WorkflowRecord[] {
-    const rows = this.deps.db
-      .prepare('SELECT * FROM workflows ORDER BY name ASC LIMIT ?')
-      .all(Math.min(Math.max(limit, 1), 100)) as WorkflowRow[];
-
-    return rows.map(row => ({
-      workflowId: row.id,
-      name: row.name,
-      spec: JSON.parse(row.spec) as WorkflowSpec,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at
-    }));
+  /** Unchecked — for internal use only where the caller already has authority (e.g. a run's own spec). */
+  getWorkflowOrThrow(workflowId: string): WorkflowRecord {
+    const row = this.deps.db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId) as
+      WorkflowRow | undefined;
+    if (row === undefined) {
+      throw new OrchestratorError('NOT_FOUND', `No workflow with id ${workflowId}.`, 'Call workflow_list.');
+    }
+    return this.toWorkflowRecord(row);
   }
 
-  deleteWorkflow(workflowId: string): boolean {
+  /** The tool-facing fetch: NOT_FOUND for a workflow belonging to someone else, existence undisclosed. */
+  getVisibleWorkflow(workflowId: string, principal: { ownerId: string; isAdmin: boolean }): WorkflowRecord {
+    const workflow = this.getWorkflowOrThrow(workflowId);
+    if (principal.isAdmin || workflow.ownerId === principal.ownerId) return workflow;
+    throw new OrchestratorError('NOT_FOUND', `No workflow with id ${workflowId}.`, 'Call workflow_list.');
+  }
+
+  listWorkflows(limit = 20, ownerId?: string): WorkflowRecord[] {
+    const where = ownerId === undefined ? '' : 'WHERE owner_id = ?';
+    const params = ownerId === undefined ? [] : [ownerId];
+
+    const rows = this.deps.db
+      .prepare(`SELECT * FROM workflows ${where} ORDER BY name ASC LIMIT ?`)
+      .all(...params, Math.min(Math.max(limit, 1), 100)) as WorkflowRow[];
+
+    return rows.map(row => this.toWorkflowRecord(row));
+  }
+
+  deleteWorkflow(workflowId: string, principal: { ownerId: string; isAdmin: boolean }): boolean {
+    // Visibility first: deleting something you cannot even see must read as
+    // "there was nothing to delete", not silently succeed on someone else's row.
+    this.getVisibleWorkflow(workflowId, principal);
     // Runs stay in history; only the definition goes.
     return this.deps.db.prepare('DELETE FROM workflows WHERE id = ?').run(workflowId).changes > 0;
   }
@@ -257,19 +283,30 @@ export class WorkflowEngine {
   start(input: {
     /** Owner of the new run and everything it spawns. Omitted means '' (single-owner). */
     ownerId?: string;
+    /** Whether the starting caller is an admin — governs visibility of an existing workflowId. */
+    isAdmin?: boolean;
     workflowId?: string;
     spec?: WorkflowSpec;
     inputs?: Record<string, unknown>;
     idempotencyKey?: string;
   }): WorkflowRunRecord {
+    const principal = { ownerId: input.ownerId ?? '', isAdmin: input.isAdmin ?? false };
+
     if (input.idempotencyKey !== undefined) {
+      // Scoped to the same owner, matching the (owner_id, idempotency_key)
+      // index — two different owners choosing the same key string must never
+      // hand one of them back the other's run.
       const existing = this.deps.db
-        .prepare('SELECT id FROM workflow_runs WHERE idempotency_key = ?')
-        .get(input.idempotencyKey) as { id: string } | undefined;
+        .prepare('SELECT id FROM workflow_runs WHERE idempotency_key = ? AND owner_id = ?')
+        .get(input.idempotencyKey, principal.ownerId) as { id: string } | undefined;
       if (existing !== undefined) return this.getRun(existing.id);
     }
 
-    const workflow = input.workflowId === undefined ? undefined : this.getWorkflowOrThrow(input.workflowId);
+    // Visibility-checked: naming an existing workflowId must not reach one
+    // that belongs to someone else, the same class of gap resolveAgentTarget
+    // had for agentId.
+    const workflow =
+      input.workflowId === undefined ? undefined : this.getVisibleWorkflow(input.workflowId, principal);
     const spec = workflow?.spec ?? input.spec;
 
     if (spec === undefined) {
@@ -317,6 +354,7 @@ export class WorkflowEngine {
     return this.getRun(runId);
   }
 
+  /** Unchecked — for internal use only (advanceOnce, spawning, the idempotency shortcut). */
   getRun(runId: string): WorkflowRunRecord {
     const row = this.deps.db.prepare('SELECT * FROM workflow_runs WHERE id = ?').get(runId) as
       RunRow | undefined;
@@ -359,10 +397,23 @@ export class WorkflowEngine {
     };
   }
 
-  listRuns(filter: { workflowId?: string; state?: RunState; limit?: number } = {}): WorkflowRunRecord[] {
+  /** The tool-facing fetch: NOT_FOUND for a run belonging to someone else, existence undisclosed. */
+  getVisibleRun(runId: string, principal: { ownerId: string; isAdmin: boolean }): WorkflowRunRecord {
+    const run = this.getRun(runId);
+    if (principal.isAdmin || run.ownerId === principal.ownerId) return run;
+    throw new OrchestratorError('NOT_FOUND', `No workflow run with id ${runId}.`, 'Call workflow_run_list.');
+  }
+
+  listRuns(
+    filter: { workflowId?: string; state?: RunState; limit?: number; ownerId?: string } = {}
+  ): WorkflowRunRecord[] {
     const where: string[] = [];
     const params: unknown[] = [];
 
+    if (filter.ownerId !== undefined) {
+      where.push('owner_id = ?');
+      params.push(filter.ownerId);
+    }
     if (filter.workflowId !== undefined) {
       where.push('workflow_id = ?');
       params.push(filter.workflowId);
@@ -380,12 +431,20 @@ export class WorkflowEngine {
     return rows.map(row => this.getRun(row.id));
   }
 
+  /**
+   * `principal` is optional and checked only when given: the tool call site
+   * passes it, but the internal nudge after an approval resolves must not —
+   * approvals are a shared queue by design (README's Ownership section),
+   * so a reviewer resuming a run they do not own is the entire point of a
+   * gate, not a bypass of one.
+   */
   control(
     runId: string,
     action: 'pause' | 'resume' | 'cancel' | 'retry_step',
-    stepId?: string
+    stepId?: string,
+    principal?: { ownerId: string; isAdmin: boolean }
   ): WorkflowRunRecord {
-    const run = this.getRun(runId);
+    const run = principal === undefined ? this.getRun(runId) : this.getVisibleRun(runId, principal);
 
     switch (action) {
       case 'pause':

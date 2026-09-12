@@ -78,7 +78,7 @@ export const workflowDefineTool: ToolRegistration = {
       },
       args => {
         try {
-          const workflow = deps.services.workflows.define(args as WorkflowSpec);
+          const workflow = deps.services.workflows.define(args as WorkflowSpec, deps.principal.ownerId);
           return toolOk(
             { workflow: { ...workflow, spec: workflow.spec as unknown as Record<string, unknown> } },
             `Defined ${workflow.name} with ${workflow.spec.steps.length} step(s).`
@@ -112,7 +112,10 @@ export const workflowListTool: ToolRegistration = {
         }
       },
       args => {
-        const workflows = deps.services.workflows.listWorkflows(args.limit ?? 20);
+        const workflows = deps.services.workflows.listWorkflows(
+          args.limit ?? 20,
+          deps.principal.isAdmin ? undefined : deps.principal.ownerId
+        );
         return toolOk(
           { workflows: workflows.map(w => ({ ...w, spec: w.spec as unknown as Record<string, unknown> })) },
           `${workflows.length} workflow(s).`
@@ -143,7 +146,7 @@ export const workflowGetTool: ToolRegistration = {
       },
       args => {
         try {
-          const workflow = deps.services.workflows.getWorkflowOrThrow(args.workflowId);
+          const workflow = deps.services.workflows.getVisibleWorkflow(args.workflowId, deps.principal);
           return toolOk(
             { workflow: { ...workflow, spec: workflow.spec as unknown as Record<string, unknown> } },
             `${workflow.name}: ${workflow.spec.steps.length} step(s).`
@@ -177,8 +180,12 @@ export const workflowDeleteTool: ToolRegistration = {
         }
       },
       args => {
-        const deleted = deps.services.workflows.deleteWorkflow(args.workflowId);
-        return toolOk({ deleted }, deleted ? 'Deleted.' : 'Nothing to delete.');
+        try {
+          const deleted = deps.services.workflows.deleteWorkflow(args.workflowId, deps.principal);
+          return toolOk({ deleted }, deleted ? 'Deleted.' : 'Nothing to delete.');
+        } catch (error) {
+          return toolError(error);
+        }
       }
     );
   }
@@ -213,6 +220,7 @@ export const workflowStartTool: ToolRegistration = {
         try {
           const run = deps.services.workflows.start({
             ownerId: deps.principal.ownerId,
+            isAdmin: deps.principal.isAdmin,
             ...(args.workflowId !== undefined && { workflowId: args.workflowId }),
             ...(args.spec !== undefined && { spec: args.spec as WorkflowSpec }),
             ...(args.inputs !== undefined && { inputs: args.inputs }),
@@ -249,7 +257,7 @@ export const workflowRunGetTool: ToolRegistration = {
       },
       args => {
         try {
-          const run = deps.services.workflows.getRun(args.runId);
+          const run = deps.services.workflows.getVisibleRun(args.runId, deps.principal);
           const done = run.steps.filter(s => s.state === 'succeeded').length;
           return toolOk({ run }, `${run.state}: ${done}/${run.steps.length} step(s) succeeded.`);
         } catch (error) {
@@ -285,7 +293,10 @@ export const workflowRunListTool: ToolRegistration = {
         }
       },
       args => {
-        const runs = deps.services.workflows.listRuns(args);
+        const runs = deps.services.workflows.listRuns({
+          ...args,
+          ...(deps.principal.isAdmin ? {} : { ownerId: deps.principal.ownerId })
+        });
         return toolOk({ runs }, `${runs.length} run(s).`);
       }
     );
@@ -318,13 +329,18 @@ export const workflowRunControlTool: ToolRegistration = {
       },
       (args, ctx) => {
         try {
+          // Visibility first: acting on a run you cannot even see must read
+          // as "no such run", including the confirmation prompt below, which
+          // would otherwise leak that a run with this id exists.
+          deps.services.workflows.getVisibleRun(args.runId, deps.principal);
+
           // Cancelling discards in-flight work, so confirm it through MRTR.
           // approval_list / approval_resolve remain the fallback path.
           if (args.action === 'cancel') {
             const confirmed = acceptedContent<{ confirm: boolean }>(ctx.mcpReq.inputResponses, 'confirm');
 
             if (confirmed?.confirm !== true) {
-              const run = deps.services.workflows.getRun(args.runId);
+              const run = deps.services.workflows.getVisibleRun(args.runId, deps.principal);
               const live = run.steps.filter(s => s.state === 'running').length;
 
               return inputRequired({
@@ -342,7 +358,7 @@ export const workflowRunControlTool: ToolRegistration = {
             }
           }
 
-          const run = deps.services.workflows.control(args.runId, args.action, args.stepId);
+          const run = deps.services.workflows.control(args.runId, args.action, args.stepId, deps.principal);
           return toolOk({ run }, `Run ${run.runId} is ${run.state}.`);
         } catch (error) {
           return toolError(error);

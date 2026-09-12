@@ -402,6 +402,55 @@ export const MIGRATIONS: readonly Migration[] = [
         VALUES (new.id, new.namespace, new.key, new.value, new.tags);
       END;
     `
+  },
+  {
+    version: 9,
+    name: 'per_owner_naming_and_workflow_visibility',
+    up: `
+      -- Agent names were unique across the whole deployment, not per owner, so
+      -- two different users could not both name an agent "reviewer" even
+      -- though each agent is private to its own owner. A shared agent still
+      -- collides with anyone's private name of the same value under this
+      -- constraint, which is the intended behaviour: one namespace to pick
+      -- from, disambiguated by owner otherwise.
+      DROP INDEX idx_agents_name;
+      CREATE UNIQUE INDEX idx_agents_name ON agents (owner_id, name) WHERE status = 'active' AND ephemeral = 0;
+
+      -- workflows.name carries a table-level UNIQUE, which SQLite cannot widen
+      -- in place, so the table is rebuilt the same way migration 8 reworked
+      -- memory. No foreign key references workflows.id, so this is safe.
+      CREATE TABLE workflows_new (
+        id         TEXT PRIMARY KEY,
+        owner_id   TEXT NOT NULL DEFAULT '',
+        name       TEXT NOT NULL,
+        spec       TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (owner_id, name)
+      );
+
+      INSERT INTO workflows_new (id, owner_id, name, spec, created_at, updated_at)
+      SELECT id, '', name, spec, created_at, updated_at FROM workflows;
+
+      DROP TABLE workflows;
+      ALTER TABLE workflows_new RENAME TO workflows;
+
+      CREATE INDEX idx_workflows_owner ON workflows (owner_id);
+
+      -- Idempotency keys were unique across the whole deployment, so two
+      -- different users choosing the same key string (a plausible client
+      -- convention, e.g. "run-1") would have the second submitter handed back
+      -- the first user's actual job or run — its result, its instructions,
+      -- everything. Scoped per owner instead, matching how every other
+      -- uniqueness constraint here now works.
+      DROP INDEX idx_jobs_idempotency;
+      CREATE UNIQUE INDEX idx_jobs_idempotency ON jobs (owner_id, idempotency_key)
+        WHERE idempotency_key IS NOT NULL;
+
+      DROP INDEX idx_runs_idempotency;
+      CREATE UNIQUE INDEX idx_runs_idempotency ON workflow_runs (owner_id, idempotency_key)
+        WHERE idempotency_key IS NOT NULL;
+    `
   }
 ] as const;
 

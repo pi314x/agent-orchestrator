@@ -10,6 +10,15 @@ import {
 import { delegateTool } from '../../src/tools/delegation.js';
 import { jobCancelTool, jobGetTool, jobListTool, jobSubmitTool } from '../../src/tools/jobs.js';
 import { memoryReadTool, memorySearchTool, memoryWriteTool } from '../../src/tools/memory.js';
+import {
+  workflowDefineTool,
+  workflowDeleteTool,
+  workflowGetTool,
+  workflowListTool,
+  workflowRunGetTool,
+  workflowRunListTool,
+  workflowStartTool
+} from '../../src/tools/workflows.js';
 import type { Principal } from '../../src/core/principal.js';
 import type { ToolDeps } from '../../src/tools/types.js';
 import type { Services } from '../../src/services.js';
@@ -435,6 +444,106 @@ describe('shared agents', () => {
     expect(() => services.agents.getManaged(sharedAgent.id, alice)).toThrow(/only an admin/i);
 
     services.db.close();
+  });
+});
+
+describe('workflow and run isolation', () => {
+  const spec = (name: string) => ({
+    name,
+    steps: [{ id: 'a', instruction: 'do it', template: 'writer' }]
+  });
+
+  it('two users can each define a workflow with the same name', async () => {
+    const services = testServices();
+
+    const aliceDefined = await callAs(services, alice, workflowDefineTool, 'workflow_define', spec('shared-name'));
+    const bobDefined = await callAs(services, bob, workflowDefineTool, 'workflow_define', spec('shared-name'));
+
+    expect(aliceDefined.isError).toBe(false);
+    expect(bobDefined.isError).toBe(false);
+    await closeServices(services);
+  });
+
+  it("one user cannot fetch, list, delete or start another's workflow", async () => {
+    const services = testServices();
+    const defined = await callAs(services, alice, workflowDefineTool, 'workflow_define', spec('alice-only'));
+    const workflowId = (defined.out['workflow'] as { workflowId: string }).workflowId;
+
+    const listedByBob = await callAs(services, bob, workflowListTool, 'workflow_list', {});
+    const gotByBob = await callAs(services, bob, workflowGetTool, 'workflow_get', { workflowId });
+    const startedByBob = await callAs(services, bob, workflowStartTool, 'workflow_start', { workflowId });
+    const deletedByBob = await callAs(services, bob, workflowDeleteTool, 'workflow_delete', { workflowId });
+
+    expect((listedByBob.out['workflows'] as unknown[]).length).toBe(0);
+    expect(gotByBob.isError).toBe(true);
+    expect(gotByBob.text).toContain('NOT_FOUND');
+    expect(startedByBob.isError).toBe(true);
+    expect(deletedByBob.isError).toBe(true);
+    expect(services.workflows.getWorkflowOrThrow(workflowId).name).toBe('alice-only');
+    await closeServices(services);
+  });
+
+  it("one user cannot fetch or list another's run", async () => {
+    const services = testServices();
+    const started = await callAs(services, alice, workflowStartTool, 'workflow_start', {
+      spec: spec('alice-run')
+    });
+    const runId = (started.out['run'] as { runId: string }).runId;
+    await services.scheduler.drain();
+
+    const gotByBob = await callAs(services, bob, workflowRunGetTool, 'workflow_run_get', { runId });
+    const listedByBob = await callAs(services, bob, workflowRunListTool, 'workflow_run_list', {});
+    const listedByAlice = await callAs(services, alice, workflowRunListTool, 'workflow_run_list', {});
+
+    expect(gotByBob.isError).toBe(true);
+    expect(gotByBob.text).toContain('NOT_FOUND');
+    expect((listedByBob.out['runs'] as unknown[]).length).toBe(0);
+    expect((listedByAlice.out['runs'] as { runId: string }[]).map(r => r.runId)).toEqual([runId]);
+    await closeServices(services);
+  });
+
+  it("workflow_start with a workflowId cannot reach another user's private workflow", async () => {
+    const services = testServices();
+    const defined = await callAs(services, alice, workflowDefineTool, 'workflow_define', spec('alice-private-wf'));
+    const workflowId = (defined.out['workflow'] as { workflowId: string }).workflowId;
+
+    const startedByBob = await callAs(services, bob, workflowStartTool, 'workflow_start', { workflowId });
+
+    expect(startedByBob.isError).toBe(true);
+    expect(startedByBob.text).toContain('NOT_FOUND');
+    await closeServices(services);
+  });
+
+  it('the same idempotency key chosen by two different owners does not collide', async () => {
+    const services = testServices();
+
+    const aliceRun = await callAs(services, alice, workflowStartTool, 'workflow_start', {
+      spec: spec('idem-a'),
+      idempotencyKey: 'same-key'
+    });
+    const bobRun = await callAs(services, bob, workflowStartTool, 'workflow_start', {
+      spec: spec('idem-b'),
+      idempotencyKey: 'same-key'
+    });
+
+    const aliceRunId = (aliceRun.out['run'] as { runId: string }).runId;
+    const bobRunId = (bobRun.out['run'] as { runId: string }).runId;
+    expect(aliceRunId).not.toBe(bobRunId);
+    await services.scheduler.drain();
+    await closeServices(services);
+  });
+
+  it('an admin sees and can act on workflows and runs across owners', async () => {
+    const services = testServices();
+    const defined = await callAs(services, alice, workflowDefineTool, 'workflow_define', spec('admin-visible'));
+    const workflowId = (defined.out['workflow'] as { workflowId: string }).workflowId;
+
+    const gotByAdmin = await callAs(services, admin, workflowGetTool, 'workflow_get', { workflowId });
+    const deletedByAdmin = await callAs(services, admin, workflowDeleteTool, 'workflow_delete', { workflowId });
+
+    expect(gotByAdmin.isError).toBe(false);
+    expect(deletedByAdmin.isError).toBe(false);
+    await closeServices(services);
   });
 });
 

@@ -228,6 +228,8 @@ new tool cannot forget:
 | Artifacts | read and listed only by their owner |
 | Memory | `namespace`/`key` uniqueness is per owner, so two users can both use `"notes"`; reads, writes, deletes and full-text search are all scoped |
 | Workflow jobs | a workflow's spawned jobs belong to whoever started it, so `job_list` finds them like any other job |
+| Workflow definitions | listed, fetched and deleted only by their owner; names are unique per owner, so two users can each define `"deploy"` |
+| Workflow runs | listed, fetched and controlled (`pause`/`resume`/`cancel`/`retry_step`) only by their owner; `workflow_start`'s `workflowId` resolves only a workflow the caller can see, and `idempotencyKey` is scoped per owner so two users choosing the same key never collide |
 | `delegate`/`fan_out`/`consensus` by `agentId` or `skillQuery` | resolve only agents the caller can see — never another owner's private agent, even by naming its id directly |
 
 A job spawned by an agent inherits the parent's owner, and artifacts and memory
@@ -265,9 +267,8 @@ from, not a persistent agent itself.
 
 | | |
 |---|---|
-| Workflow definitions and runs | `workflow_get`/`workflow_run_get` have no visibility check — anyone who knows a run id can read it. Only the *jobs* a run spawns are owned. |
 | Messages and channels | agent-to-agent messaging is shared |
-| Approvals | the review queue is shared, which may well be what you want |
+| Approvals | the review queue is shared, which may well be what you want — resolving one resumes the run regardless of who owns it, since a reviewer resuming a run they don't own is the point of the gate, not a bypass of it |
 | Events | the audit log is global; an admin-only view is the intended shape |
 
 Templates, registered tool servers, cached Agent Cards, published skills and
@@ -275,9 +276,7 @@ budgets are shared **by design** — they are operator configuration, already
 behind `orch:admin`.
 
 So: safe for separating colleagues' work on a shared team instance, where
-everyone is trusted and the point is not tripping over each other. Workflows
-still cross owners if you use them, so treat those as shared until that gap
-closes too.
+everyone is trusted and the point is not tripping over each other.
 
 ## Configuration
 
@@ -294,7 +293,7 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 359 tests, no network, no model calls
+pnpm test        # 365 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 pnpm typecheck && pnpm lint && pnpm build
 ```

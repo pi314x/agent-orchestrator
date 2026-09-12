@@ -203,7 +203,7 @@ export class AgentRegistry {
   create(input: CreateAgentInput): AgentRecord {
     const ephemeral = input.ephemeral ?? false;
 
-    if (!ephemeral && this.findByName(input.name) !== undefined) {
+    if (!ephemeral && this.findByName(input.name, input.ownerId ?? '') !== undefined) {
       throw new OrchestratorError(
         'CONFLICT',
         `An agent named "${input.name}" already exists.`,
@@ -443,10 +443,11 @@ export class AgentRegistry {
     throw new OrchestratorError('NOT_FOUND', `No agent with id ${agentId}.`);
   }
 
-  findByName(name: string): AgentRecord | undefined {
+  /** Matches idx_agents_name: unique per owner, not across the deployment. */
+  findByName(name: string, ownerId: string): AgentRecord | undefined {
     const row = this.db
-      .prepare(`SELECT * FROM agents WHERE name = ? AND status = 'active' AND ephemeral = 0`)
-      .get(name) as AgentRow | undefined;
+      .prepare(`SELECT * FROM agents WHERE name = ? AND owner_id = ? AND status = 'active' AND ephemeral = 0`)
+      .get(name, ownerId) as AgentRow | undefined;
     return row === undefined ? undefined : toRecord(row);
   }
 

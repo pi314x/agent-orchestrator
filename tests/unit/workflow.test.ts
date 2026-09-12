@@ -298,7 +298,7 @@ describe('WorkflowEngine', () => {
     const run = services.workflows.start({ workflowId: workflow.workflowId });
     await services.scheduler.drain();
 
-    expect(services.workflows.deleteWorkflow(workflow.workflowId)).toBe(true);
+    expect(services.workflows.deleteWorkflow(workflow.workflowId, { ownerId: '', isAdmin: false })).toBe(true);
     expect(services.workflows.getRun(run.runId).state).toBe('succeeded');
 
     await closeServices(services);

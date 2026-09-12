@@ -89,7 +89,7 @@ describe('AgentRegistry.syncFromFiles', () => {
     const result = agents.syncFromFiles(loadAgentFiles(dir));
 
     expect(result.created).toEqual(['sec']);
-    expect(agents.findByName('sec')?.source).toBe('file');
+    expect(agents.findByName('sec', '')?.source).toBe('file');
     expect(agents.findBySkill('reviewer', { ownerId: '', isAdmin: true })?.name).toBe('sec');
     db.close();
   });
@@ -105,7 +105,7 @@ describe('AgentRegistry.syncFromFiles', () => {
 
     expect(result.updated).toEqual(['x']);
     expect(agents.list().agents).toHaveLength(1);
-    expect(agents.findByName('x')?.instructions).toBe('Revised.');
+    expect(agents.findByName('x', '')?.instructions).toBe('Revised.');
     db.close();
   });
 
@@ -117,7 +117,7 @@ describe('AgentRegistry.syncFromFiles', () => {
     const result = agents.syncFromFiles([]);
 
     expect(result.removed).toEqual(['gone']);
-    expect(agents.findByName('gone')).toBeUndefined();
+    expect(agents.findByName('gone', '')).toBeUndefined();
     db.close();
   });
 
@@ -128,7 +128,7 @@ describe('AgentRegistry.syncFromFiles', () => {
 
     agents.syncFromFiles([]);
 
-    expect(agents.findByName('api-made')?.source).toBe('api');
+    expect(agents.findByName('api-made', '')?.source).toBe('api');
     db.close();
   });
 });
