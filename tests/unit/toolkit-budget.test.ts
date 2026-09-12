@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { BudgetTracker } from '../../src/core/budget.js';
-import { toSnapshot, type AgentRecord } from '../../src/core/registry.js';
+import { AgentRegistry, toSnapshot, type AgentRecord } from '../../src/core/registry.js';
 import type { Services } from '../../src/services.js';
 import { closeServices, migratedDb, testServices } from '../helpers.js';
 
@@ -205,5 +205,74 @@ describe('BudgetTracker', () => {
     expect(services.jobs.getOrThrow(allowed.id).state).toBe('succeeded');
 
     await closeServices(services);
+  });
+});
+
+describe('budget spend at scale', () => {
+  // Regression: spend() read every historical job row back into JavaScript and
+  // JSON.parse'd each one. It runs three times before every job, so at 200k
+  // rows it blocked the event loop for ~775ms per check. Summing in SQL gives
+  // the same numbers without materialising the table.
+  it('sums a large history exactly', () => {
+    const db = migratedDb();
+    const agents = new AgentRegistry(db);
+    const agent = agents.create({ name: 'w', instructions: 'x', runner: 'mock' });
+    const budgets = new BudgetTracker(db);
+
+    const usage = JSON.stringify({ inputTokens: 100, outputTokens: 50, costUsd: 0.002 });
+    const insert = db.prepare(
+      `INSERT INTO jobs (id, backend, agent_id, agent_snapshot, instruction, state, attempt, depth,
+                         priority, depends_on, usage, created_at, updated_at)
+       VALUES (?, 'local', ?, '{}', 'x', 'succeeded', 1, 0, 0, '[]', ?, ?, ?)`
+    );
+
+    const now = new Date().toISOString();
+    db.transaction(() => {
+      for (let i = 0; i < 5_000; i += 1) insert.run(`job_scale_${i}`, agent.id, usage, now, now);
+    })();
+
+    const spent = budgets.spend('global');
+
+    expect(spent.calls).toBe(5_000);
+    expect(spent.tokens).toBe(5_000 * 150);
+    expect(spent.costUsd).toBeCloseTo(10, 6);
+    db.close();
+  });
+
+  it('ignores jobs that recorded no usage', () => {
+    const db = migratedDb();
+    const agent = new AgentRegistry(db).create({ name: 'w', instructions: 'x', runner: 'mock' });
+    const budgets = new BudgetTracker(db);
+
+    db.prepare(
+      `INSERT INTO jobs (id, backend, agent_id, agent_snapshot, instruction, state, attempt, depth,
+                         priority, depends_on, usage, created_at, updated_at)
+       VALUES ('job_nousage', 'local', ?, '{}', 'x', 'failed', 1, 0, 0, '[]', NULL, ?, ?)`
+    ).run(agent.id, new Date().toISOString(), new Date().toISOString());
+
+    expect(budgets.spend('global')).toEqual({ calls: 0, tokens: 0, costUsd: 0 });
+    db.close();
+  });
+
+  it('scopes spend to one agent', () => {
+    const db = migratedDb();
+    const agents = new AgentRegistry(db);
+    const mine = agents.create({ name: 'mine', instructions: 'x', runner: 'mock' });
+    const other = agents.create({ name: 'other', instructions: 'x', runner: 'mock' });
+    const budgets = new BudgetTracker(db);
+
+    const usage = JSON.stringify({ inputTokens: 10, outputTokens: 10, costUsd: 1 });
+    const insert = db.prepare(
+      `INSERT INTO jobs (id, backend, agent_id, agent_snapshot, instruction, state, attempt, depth,
+                         priority, depends_on, usage, created_at, updated_at)
+       VALUES (?, 'local', ?, '{}', 'x', 'succeeded', 1, 0, 0, '[]', ?, ?, ?)`
+    );
+    const now = new Date().toISOString();
+    insert.run('job_mine', mine.id, usage, now, now);
+    insert.run('job_other', other.id, usage, now, now);
+
+    expect(budgets.spend('agent', mine.id).calls).toBe(1);
+    expect(budgets.spend('global').calls).toBe(2);
+    db.close();
   });
 });

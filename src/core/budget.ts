@@ -106,29 +106,34 @@ export class BudgetTracker {
     return rows.map(toRecord);
   }
 
-  /** Spend is derived from recorded job usage, so there is no counter to drift. */
+  /**
+   * Spend is derived from recorded job usage, so there is no counter to drift.
+   *
+   * Summed in SQL rather than in JavaScript, and deliberately so: this runs
+   * three times before every job, and reading every historical row back to
+   * JSON.parse it blocked the event loop for most of a second once the jobs
+   * table reached a few hundred thousand rows. An aggregate reads the same
+   * data without materialising it.
+   */
   spend(scope: BudgetScope, scopeId?: string): BudgetSpend {
     const where = scope === 'global' ? '1 = 1' : scope === 'agent' ? 'agent_id = ?' : 'id = ?';
     const params = scope === 'global' ? [] : [scopeId ?? ''];
 
-    const rows = this.db
-      .prepare(`SELECT usage FROM jobs WHERE ${where} AND usage IS NOT NULL`)
-      .all(...params) as { usage: string }[];
+    const row = this.db
+      .prepare(
+        `SELECT
+           COUNT(*) AS calls,
+           COALESCE(SUM(json_extract(usage, '$.costUsd')), 0) AS cost_usd,
+           COALESCE(SUM(
+             COALESCE(json_extract(usage, '$.inputTokens'), 0) +
+             COALESCE(json_extract(usage, '$.outputTokens'), 0)
+           ), 0) AS tokens
+         FROM jobs
+         WHERE ${where} AND usage IS NOT NULL`
+      )
+      .get(...params) as { calls: number; cost_usd: number; tokens: number };
 
-    let costUsd = 0;
-    let tokens = 0;
-
-    for (const row of rows) {
-      const usage = JSON.parse(row.usage) as {
-        costUsd?: number;
-        inputTokens?: number;
-        outputTokens?: number;
-      };
-      costUsd += usage.costUsd ?? 0;
-      tokens += (usage.inputTokens ?? 0) + (usage.outputTokens ?? 0);
-    }
-
-    return { costUsd, tokens, calls: rows.length };
+    return { costUsd: row.cost_usd, tokens: row.tokens, calls: row.calls };
   }
 
   /**
