@@ -153,6 +153,12 @@ export class A2AGateway {
     if (normalized.structured !== undefined) {
       yield { type: 'structured', value: normalized.structured };
     }
+    // File/data parts from the remote task's own artifacts become artifacts
+    // here too, the same way a local job's artifact_put would — otherwise
+    // normalizeTaskResult's whole artifacts field is computed and discarded.
+    for (const artifact of normalized.artifacts) {
+      yield { type: 'artifact', name: artifact.name, content: artifact.content, mimeType: artifact.mimeType };
+    }
     yield { type: 'usage', usage: {} };
   }
 

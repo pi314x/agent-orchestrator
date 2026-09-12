@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { toSnapshot, type AgentRecord } from '../../src/core/registry.js';
+import type { Runner, RunnerEvent } from '../../src/runners/types.js';
 import type { Services } from '../../src/services.js';
 import { closeServices, deferred, testServices } from '../helpers.js';
 
@@ -46,6 +47,36 @@ describe('JobScheduler', () => {
 
     const { jobs } = services.jobs.list({});
     expect(jobs[0]?.state).toBe('succeeded');
+    await closeServices(services);
+  });
+
+  // Regression: RunnerEvent had no 'artifact' variant at all, so the only
+  // runner with no toolkit of its own (the A2A gateway, normalizing a remote
+  // task's file/data parts) had no way to reach the artifact store. Proven
+  // at this layer with a bare custom Runner rather than the real gateway,
+  // since persisting the event is the scheduler's job, not the runner's.
+  it("persists a runner's artifact event to the artifact store", async () => {
+    const services = testServices();
+    const agent = makeAgent(services);
+
+    const artifactRunner: Runner = {
+      name: 'mock',
+      health: () => ({ name: 'mock', available: true }),
+      async *run(): AsyncIterable<RunnerEvent> {
+        yield { type: 'artifact', name: 'from-remote.txt', content: 'remote content', mimeType: 'text/plain' };
+        yield { type: 'text', text: 'done' };
+        yield { type: 'usage', usage: {} };
+      }
+    };
+    services.runners.register(artifactRunner);
+
+    const job = submit(services, agent);
+    await services.scheduler.drain();
+
+    const stored = services.artifacts.list({ jobId: job.id });
+    expect(stored).toHaveLength(1);
+    expect(stored[0]).toMatchObject({ name: 'from-remote.txt', mimeType: 'text/plain' });
+    expect(services.artifacts.read(stored[0]!.artifactId).content).toBe('remote content');
     await closeServices(services);
   });
 

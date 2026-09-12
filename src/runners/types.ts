@@ -6,7 +6,14 @@ export type RunnerEvent =
   | { type: 'progress'; message: string }
   | { type: 'text'; text: string }
   | { type: 'structured'; value: unknown }
-  | { type: 'usage'; usage: JobUsage };
+  | { type: 'usage'; usage: JobUsage }
+  /**
+   * A local agent stores its own artifacts directly through the toolkit's
+   * artifact_put, which has direct store access — this event exists for a
+   * runner that has no toolkit at all, namely the A2A gateway normalizing a
+   * remote task's file/data parts into the same artifact store local jobs use.
+   */
+  | { type: 'artifact'; name: string; content: string; mimeType?: string };
 
 export interface RunnerInput {
   job: JobRecord;

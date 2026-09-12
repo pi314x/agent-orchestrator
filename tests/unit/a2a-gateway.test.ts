@@ -203,4 +203,66 @@ describe('A2A gateway polling', () => {
     // Remote output is untrusted data and must arrive marked as such.
     expect(text.join('')).toContain('<untrusted_remote_output');
   });
+
+  // Regression: normalizeTaskResult() already builds an `artifacts` array from
+  // a remote task's file/data parts — PLAN.md §5.7 documents "A2A file/data
+  // parts returned by a remote task are normalized into artifacts, same as
+  // local job output" — but run() never did anything with that field. It was
+  // computed and silently discarded; nothing ever reached the artifact store.
+  it("normalizes a remote task's artifacts into artifact RunnerEvents", async () => {
+    vi.useFakeTimers();
+    const cards = new CardStore(db);
+    const jobs = new JobStore(db);
+
+    const completed: Task = {
+      ...workingTask('task_art'),
+      status: {
+        state: TaskState.TASK_STATE_COMPLETED,
+        message: undefined,
+        timestamp: undefined
+      },
+      artifacts: [
+        {
+          artifactId: 'a1',
+          name: 'report.txt',
+          description: '',
+          parts: [
+            {
+              content: { $case: 'text' as const, value: 'remote-generated report' },
+              metadata: undefined,
+              filename: '',
+              mediaType: 'text/plain'
+            }
+          ],
+          metadata: undefined,
+          extensions: []
+        }
+      ]
+    } as unknown as Task;
+
+    const client = {
+      sendMessage: async () => completed,
+      getTask: async () => completed
+    };
+
+    const gateway = new A2AGateway({
+      db,
+      cards,
+      logger: silentLogger(),
+      trustMode: 'allow-unverified',
+      pollIntervalMs: 1_000,
+      maxPollMs: 10_000,
+      clientProvider: async () => client as never
+    });
+
+    const job = await remoteJob(cards, jobs, new AgentRegistry(db));
+
+    const events: RunnerEvent[] = [];
+    for await (const event of gateway.run({ job }, new AbortController().signal)) events.push(event);
+
+    const artifactEvents = events.filter(e => e.type === 'artifact');
+    expect(artifactEvents).toEqual([
+      { type: 'artifact', name: 'report.txt', content: 'remote-generated report', mimeType: 'text/plain' }
+    ]);
+  });
 });

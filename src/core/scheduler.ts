@@ -378,6 +378,18 @@ export class JobScheduler {
             });
             this.notify();
             break;
+          case 'artifact':
+            // The only channel a runner with no toolkit (the A2A gateway) has
+            // to store one — a local agent's own artifact_put writes to the
+            // store directly and never goes through a RunnerEvent at all.
+            this.deps.artifacts.put({
+              ownerId: job.ownerId,
+              name: event.name,
+              content: event.content,
+              jobId: job.id,
+              ...(event.mimeType !== undefined && { mimeType: event.mimeType })
+            });
+            break;
         }
       }
 
