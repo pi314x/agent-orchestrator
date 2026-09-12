@@ -201,5 +201,15 @@ export function wrapUntrusted(source: string, text: string): string {
   // is advisory, which is no boundary at all.
   const body = text.replace(CLOSING_TAG, '&lt;/untrusted_remote_output&gt;');
 
-  return `<untrusted_remote_output source="${source.replace(/"/g, '')}">\n${body}\n</untrusted_remote_output>`;
+  // `source` is attacker-controlled too: for a registered remote agent it is
+  // that agent's own self-reported Agent Card name, no less untrusted than
+  // its output. Stripping quotes alone stops it breaking out of the
+  // attribute, but a literal closing tag inside it — no quote needed — reads
+  // to whoever consumes this next as if the boundary already ended before
+  // the real body even started, defeating the escaping above entirely.
+  const safeSource = source
+    .replace(CLOSING_TAG, '&lt;/untrusted_remote_output&gt;')
+    .replace(/"/g, '');
+
+  return `<untrusted_remote_output source="${safeSource}">\n${body}\n</untrusted_remote_output>`;
 }
