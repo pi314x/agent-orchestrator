@@ -474,6 +474,33 @@ describe("job_wait and the A2A debug tools do not leak another owner's job", () 
     await closeServices(services);
   });
 
+  // Regression: job_submit's dependsOn never checked visibility on the ids
+  // it named, unlike job_wait right above it. releaseBlocked() resolves any
+  // dependsOn id with no ownership check at all, so a job depending on
+  // another owner's private job id turns the dependent's own job.blocked
+  // event ("Dependency <id> failed") and its auto-release the moment the
+  // dependency succeeds into a side channel: existence, exact state, and
+  // the timing of every state change of a job the caller was never
+  // authorized to see, all without ever calling job_get on it.
+  it("job_submit's dependsOn cannot be used to track another user's private job", async () => {
+    const services = testServices();
+    const aliceJob = await callAs(services, alice, jobSubmitTool, 'job_submit', {
+      instruction: 'alice private work',
+      template: 'writer'
+    });
+    const aliceJobId = (aliceJob.out['job'] as { jobId: string }).jobId;
+
+    const bobJob = await callAs(services, bob, jobSubmitTool, 'job_submit', {
+      instruction: 'bob job depending on a job he cannot see',
+      template: 'writer',
+      dependsOn: [aliceJobId]
+    });
+
+    expect(bobJob.isError).toBe(true);
+    expect(bobJob.text).toContain(`No job with id ${aliceJobId}`);
+    await closeServices(services);
+  });
+
   // Same bug shape, three more spots: a2a_task_get/task_cancel/push_config_set
   // resolved jobId via getOrThrow instead of getVisible. task_get would leak
   // the remote task's raw payload; task_cancel could cancel another owner's

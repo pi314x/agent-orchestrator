@@ -53,6 +53,19 @@ export const jobSubmitTool: ToolRegistration = {
       },
       args => {
         try {
+          // dependsOn is a caller-supplied job id resolved by releaseBlocked
+          // on every scheduler pump, not just here — and unlike job_wait's
+          // ids, it was never checked at all. A blocked job's own
+          // job.blocked event reports the exact state of its dependency
+          // ("Dependency <id> failed"), and the job is released the moment
+          // every dependency succeeds — so an unchecked dependency turns
+          // this caller's own job into a side channel revealing another
+          // owner's private job's existence, state and the exact timing of
+          // its state changes, without ever going through job_get.
+          for (const depId of args.dependsOn ?? []) {
+            deps.services.jobs.getVisible(depId, deps.principal);
+          }
+
           const agent = resolveAgentTarget(
             deps.services.agents,
             {

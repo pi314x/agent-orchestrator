@@ -235,6 +235,7 @@ new tool cannot forget:
 | Workflow runs | listed, fetched and controlled (`pause`/`resume`/`cancel`/`retry_step`) only by their owner; `workflow_start`'s `workflowId` resolves only a workflow the caller can see, and `idempotencyKey` is scoped per owner so two users choosing the same key never collide |
 | `delegate`/`fan_out`/`consensus` by `agentId` or `skillQuery` | resolve only agents the caller can see — never another owner's private agent, even by naming its id directly |
 | `job_wait` | can only be pointed at jobs the caller already owns or can see — naming another owner's jobId is refused before any waiting starts, not just filtered out of the result |
+| `job_submit`'s `dependsOn` | every id named must already be visible to the caller — otherwise a job blocked on another owner's private job would leak that job's existence, exact state and the timing of its state changes through the dependent's own `job.blocked` event and auto-release, without ever calling `job_get` |
 | `agent_register` | the registered remote agent belongs to whoever registered it, exactly like `agent_create` |
 | `a2a_task_get`/`a2a_task_cancel`/`a2a_push_config_set` | all resolve `jobId` through the same visibility check as `job_get`/`job_cancel` — naming another owner's job is refused, not just routed to a different (and possibly missing) remote task |
 | `events_query`/`trace_get` | a non-admin must scope these to a `jobId`, `agentId` or `runId` they can see; there is no unscoped view of every owner's event history |
@@ -332,7 +333,7 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 428 tests, no network, no model calls
+pnpm test        # 429 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 pnpm typecheck && pnpm lint && pnpm build
 ```
