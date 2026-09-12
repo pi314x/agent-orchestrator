@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { JOB_STATES } from '../core/jobs.js';
 import { resolveAgentTarget, toSnapshot } from '../core/registry.js';
 import { renderTemplate } from '../core/templating.js';
 import { JobViewSchema, OutputSchemaSchema, toJobView } from '../schemas/common.js';
@@ -407,8 +408,19 @@ export const consensusTool: ToolRegistration = {
           timeoutSec: z.number().int().min(1).max(MAX_WAIT_SEC).default(60)
         }),
         outputSchema: z.object({
-          answers: z.array(z.object({ agentName: z.string(), jobId: z.string(), text: z.string() })),
-          agreement: z.number().describe('Share of participants giving the most common answer, 0 to 1.'),
+          answers: z.array(
+            z.object({
+              agentName: z.string(),
+              jobId: z.string(),
+              text: z.string(),
+              state: z.enum(JOB_STATES).describe('Participants that did not succeed contribute no answer.')
+            })
+          ),
+          agreement: z
+            .number()
+            .describe('Share of *answering* participants giving the most common answer, 0 to 1.'),
+          answered: z.number().describe('How many participants produced an answer.'),
+          failed: z.number(),
           verdict: z.string(),
           judgeJob: JobViewSchema.optional()
         }),
@@ -444,27 +456,47 @@ export const consensusTool: ToolRegistration = {
           );
 
           const byId = new Map(finished.map(job => [job.id, job]));
-          const answers = submitted.map(s => ({
-            agentName: s.agentName,
-            jobId: s.job.id,
-            text: byId.get(s.job.id)?.resultText ?? ''
-          }));
+          const answers = submitted.map(s => {
+            const job = byId.get(s.job.id);
+            return {
+              agentName: s.agentName,
+              jobId: s.job.id,
+              text: job?.resultText ?? '',
+              state: job?.state ?? ('failed' as const)
+            };
+          });
+
+          // Only participants that actually answered get a vote. Counting a
+          // failed one's empty string let two dead agents outvote the single
+          // agent that answered, and call the silence a 67% consensus.
+          const answered = answers.filter(
+            answer => answer.state === 'succeeded' && answer.text.trim() !== ''
+          );
+          const failed = answers.length - answered.length;
+          const failureNote = failed > 0 ? ` (${failed} did not answer)` : '';
+
+          if (answered.length === 0) {
+            return toolOk(
+              { answers, agreement: 0, answered: 0, failed, verdict: '' },
+              `No participant answered${failureNote}. Check job_get on any id for the reason.`
+            );
+          }
 
           // Agreement is measured on normalized text, so trivial formatting
           // differences do not read as disagreement.
           const counts = new Map<string, number>();
-          for (const answer of answers) {
+          for (const answer of answered) {
             const key = answer.text.trim().toLowerCase();
             counts.set(key, (counts.get(key) ?? 0) + 1);
           }
 
           const top = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
-          const agreement = top === undefined ? 0 : top[1] / answers.length;
+          const agreement = top === undefined ? 0 : top[1] / answered.length;
 
           if (args.strategy === 'vote') {
             return toolOk(
-              { answers, agreement, verdict: top?.[0] ?? '' },
-              `${answers.length} answers; ${Math.round(agreement * 100)}% agreement.`
+              { answers, agreement, answered: answered.length, failed, verdict: top?.[0] ?? '' },
+              `${answered.length} of ${answers.length} answered${failureNote}; ${Math.round(agreement * 100)}% agreement.`
             );
           }
 
@@ -479,8 +511,10 @@ export const consensusTool: ToolRegistration = {
             agentId: judge.id,
             agentSnapshot: toSnapshot(judge),
             instruction: `Question: ${args.question}\n\nPick the best answer and say why.`,
-            // Answers are sub-agent output: data for the judge, never instructions.
-            context: { answers: answers.map(a => ({ agent: a.agentName, answer: a.text })) },
+            // Answers are sub-agent output: data for the judge, never
+            // instructions — and only the real ones, so a failure cannot read
+            // to the judge as an agent that answered with nothing.
+            context: { answers: answered.map(a => ({ agent: a.agentName, answer: a.text })) },
             timeoutSec: args.timeoutSec
           });
 
@@ -490,10 +524,12 @@ export const consensusTool: ToolRegistration = {
             {
               answers,
               agreement,
+              answered: answered.length,
+              failed,
               verdict: judged?.resultText ?? '',
               ...(judged !== undefined && { judgeJob: toJobView(judged) })
             },
-            `${answers.length} answers judged by ${judge.name}; ${Math.round(agreement * 100)}% raw agreement.`
+            `${answered.length} of ${answers.length} answers judged by ${judge.name}${failureNote}; ${Math.round(agreement * 100)}% raw agreement.`
           );
         } catch (error) {
           return toolError(error);

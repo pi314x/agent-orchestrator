@@ -155,26 +155,34 @@ export class ApprovalStore {
     decision: 'approve' | 'reject',
     options: { comment?: string; editedInput?: Record<string, unknown> } = {}
   ): ApprovalRecord {
-    const approval = this.getOrThrow(approvalId);
-
-    if (approval.status !== 'pending') {
-      throw new OrchestratorError(
-        'CONFLICT',
-        `Approval ${approvalId} was already ${approval.status}.`,
-        'Approvals are resolved once.'
-      );
-    }
-
-    this.db
-      .prepare(`UPDATE approvals SET status = ?, comment = ?, edited_input = ?, resolved_at = ? WHERE id = ?`)
-      .run(
+    // One statement, so the check and the write cannot be separated. A
+    // read-then-write let two instances both see `pending` and both resolve:
+    // the second decision silently overwrote the first, which for a
+    // human-in-the-loop gate means an approve could land on top of a reject.
+    const rows = this.db
+      .prepare(
+        `UPDATE approvals
+            SET status = ?, comment = ?, edited_input = ?, resolved_at = ?
+          WHERE id = ? AND status = 'pending'
+        RETURNING *`
+      )
+      .all(
         decision === 'approve' ? 'approved' : 'rejected',
         options.comment ?? null,
         options.editedInput === undefined ? null : JSON.stringify(options.editedInput),
         new Date().toISOString(),
         approvalId
-      );
+      ) as ApprovalRow[];
 
-    return this.getOrThrow(approvalId);
+    const row = rows[0];
+    if (row !== undefined) return toRecord(row);
+
+    // Nothing updated: either it does not exist, or someone else resolved it.
+    const existing = this.getOrThrow(approvalId);
+    throw new OrchestratorError(
+      'CONFLICT',
+      `Approval ${approvalId} was already ${existing.status}.`,
+      'Approvals are resolved once.'
+    );
   }
 }

@@ -5,6 +5,7 @@ import { pino } from 'pino';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { migrate } from '../../src/db/migrate.js';
 import { openDatabase, type Db } from '../../src/db/sqlite.js';
+import { ApprovalStore } from '../../src/core/approvals.js';
 import { JobStore } from '../../src/core/jobs.js';
 import { AgentRegistry, toSnapshot } from '../../src/core/registry.js';
 import { createServices, type Services } from '../../src/services.js';
@@ -167,6 +168,32 @@ describe('two instances sharing one database', () => {
     jobs.transition(finished.id, 'succeeded', { resultText: 'ok' });
 
     expect(jobs.claim(finished.id)).toBeUndefined();
+  });
+
+  // Same class as the job claim, and it matters for the same reason: two
+  // instances can both read `pending` before either writes, and an approve
+  // landing on top of a reject is the worst possible direction for that race
+  // to resolve in a human-in-the-loop gate.
+  it('an approval can only be resolved once, across connections', () => {
+    const dbA = connect();
+    const dbB = connect();
+    const a = new ApprovalStore(dbA);
+    const b = new ApprovalStore(dbB);
+
+    const approval = a.create({ scope: 'job', summary: 'Delete production data?', payload: {} });
+
+    expect(a.getOrThrow(approval.approvalId).status).toBe('pending');
+    expect(b.getOrThrow(approval.approvalId).status).toBe('pending');
+
+    a.resolve(approval.approvalId, 'reject', { comment: 'absolutely not' });
+
+    expect(() => b.resolve(approval.approvalId, 'approve', { comment: 'looks fine' })).toThrow(
+      /already rejected/
+    );
+    expect(a.getOrThrow(approval.approvalId)).toMatchObject({
+      status: 'rejected',
+      comment: 'absolutely not'
+    });
   });
 
   // M5's done-when, at the level that actually matters: no job runs twice and
