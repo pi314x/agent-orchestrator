@@ -90,7 +90,7 @@ describe('AgentRegistry.syncFromFiles', () => {
 
     expect(result.created).toEqual(['sec']);
     expect(agents.findByName('sec')?.source).toBe('file');
-    expect(agents.findBySkill('reviewer')?.name).toBe('sec');
+    expect(agents.findBySkill('reviewer', { ownerId: '', isAdmin: true })?.name).toBe('sec');
     db.close();
   });
 

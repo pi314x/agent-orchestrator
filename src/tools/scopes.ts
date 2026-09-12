@@ -35,3 +35,18 @@ export function denyUngrantedToolGrants(
   if (toolGrants === undefined || toolGrants.length === 0) return undefined;
   return denyWithoutAdminScope(ctx, `${toolName} with toolGrants`);
 }
+
+/**
+ * Guards making an agent shared (owner '', visible to every caller). Same
+ * shape as `denyUngrantedToolGrants`: the everyday act of creating an agent
+ * stays unprivileged, only opting it into "everyone can see and use this"
+ * requires admin.
+ */
+export function denySharedWithoutAdmin(
+  ctx: ServerContext,
+  toolName: string,
+  shared: boolean | undefined
+): CallToolResult | undefined {
+  if (shared !== true) return undefined;
+  return denyWithoutAdminScope(ctx, `${toolName} with shared:true`);
+}

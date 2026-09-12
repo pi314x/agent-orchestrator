@@ -63,7 +63,8 @@ export const jobSubmitTool: ToolRegistration = {
             {
               runner: deps.services.config.defaultRunner,
               ...(args.model !== undefined && { model: args.model })
-            }
+            },
+            deps.principal
           );
 
           const job = deps.services.scheduler.submit({

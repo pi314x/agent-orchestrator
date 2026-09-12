@@ -590,6 +590,8 @@ export class WorkflowEngine {
     vars: Record<string, unknown>,
     ownerId: string
   ): void {
+    // Never admin: a step naming an agentId/skillQuery reaches only what the
+    // run's own starter could reach — their own agents, or shared ones.
     const agent = resolveAgentTarget(
       this.deps.agents,
       {
@@ -597,7 +599,8 @@ export class WorkflowEngine {
         ...(definition.template !== undefined && { template: definition.template }),
         ...(definition.skillQuery !== undefined && { skillQuery: definition.skillQuery })
       },
-      { runner: this.deps.defaultRunner }
+      { runner: this.deps.defaultRunner },
+      { ownerId, isAdmin: false }
     );
 
     const job = this.deps.scheduler.submit({

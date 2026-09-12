@@ -234,13 +234,17 @@ class OrchestratorExecutor implements AgentExecutor {
     publish(TaskState.TASK_STATE_WORKING, `Running ${skill.skillId}.`);
 
     try {
+      // Full visibility here is correct, not a gap: agent_publish already
+      // requires orch:admin, so an operator has already decided this exact
+      // agent is externally reachable by anyone who can reach this server.
       const agent = resolveAgentTarget(
         this.deps.agents,
         {
           ...(skill.agentId !== undefined && { agentId: skill.agentId }),
           ...(skill.templateName !== undefined && { template: skill.templateName })
         },
-        { runner: this.deps.defaultRunner }
+        { runner: this.deps.defaultRunner },
+        { ownerId: '', isAdmin: true }
       );
 
       const timeoutSec = this.deps.taskTimeoutSec ?? DEFAULT_INBOUND_TASK_TIMEOUT_SEC;

@@ -228,6 +228,7 @@ new tool cannot forget:
 | Artifacts | read and listed only by their owner |
 | Memory | `namespace`/`key` uniqueness is per owner, so two users can both use `"notes"`; reads, writes, deletes and full-text search are all scoped |
 | Workflow jobs | a workflow's spawned jobs belong to whoever started it, so `job_list` finds them like any other job |
+| `delegate`/`fan_out`/`consensus` by `agentId` or `skillQuery` | resolve only agents the caller can see — never another owner's private agent, even by naming its id directly |
 
 A job spawned by an agent inherits the parent's owner, and artifacts and memory
 an agent writes belong to the job's owner. Asking for something another user
@@ -240,6 +241,25 @@ This applies to **both the MCP tools and the `orch://` resources** — `orch://a
 sharper gap when this was built: they carry no tool-shaped call site to guard,
 so scoping the tools alone would have left every one of them readable by URI
 regardless of who owned the row.
+
+### Central, admin-managed agents
+
+`agent_create { ..., shared: true }` — admin only (`orch:admin`) — creates an
+agent every caller can see and delegate to, alongside their own. It shows up
+in everyone's `agent_list`, resolves by id or `skillQuery` for anyone, and
+`agent_get` reports `shared: true` so a caller can tell it apart from their own.
+Only an admin may `agent_update` or `agent_delete` it — a non-admin gets
+`POLICY_DENIED` naming that explicitly, not `NOT_FOUND`, since its existence is
+already visible to them.
+
+This is the same mechanism a single-owner (no-OAuth) deployment already runs
+on: every agent there is owner `''`, which is exactly the "shared" sentinel.
+Turning on OAuth is what makes `''` mean "deliberately shared by an admin"
+instead of "the only owner there is."
+
+Templates remain global and admin-only to change (`agent_template_save`),
+unrelated to sharing — a template is a role you can spin an ephemeral agent
+from, not a persistent agent itself.
 
 **Not yet isolated.** These remain global:
 
@@ -274,7 +294,7 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 346 tests, no network, no model calls
+pnpm test        # 359 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 pnpm typecheck && pnpm lint && pnpm build
 ```

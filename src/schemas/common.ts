@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { JOB_STATES, type JobRecord } from '../core/jobs.js';
+import { SINGLE_OWNER } from '../core/principal.js';
 import type { AgentRecord } from '../core/registry.js';
 import { RUNNER_NAMES } from '../core/templates.js';
 import { ERROR_CODES } from '../errors.js';
@@ -89,6 +90,10 @@ export const AgentViewSchema = z.object({
   // back exactly what they set — a agent's own limits were previously
   // write-only, invisible to its owner through any tool.
   limits: AgentLimitsSchema,
+  // True for an admin-created central agent, visible to and usable by every
+  // caller. In a single-owner (no OAuth) deployment this is true for
+  // everything, which is accurate: nothing is private there either.
+  shared: z.boolean(),
   ephemeral: z.boolean(),
   createdAt: z.string()
 });
@@ -103,6 +108,7 @@ export function toAgentView(agent: AgentRecord): AgentView {
     instructions: agent.instructions,
     toolGrants: agent.toolGrants,
     limits: agent.limits,
+    shared: agent.ownerId === SINGLE_OWNER,
     ephemeral: agent.ephemeral,
     createdAt: agent.createdAt,
     ...(agent.role !== undefined && { role: agent.role }),

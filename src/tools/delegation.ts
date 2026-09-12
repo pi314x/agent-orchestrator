@@ -60,7 +60,8 @@ export const delegateTool: ToolRegistration = {
             {
               runner: deps.services.config.defaultRunner,
               ...(args.model !== undefined && { model: args.model })
-            }
+            },
+            deps.principal
           );
 
           const submitted = deps.services.scheduler.submit({
@@ -166,7 +167,8 @@ export const fanOutTool: ToolRegistration = {
             const agent = resolveAgentTarget(
               deps.services.agents,
               Object.keys(target).length > 0 ? target : { template: 'writer' },
-              defaults
+              defaults,
+              deps.principal
             );
 
             return deps.services.scheduler.submit({
@@ -242,7 +244,8 @@ export const fanOutTool: ToolRegistration = {
           const reduceAgent = resolveAgentTarget(
             deps.services.agents,
             { template: args.reduce.template ?? 'summarizer' },
-            defaults
+            defaults,
+            deps.principal
           );
 
           const reduceJob = deps.services.scheduler.submit({
@@ -313,7 +316,8 @@ export const planCreateTool: ToolRegistration = {
           const agent = resolveAgentTarget(
             deps.services.agents,
             { template: 'planner' },
-            { runner: deps.services.config.defaultRunner }
+            { runner: deps.services.config.defaultRunner },
+            deps.principal
           );
 
           const instruction = [
@@ -440,7 +444,7 @@ export const consensusTool: ToolRegistration = {
           const defaults = { runner: deps.services.config.defaultRunner };
 
           const submitted = args.participants.map(participant => {
-            const agent = resolveAgentTarget(deps.services.agents, participant, defaults);
+            const agent = resolveAgentTarget(deps.services.agents, participant, defaults, deps.principal);
             return {
               agentName: agent.name,
               job: deps.services.scheduler.submit({
@@ -508,7 +512,8 @@ export const consensusTool: ToolRegistration = {
           const judge = resolveAgentTarget(
             deps.services.agents,
             { template: args.judgeTemplate ?? 'critic' },
-            defaults
+            defaults,
+            deps.principal
           );
 
           const judgeJob = deps.services.scheduler.submit({

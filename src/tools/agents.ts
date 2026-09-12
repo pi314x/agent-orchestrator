@@ -4,8 +4,8 @@ import { RUNNER_NAMES } from '../core/templates.js';
 import { OrchestratorError } from '../errors.js';
 import { AgentViewSchema, CursorSchema, LimitSchema, toAgentView } from '../schemas/common.js';
 import { toolError, toolOk } from './result.js';
-import { ownerFilter } from '../core/principal.js';
-import { denyUngrantedToolGrants } from './scopes.js';
+import { ownerFilter, SINGLE_OWNER } from '../core/principal.js';
+import { denySharedWithoutAdmin, denyUngrantedToolGrants, denyWithoutAdminScope } from './scopes.js';
 import type { ToolRegistration } from './types.js';
 
 export const agentCreateTool: ToolRegistration = {
@@ -35,7 +35,11 @@ export const agentCreateTool: ToolRegistration = {
               timeoutSec: z.number().int().min(1).optional(),
               maxCostUsd: z.number().min(0).optional()
             })
+            .optional(),
+          shared: z
+            .boolean()
             .optional()
+            .describe('Admin only. Visible to and usable by every caller, not just its creator.')
         }),
         outputSchema: z.object({ agent: AgentViewSchema }),
         annotations: {
@@ -46,12 +50,14 @@ export const agentCreateTool: ToolRegistration = {
         }
       },
       (args, ctx) => {
-        const denied = denyUngrantedToolGrants(ctx, 'agent_create', args.toolGrants);
-        if (denied !== undefined) return denied;
+        const deniedGrants = denyUngrantedToolGrants(ctx, 'agent_create', args.toolGrants);
+        if (deniedGrants !== undefined) return deniedGrants;
+        const deniedShared = denySharedWithoutAdmin(ctx, 'agent_create', args.shared);
+        if (deniedShared !== undefined) return deniedShared;
 
         try {
           const agent = deps.services.agents.create({
-            ownerId: deps.principal.ownerId,
+            ownerId: args.shared === true ? SINGLE_OWNER : deps.principal.ownerId,
             name: args.name,
             instructions: args.instructions,
             runner: args.runner ?? deps.services.config.defaultRunner,
@@ -250,7 +256,7 @@ export const agentUpdateTool: ToolRegistration = {
         if (denied !== undefined) return denied;
 
         try {
-          deps.services.agents.getVisible(args.agentId, deps.principal);
+          deps.services.agents.getManaged(args.agentId, deps.principal);
           const agent = deps.services.agents.update(args.agentId, args.patch);
           return toolOk(
             { agent: toAgentView(agent) },
@@ -289,7 +295,7 @@ export const agentDeleteTool: ToolRegistration = {
       },
       (args, ctx) => {
         try {
-          const agent = deps.services.agents.getVisible(args.agentId, deps.principal);
+          const agent = deps.services.agents.getManaged(args.agentId, deps.principal);
           const live = deps.services.jobs
             .list({ agentId: agent.id, limit: 100 })
             .jobs.filter(job => job.finishedAt === undefined);
@@ -374,7 +380,13 @@ export const agentTemplateSaveTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      (args, ctx) => {
+        // Templates are shared by every caller unconditionally (README's
+        // Ownership section documents this) — saving one shadows a built-in
+        // for everyone, so it needs the same admin gate as toolserver_register.
+        const denied = denyWithoutAdminScope(ctx, 'agent_template_save');
+        if (denied !== undefined) return denied;
+
         try {
           const saved = deps.services.templates.save(args.name, {
             role: args.role,

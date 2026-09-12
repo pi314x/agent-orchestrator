@@ -432,13 +432,17 @@ export class JobScheduler {
 
   /** Backs the toolkit's `spawn_job`; depth and budget rules apply as normal. */
   private spawnChild(parent: JobRecord, input: SpawnJobInput): { jobId: string } {
+    // Never admin here: a sub-agent must only ever reach what its own parent's
+    // owner could reach — its own agents, or shared ones — never another
+    // owner's private agent, no matter which agent is doing the spawning.
     const agent = resolveAgentTarget(
       this.deps.agents,
       {
         ...(input.agentId !== undefined && { agentId: input.agentId }),
         ...(input.template !== undefined && { template: input.template })
       },
-      { runner: this.deps.defaultRunner }
+      { runner: this.deps.defaultRunner },
+      { ownerId: parent.ownerId, isAdmin: false }
     );
 
     const child = this.submit({

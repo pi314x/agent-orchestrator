@@ -55,18 +55,19 @@ describe('AgentRegistry', () => {
 
 describe('resolveAgentTarget', () => {
   const defaults = { runner: 'mock' as const };
+  const admin = { ownerId: '', isAdmin: true };
 
   it('returns the named agent', () => {
     const { agents, db } = registry();
     const created = agents.create({ name: 'coder', instructions: 'code' });
 
-    expect(resolveAgentTarget(agents, { agentId: created.id }, defaults).id).toBe(created.id);
+    expect(resolveAgentTarget(agents, { agentId: created.id }, defaults, admin).id).toBe(created.id);
     db.close();
   });
 
   it('materializes a template with the configured runner', () => {
     const { agents, db } = registry();
-    const resolved = resolveAgentTarget(agents, { template: 'reviewer' }, defaults);
+    const resolved = resolveAgentTarget(agents, { template: 'reviewer' }, defaults, admin);
 
     expect(resolved.ephemeral).toBe(true);
     expect(resolved.runner).toBe('mock');
@@ -77,13 +78,13 @@ describe('resolveAgentTarget', () => {
     const { agents, db } = registry();
     agents.create({ name: 'rust-expert', role: 'reviewer', instructions: 'review rust' });
 
-    expect(resolveAgentTarget(agents, { skillQuery: 'reviewer' }, defaults).name).toBe('rust-expert');
+    expect(resolveAgentTarget(agents, { skillQuery: 'reviewer' }, defaults, admin).name).toBe('rust-expert');
     db.close();
   });
 
   it('reports a skill query that matches nothing', () => {
     const { agents, db } = registry();
-    expect(() => resolveAgentTarget(agents, { skillQuery: 'astrophysics' }, defaults)).toThrow(
+    expect(() => resolveAgentTarget(agents, { skillQuery: 'astrophysics' }, defaults, admin)).toThrow(
       /No agent matches/
     );
     db.close();
@@ -91,7 +92,7 @@ describe('resolveAgentTarget', () => {
 
   it('requires a target', () => {
     const { agents, db } = registry();
-    expect(() => resolveAgentTarget(agents, {}, defaults)).toThrow(/exactly one of/);
+    expect(() => resolveAgentTarget(agents, {}, defaults, admin)).toThrow(/exactly one of/);
     db.close();
   });
 });

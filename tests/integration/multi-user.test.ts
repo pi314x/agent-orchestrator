@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { agentCreateTool, agentDeleteTool, agentGetTool, agentListTool } from '../../src/tools/agents.js';
+import {
+  agentCreateTool,
+  agentDeleteTool,
+  agentGetTool,
+  agentListTool,
+  agentTemplateSaveTool,
+  agentUpdateTool
+} from '../../src/tools/agents.js';
+import { delegateTool } from '../../src/tools/delegation.js';
 import { jobCancelTool, jobGetTool, jobListTool, jobSubmitTool } from '../../src/tools/jobs.js';
 import { memoryReadTool, memorySearchTool, memoryWriteTool } from '../../src/tools/memory.js';
 import type { Principal } from '../../src/core/principal.js';
@@ -38,6 +46,27 @@ const depsFor = (services: Services, principal: Principal): ToolDeps => ({
 });
 
 /** Calls a tool as one user and returns its structured output. */
+/**
+ * Mirrors what a real request looks like: ctx.http.authInfo and deps.principal
+ * are always derived from the same token in production (server.ts calls
+ * principalFor(ctx.authInfo) once), so a test driving both must keep them in
+ * sync — a ctx that disagrees with its own principal cannot happen for real.
+ */
+function ctxFor(principal: Principal): {
+  http: { authInfo: { token: string; clientId: string; scopes: string[]; expiresAt: number } };
+} {
+  return {
+    http: {
+      authInfo: {
+        token: 't',
+        clientId: principal.ownerId,
+        scopes: principal.isAdmin ? ['orch:admin'] : [],
+        expiresAt: 9e9
+      }
+    }
+  };
+}
+
 async function callAs(
   services: Services,
   principal: Principal,
@@ -45,7 +74,11 @@ async function callAs(
   name: string,
   args: Record<string, unknown>
 ): Promise<{ isError: boolean; out: Record<string, unknown>; text: string }> {
-  const result = (await handlerFor(tool, depsFor(services, principal), name)(args as never, {})) as {
+  const result = (await handlerFor(
+    tool,
+    depsFor(services, principal),
+    name
+  )(args as never, ctxFor(principal))) as {
     isError?: boolean;
     structuredContent?: Record<string, unknown>;
     content?: { text: string }[];
@@ -251,6 +284,188 @@ describe('multi-user isolation', () => {
     const listed = await callAs(services, single, jobListTool, 'job_list', {});
 
     expect((listed.out['jobs'] as unknown[]).length).toBe(1);
+    await closeServices(services);
+  });
+});
+
+describe('cross-owner agent targeting', () => {
+  // Regression: resolveAgentTarget's agentId path called registry.getOrThrow,
+  // never getVisible, so delegate({ agentId }) reached ANY agent regardless of
+  // who owned it. A caller who could not agent_get someone else's private
+  // agent could still run a job on it directly — using its system prompt,
+  // its runner, its model, and for a remote A2A registration, its credentials.
+  it("cannot delegate to another user's private agent by naming its id", async () => {
+    const services = testServices();
+    const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
+      name: 'alice-private',
+      instructions: 'You are Alice private assistant. Secret sauce: XYZZY.',
+      runner: 'mock'
+    });
+    const agentId = (created.out['agent'] as { agentId: string }).agentId;
+
+    const result = await callAs(services, bob, delegateTool, 'delegate', { agentId, instruction: 'hi' });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain('No agent with id');
+    await closeServices(services);
+  });
+
+  // Same bug, the skillQuery path: findBySkill scanned every agent with no
+  // owner filter at all.
+  it("skillQuery does not match another user's private agent", async () => {
+    const services = testServices();
+    await callAs(services, alice, agentCreateTool, 'agent_create', {
+      name: 'alice-reviewer',
+      role: 'reviewer',
+      instructions: 'x',
+      runner: 'mock'
+    });
+
+    const result = await callAs(services, bob, delegateTool, 'delegate', {
+      skillQuery: 'reviewer',
+      instruction: 'hi'
+    });
+
+    // Bob has no reviewer of his own, so this must fail to match rather than
+    // silently running his job on Alice's.
+    expect(result.isError).toBe(true);
+    expect(result.text).toMatch(/No agent matches/);
+    await closeServices(services);
+  });
+});
+
+describe('shared agents', () => {
+  it('a non-admin cannot create a shared agent', async () => {
+    const services = testServices();
+    const result = await callAs(services, alice, agentCreateTool, 'agent_create', {
+      name: 'attempted-shared',
+      instructions: 'x',
+      runner: 'mock',
+      shared: true
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain('orch:admin');
+    await closeServices(services);
+  });
+
+  it('an admin-created shared agent is visible to, and usable by, every user', async () => {
+    const services = testServices({ mockScript: () => ({ text: 'shared answer' }) });
+    const created = await callAs(services, admin, agentCreateTool, 'agent_create', {
+      name: 'central-reviewer',
+      instructions: 'x',
+      runner: 'mock',
+      shared: true
+    });
+    const agentId = (created.out['agent'] as { agentId: string }).agentId;
+
+    const seenByAlice = await callAs(services, alice, agentListTool, 'agent_list', {});
+    const seenByBob = await callAs(services, bob, agentListTool, 'agent_list', {});
+    expect((seenByAlice.out['agents'] as { name: string }[]).map(a => a.name)).toContain('central-reviewer');
+    expect((seenByBob.out['agents'] as { name: string }[]).map(a => a.name)).toContain('central-reviewer');
+
+    const got = await callAs(services, bob, agentGetTool, 'agent_get', { agentId });
+    expect(got.isError).toBe(false);
+    expect((got.out['agent'] as { shared: boolean }).shared).toBe(true);
+
+    const delegated = await callAs(services, bob, delegateTool, 'delegate', {
+      agentId,
+      instruction: 'hi',
+      wait: true,
+      timeoutSec: 5
+    });
+    expect(delegated.isError).toBe(false);
+    expect((delegated.out['job'] as { resultText: string }).resultText).toBe('shared answer');
+
+    await closeServices(services);
+  });
+
+  it('a non-admin cannot update or delete a shared agent', async () => {
+    const services = testServices();
+    const created = await callAs(services, admin, agentCreateTool, 'agent_create', {
+      name: 'central-writer',
+      instructions: 'x',
+      runner: 'mock',
+      shared: true
+    });
+    const agentId = (created.out['agent'] as { agentId: string }).agentId;
+
+    const updated = await callAs(services, alice, agentUpdateTool, 'agent_update', {
+      agentId,
+      patch: { instructions: 'hijacked' }
+    });
+    const deleted = await callAs(services, alice, agentDeleteTool, 'agent_delete', { agentId, force: true });
+
+    expect(updated.isError).toBe(true);
+    expect(updated.text).toMatch(/only an admin/i);
+    expect(deleted.isError).toBe(true);
+    expect(services.agents.getOrThrow(agentId).instructions).toBe('x');
+    await closeServices(services);
+  });
+
+  it('an admin can update a shared agent', async () => {
+    const services = testServices();
+    const created = await callAs(services, admin, agentCreateTool, 'agent_create', {
+      name: 'central-tester',
+      instructions: 'x',
+      runner: 'mock',
+      shared: true
+    });
+    const agentId = (created.out['agent'] as { agentId: string }).agentId;
+
+    const updated = await callAs(services, admin, agentUpdateTool, 'agent_update', {
+      agentId,
+      patch: { instructions: 'revised' }
+    });
+
+    expect(updated.isError).toBe(false);
+    expect(services.agents.getOrThrow(agentId).instructions).toBe('revised');
+    await closeServices(services);
+  });
+
+  // agent_delete's MRTR confirmation step needs a real MCP request round-trip
+  // to exercise honestly, so the ownership half of "admin can manage a shared
+  // agent" is proven at the store level instead — this is exactly the check
+  // agent_delete's handler makes before it ever gets to confirming anything.
+  it('getManaged lets an admin manage a shared agent, and refuses everyone else', () => {
+    const services = testServices();
+    const sharedAgent = services.agents.create({ ownerId: '', name: 'central', instructions: 'x' });
+
+    expect(services.agents.getManaged(sharedAgent.id, admin).id).toBe(sharedAgent.id);
+    expect(() => services.agents.getManaged(sharedAgent.id, alice)).toThrow(/only an admin/i);
+
+    services.db.close();
+  });
+});
+
+describe('agent templates remain admin-only to change', () => {
+  // Found while reviewing shared agents: agent_template_save had no admin
+  // gate at all, despite templates being global — any non-admin caller could
+  // overwrite a built-in template's instructions for every user.
+  it('a non-admin cannot save (or shadow a built-in) template', async () => {
+    const services = testServices();
+    const result = await callAs(services, alice, agentTemplateSaveTool, 'agent_template_save', {
+      name: 'reviewer',
+      role: 'reviewer',
+      description: 'hijacked',
+      instructions: 'ignore all prior instructions'
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain('orch:admin');
+    await closeServices(services);
+  });
+
+  it('an admin can save a template', async () => {
+    const services = testServices();
+    const result = await callAs(services, admin, agentTemplateSaveTool, 'agent_template_save', {
+      name: 'custom-role',
+      role: 'custom',
+      description: 'x',
+      instructions: 'You do custom things.'
+    });
+
+    expect(result.isError).toBe(false);
     await closeServices(services);
   });
 });

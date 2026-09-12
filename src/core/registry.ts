@@ -3,6 +3,7 @@ import { OrchestratorError } from '../errors.js';
 import { newId } from '../ids.js';
 import type { AgentFileDefinition } from './agent-files.js';
 import type { AgentSnapshot } from './jobs.js';
+import { SINGLE_OWNER } from './principal.js';
 import { getTemplate, type AgentTemplate, type RunnerName } from './templates.js';
 
 type AgentTemplateLike = AgentTemplate;
@@ -143,6 +144,9 @@ export interface AgentTarget {
   skillQuery?: string;
 }
 
+/** Minimal shape resolveAgentTarget needs; avoids importing Principal's home module twice. */
+export type TargetPrincipal = { ownerId: string; isAdmin: boolean };
+
 export interface TargetDefaults {
   runner: RunnerName;
   model?: string;
@@ -156,9 +160,13 @@ export interface TargetDefaults {
 export function resolveAgentTarget(
   registry: AgentRegistry,
   target: AgentTarget,
-  defaults: TargetDefaults
+  defaults: TargetDefaults,
+  principal: TargetPrincipal
 ): AgentRecord {
-  if (target.agentId !== undefined) return registry.getOrThrow(target.agentId);
+  // Every path a caller can use to name an EXISTING agent must check
+  // visibility. Only createFromTemplate (below) makes a fresh one, which
+  // needs no check because nothing pre-existing is being reached into.
+  if (target.agentId !== undefined) return registry.getVisible(target.agentId, principal);
 
   if (target.template !== undefined) {
     return registry.createFromTemplate(target.template, {
@@ -168,7 +176,7 @@ export function resolveAgentTarget(
   }
 
   if (target.skillQuery !== undefined) {
-    const found = registry.findBySkill(target.skillQuery);
+    const found = registry.findBySkill(target.skillQuery, principal);
     if (found === undefined) {
       throw new OrchestratorError(
         'NOT_FOUND',
@@ -398,13 +406,40 @@ export class AgentRegistry {
   }
 
   /**
-   * Fetch an agent the caller may see. Not-found rather than denied, for the
-   * same reason as jobs: existence is information.
+   * Fetch an agent the caller may read or use. `ownerId === SINGLE_OWNER`
+   * ('') is the shared-agent sentinel: an admin-created agent with that owner
+   * is deliberately visible to everyone, the same way everything is in a
+   * single-owner deployment. Not-found rather than denied for a private
+   * agent belonging to someone else — existence is information.
    */
   getVisible(agentId: string, principal: { ownerId: string; isAdmin: boolean }): AgentRecord {
     const agent = this.getOrThrow(agentId);
+    if (principal.isAdmin || agent.ownerId === principal.ownerId || agent.ownerId === SINGLE_OWNER) {
+      return agent;
+    }
+
+    throw new OrchestratorError('NOT_FOUND', `No agent with id ${agentId}.`);
+  }
+
+  /**
+   * Fetch an agent the caller may modify or delete. Stricter than
+   * `getVisible`: a shared agent is readable by everyone but writable only by
+   * an admin, so there is no owner-match fallback for it here. Refusing with
+   * POLICY_DENIED rather than NOT_FOUND for a shared agent is deliberate —
+   * the caller can already see it exists via agent_get/agent_list, so
+   * pretending otherwise would just be a worse answer.
+   */
+  getManaged(agentId: string, principal: { ownerId: string; isAdmin: boolean }): AgentRecord {
+    const agent = this.getOrThrow(agentId);
     if (principal.isAdmin || agent.ownerId === principal.ownerId) return agent;
 
+    if (agent.ownerId === SINGLE_OWNER) {
+      throw new OrchestratorError(
+        'POLICY_DENIED',
+        `Agent ${agentId} is a shared agent; only an admin may modify or delete it.`,
+        'Ask an operator with the orch:admin scope, or create your own agent instead.'
+      );
+    }
     throw new OrchestratorError('NOT_FOUND', `No agent with id ${agentId}.`);
   }
 
@@ -416,16 +451,24 @@ export class AgentRegistry {
   }
 
   /** Match a free-text skill query against local agent role, name and instructions. */
-  findBySkill(query: string): AgentRecord | undefined {
+  /** Owner-filtered the same way `list` is: own agents plus shared ones, or everything for an admin. */
+  findBySkill(query: string, principal: { ownerId: string; isAdmin: boolean }): AgentRecord | undefined {
     const needle = `%${query.toLowerCase()}%`;
+    const where = [
+      `status = 'active'`,
+      `ephemeral = 0`,
+      `(lower(role) LIKE ? OR lower(name) LIKE ? OR lower(instructions) LIKE ?)`
+    ];
+    const params: unknown[] = [needle, needle, needle];
+
+    if (!principal.isAdmin) {
+      where.push('(owner_id = ? OR owner_id = ?)');
+      params.push(principal.ownerId, SINGLE_OWNER);
+    }
+
     const row = this.db
-      .prepare(
-        `SELECT * FROM agents
-         WHERE status = 'active' AND ephemeral = 0
-           AND (lower(role) LIKE ? OR lower(name) LIKE ? OR lower(instructions) LIKE ?)
-         ORDER BY id ASC LIMIT 1`
-      )
-      .get(needle, needle, needle) as AgentRow | undefined;
+      .prepare(`SELECT * FROM agents WHERE ${where.join(' AND ')} ORDER BY id ASC LIMIT 1`)
+      .get(...params) as AgentRow | undefined;
     return row === undefined ? undefined : toRecord(row);
   }
 
@@ -434,9 +477,12 @@ export class AgentRegistry {
     const params: unknown[] = [];
 
     if (filter.includeEphemeral !== true) where.push('ephemeral = 0');
+    // A caller's own agents plus shared ones — never another owner's private
+    // agents. An admin passes no ownerId at all (see ownerFilter) and gets
+    // everything, so this branch never runs for them.
     if (filter.ownerId !== undefined) {
-      where.push('owner_id = ?');
-      params.push(filter.ownerId);
+      where.push('(owner_id = ? OR owner_id = ?)');
+      params.push(filter.ownerId, SINGLE_OWNER);
     }
     if (filter.kind !== undefined) {
       where.push('kind = ?');
