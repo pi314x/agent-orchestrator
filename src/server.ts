@@ -33,7 +33,7 @@ export function createServerFactory(deps: ServerDeps): McpServerFactory {
     });
 
     registerResources(server, deps.services, VERSION, principal);
-    registerPrompts(server, deps.services);
+    registerPrompts(server, deps.services, principal);
 
     return server;
   };

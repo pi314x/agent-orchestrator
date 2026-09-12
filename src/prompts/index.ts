@@ -1,5 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import { z } from 'zod';
+import { ownerFilter, type Principal } from '../core/principal.js';
 import type { Services } from '../services.js';
 
 const userMessage = (text: string) => ({
@@ -10,7 +11,7 @@ const userMessage = (text: string) => ({
  * Starting points that wire the tools into a shape worth reusing. Each one is
  * a prompt, not an automation: the host still drives every tool call.
  */
-export function registerPrompts(server: McpServer, services: Services): void {
+export function registerPrompts(server: McpServer, services: Services, principal: Principal): void {
   server.registerPrompt(
     'orchestrate',
     {
@@ -106,7 +107,11 @@ export function registerPrompts(server: McpServer, services: Services): void {
       argsSchema: z.object({ brief: z.string() })
     },
     ({ brief }) => {
-      const remote = services.agents.list({ kind: 'remote' }).agents;
+      // Regression: this listed every remote agent in the deployment, not
+      // just the caller's own — the same "resources need the same scoping
+      // as tools" gap, this time on the third registration surface (prompts)
+      // that never received a principal at all.
+      const remote = services.agents.list({ kind: 'remote', ...ownerFilter(principal) }).agents;
 
       return userMessage(
         [

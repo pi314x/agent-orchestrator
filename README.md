@@ -242,12 +242,15 @@ an agent writes belong to the job's owner. Asking for something another user
 owns returns `NOT_FOUND` rather than `POLICY_DENIED` — confirming it exists
 would leak the id space.
 
-This applies to **both the MCP tools and the `orch://` resources** — `orch://agents/{id}`,
-`orch://jobs/{id}`, `orch://jobs/{id}/transcript`, `orch://artifacts/{id}` and
-`orch://memory/{namespace}/{key}` are all owner-checked. The resources were the
-sharper gap when this was built: they carry no tool-shaped call site to guard,
-so scoping the tools alone would have left every one of them readable by URI
-regardless of who owned the row.
+This applies across **MCP tools, the `orch://` resources and the built-in prompts**
+— `orch://agents/{id}`, `orch://jobs/{id}`, `orch://jobs/{id}/transcript`,
+`orch://artifacts/{id}`, `orch://memory/{namespace}/{key}`, `orch://workflows/{id}`
+and `orch://workflow-runs/{id}` are all owner-checked, and the `cross_vendor_review`
+prompt lists only the caller's own registered remote agents. Each is a separate
+registration path with its own call site to forget: scoping the tools alone left
+every resource readable by URI regardless of who owned the row, and scoping the
+resources still left the one prompt that lists agents showing every owner's
+remote registrations to anyone who invoked it.
 
 ### Central, admin-managed agents
 
@@ -326,7 +329,7 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 413 tests, no network, no model calls
+pnpm test        # 416 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 pnpm typecheck && pnpm lint && pnpm build
 ```
