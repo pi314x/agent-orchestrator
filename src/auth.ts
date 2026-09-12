@@ -40,11 +40,21 @@ export function createJwtVerifier(settings: OAuthSettings): OAuthTokenVerifier {
         audience: settings.resourceUrl
       });
 
+      // Every resource this caller creates is keyed by this value — a
+      // fallback to a shared literal here would silently collapse every
+      // subject-less token (a client-credentials / service token, which
+      // legitimately has no end-user sub, is the ordinary case that produces
+      // one) into a single owner, so unrelated services would each see the
+      // others' private agents, jobs, memory and artifacts.
+      if (typeof payload.sub !== 'string' || payload.sub === '') {
+        throw new Error('Token carries no subject (sub) claim, so it cannot be mapped to an owner.');
+      }
+
       const scopes = typeof payload['scope'] === 'string' ? payload['scope'].split(' ') : [];
 
       return {
         token,
-        clientId: typeof payload.sub === 'string' ? payload.sub : 'unknown',
+        clientId: payload.sub,
         scopes,
         // Bearer verification rejects a token with no expiry, so this must be set.
         expiresAt: payload.exp ?? 0
