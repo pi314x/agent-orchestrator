@@ -1,47 +1,7 @@
-import { createServer, type Server } from 'node:http';
-import type { AddressInfo } from 'node:net';
-import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createJwtVerifier, hasScope, principalFor } from '../../src/auth.js';
 import { SINGLE_USER_PRINCIPAL } from '../../src/core/principal.js';
-
-/**
- * A real JWKS endpoint over HTTP, not a mock of `jose` — createJwtVerifier
- * fetches the key set itself via createRemoteJWKSet, so a fixture that skips
- * the network would never exercise the actual verification path at all.
- */
-async function startJwks(): Promise<{ issuerUrl: string; sign: (claims: Record<string, unknown>) => Promise<string>; close: () => Promise<void> }> {
-  const { publicKey, privateKey } = await generateKeyPair('RS256');
-  const jwk = { ...(await exportJWK(publicKey)), kid: 'test-key', alg: 'RS256', use: 'sig' };
-
-  const server: Server = createServer((req, res) => {
-    if (req.url === '/.well-known/jwks.json') {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ keys: [jwk] }));
-      return;
-    }
-    res.writeHead(404);
-    res.end();
-  });
-
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address() as AddressInfo;
-  const issuerUrl = `http://127.0.0.1:${port}/`;
-
-  return {
-    issuerUrl,
-    sign: async claims => {
-      let jwt = new SignJWT(claims)
-        .setProtectedHeader({ alg: 'RS256', kid: 'test-key' })
-        .setIssuer(issuerUrl)
-        .setAudience('resource-url')
-        .setExpirationTime('1h');
-      if (typeof claims['sub'] === 'string') jwt = jwt.setSubject(claims['sub']);
-      return jwt.sign(privateKey);
-    },
-    close: () => new Promise<void>((resolve, reject) => server.close(err => (err ? reject(err) : resolve())))
-  };
-}
+import { JWKS_AUDIENCE, startJwks } from '../fixtures/jwks.js';
 
 describe('createJwtVerifier', () => {
   let jwks: Awaited<ReturnType<typeof startJwks>> | undefined;
@@ -55,7 +15,7 @@ describe('createJwtVerifier', () => {
     jwks = await startJwks();
     const verifier = createJwtVerifier({
       issuerUrl: jwks.issuerUrl,
-      resourceUrl: 'resource-url',
+      resourceUrl: JWKS_AUDIENCE,
       requiredScopes: []
     });
 
@@ -77,7 +37,7 @@ describe('createJwtVerifier', () => {
     jwks = await startJwks();
     const verifier = createJwtVerifier({
       issuerUrl: jwks.issuerUrl,
-      resourceUrl: 'resource-url',
+      resourceUrl: JWKS_AUDIENCE,
       requiredScopes: []
     });
 
