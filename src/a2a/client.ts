@@ -217,14 +217,19 @@ function asRemoteError(error: unknown, agentLabel: string): OrchestratorError {
 
 function delay(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms);
-    signal.addEventListener(
-      'abort',
-      () => {
-        clearTimeout(timer);
-        reject(new OrchestratorError('INTERRUPTED', 'Cancelled while waiting on a remote task.'));
-      },
-      { once: true }
-    );
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(new OrchestratorError('INTERRUPTED', 'Cancelled while waiting on a remote task.'));
+    };
+    // { once: true } only removes the listener once it actually FIRES — on
+    // the far more common path (the timer just elapses normally), nothing
+    // ever removes it. The remote-task poll loop calls this every interval
+    // against the same job-lifetime signal, so an hours-long poll leaves
+    // thousands of stale 'abort' listeners on one AbortSignal.
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
   });
 }

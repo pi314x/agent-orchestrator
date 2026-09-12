@@ -1,3 +1,4 @@
+import { getEventListeners } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Role, TaskState, type Task } from '@a2a-js/sdk';
 import { A2AGateway } from '../../src/a2a/client.js';
@@ -100,6 +101,43 @@ describe('A2A gateway polling', () => {
 
     // Bounded, not merely slow: it stopped rather than polling out to 30s.
     expect(polls()).toBeLessThanOrEqual(11);
+  });
+
+  // Regression: delay()'s abort listener was only ever removed via
+  // { once: true }, which self-removes when the listener actually FIRES — on
+  // the far more common path (the timer just elapses normally, no abort),
+  // nothing removed it. The poll loop calls delay() again every interval
+  // against the same job-lifetime signal, so an hours-long poll left
+  // thousands of stale 'abort' listeners on one AbortSignal.
+  it('does not accumulate abort listeners on the signal across repeated polls', async () => {
+    vi.useFakeTimers();
+    const cards = new CardStore(db);
+    const jobs = new JobStore(db);
+    const { client } = stalledClient();
+
+    const gateway = new A2AGateway({
+      db,
+      cards,
+      logger: silentLogger(),
+      trustMode: 'allow-unverified',
+      pollIntervalMs: 1_000,
+      maxPollMs: 5_000,
+      clientProvider: async () => client as never
+    });
+
+    const job = await remoteJob(cards, jobs, new AgentRegistry(db));
+    const signal = new AbortController().signal;
+
+    const drain = async (): Promise<void> => {
+      const events: RunnerEvent[] = [];
+      for await (const event of gateway.run({ job }, signal)) events.push(event);
+    };
+
+    const pending = expect(drain()).rejects.toThrow(/did not finish within 5s/);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await pending;
+
+    expect(getEventListeners(signal, 'abort')).toHaveLength(0);
   });
 
   it('returns the result once the remote task completes', async () => {

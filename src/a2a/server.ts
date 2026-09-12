@@ -279,6 +279,10 @@ class OrchestratorExecutor implements AgentExecutor {
     }
 
     this.jobByTask.delete(taskId);
+    // cancelTask() only ever adds to this set, never removes — without this,
+    // every task that was ever cancelled stays in memory for the rest of the
+    // process's life, however long ago it actually finished.
+    this.cancelled.delete(taskId);
     eventBus.finished();
   }
 
