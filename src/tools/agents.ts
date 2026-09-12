@@ -346,6 +346,106 @@ export const agentDeleteTool: ToolRegistration = {
   }
 };
 
+export const agentShareTool: ToolRegistration = {
+  name: 'agent_share',
+  profile: 'full',
+
+  register(server, deps) {
+    server.registerTool(
+      'agent_share',
+      {
+        title: 'Share an agent with one user',
+        description:
+          'Grant one named user read and delegate access to an agent you own — peer-to-peer sharing, private to exactly that grantee. Nothing is shared by default; this is separate from the admin-only shared flag on agent_create, which is visible to everyone. granteeId is that user’s ownerId (the OAuth subject, e.g. their Entra object id). Revoke with agent_unshare.',
+        inputSchema: z.object({
+          agentId: z.string(),
+          granteeId: z.string().min(1)
+        }),
+        outputSchema: z.object({ shared: z.boolean() }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false
+        }
+      },
+      args => {
+        try {
+          deps.services.agents.share(args.agentId, deps.principal, args.granteeId);
+          return toolOk({ shared: true }, `Shared ${args.agentId} with ${args.granteeId}.`);
+        } catch (error) {
+          return toolError(error);
+        }
+      }
+    );
+  }
+};
+
+export const agentUnshareTool: ToolRegistration = {
+  name: 'agent_unshare',
+  profile: 'full',
+
+  register(server, deps) {
+    server.registerTool(
+      'agent_unshare',
+      {
+        title: 'Revoke an agent share',
+        description: 'Revoke a peer share created by agent_share. No-op if that grantee never had one.',
+        inputSchema: z.object({
+          agentId: z.string(),
+          granteeId: z.string().min(1)
+        }),
+        outputSchema: z.object({ revoked: z.boolean() }),
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: true,
+          openWorldHint: false
+        }
+      },
+      args => {
+        try {
+          const revoked = deps.services.agents.unshare(args.agentId, deps.principal, args.granteeId);
+          return toolOk({ revoked }, revoked ? 'Revoked.' : 'Nothing to revoke.');
+        } catch (error) {
+          return toolError(error);
+        }
+      }
+    );
+  }
+};
+
+export const agentShareListTool: ToolRegistration = {
+  name: 'agent_share_list',
+  profile: 'full',
+
+  register(server, deps) {
+    server.registerTool(
+      'agent_share_list',
+      {
+        title: 'List who an agent is shared with',
+        description: 'List the granteeIds a private agent has been shared with via agent_share.',
+        inputSchema: z.object({ agentId: z.string() }),
+        outputSchema: z.object({ granteeIds: z.array(z.string()) }),
+        annotations: {
+          readOnlyHint: true,
+          destructiveHint: false,
+          idempotentHint: true,
+          openWorldHint: false
+        }
+      },
+      args => {
+        try {
+          const granteeIds = deps.services.agents.listShares(args.agentId, deps.principal);
+          return toolOk({ granteeIds }, `Shared with ${granteeIds.length} user(s).`);
+        } catch (error) {
+          return toolError(error);
+        }
+      }
+    );
+  }
+};
+
 export const agentTemplateSaveTool: ToolRegistration = {
   name: 'agent_template_save',
   profile: 'full',

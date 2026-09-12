@@ -1,5 +1,6 @@
 import type { Db } from '../db/sqlite.js';
 import { OrchestratorError } from '../errors.js';
+import { GrantStore } from './grants.js';
 import { newId } from '../ids.js';
 import type { AgentFileDefinition } from './agent-files.js';
 import type { AgentSnapshot } from './jobs.js';
@@ -198,7 +199,10 @@ export class AgentRegistry {
   /** Resolves custom templates first, then built-ins. Set by createServices. */
   resolveTemplate: (name: string) => AgentTemplateLike | undefined = getTemplate;
 
-  constructor(private readonly db: Db) {}
+  constructor(
+    private readonly db: Db,
+    private readonly grants: GrantStore = new GrantStore(db)
+  ) {}
 
   create(input: CreateAgentInput): AgentRecord {
     const ephemeral = input.ephemeral ?? false;
@@ -409,16 +413,42 @@ export class AgentRegistry {
    * Fetch an agent the caller may read or use. `ownerId === SINGLE_OWNER`
    * ('') is the shared-agent sentinel: an admin-created agent with that owner
    * is deliberately visible to everyone, the same way everything is in a
-   * single-owner deployment. Not-found rather than denied for a private
-   * agent belonging to someone else — existence is information.
+   * single-owner deployment. A private agent is also visible to a caller its
+   * owner explicitly granted access to via `agent_share` — peer-to-peer
+   * sharing, distinct from the admin-wide sentinel above: nothing is shared
+   * by default, a grant row must exist. Not-found rather than denied for
+   * anyone else — existence is information.
    */
   getVisible(agentId: string, principal: { ownerId: string; isAdmin: boolean }): AgentRecord {
     const agent = this.getOrThrow(agentId);
-    if (principal.isAdmin || agent.ownerId === principal.ownerId || agent.ownerId === SINGLE_OWNER) {
+    if (
+      principal.isAdmin ||
+      agent.ownerId === principal.ownerId ||
+      agent.ownerId === SINGLE_OWNER ||
+      this.grants.hasGrant('agent', agentId, agent.ownerId, principal.ownerId)
+    ) {
       return agent;
     }
 
     throw new OrchestratorError('NOT_FOUND', `No agent with id ${agentId}.`);
+  }
+
+  /** Share a private agent with one named user. Caller must already manage it (owner or admin). */
+  share(agentId: string, principal: { ownerId: string; isAdmin: boolean }, granteeId: string): void {
+    const agent = this.getManaged(agentId, principal);
+    this.grants.grant('agent', agentId, agent.ownerId, granteeId);
+  }
+
+  /** Revoke a peer share. Caller must already manage the agent (owner or admin). */
+  unshare(agentId: string, principal: { ownerId: string; isAdmin: boolean }, granteeId: string): boolean {
+    const agent = this.getManaged(agentId, principal);
+    return this.grants.revoke('agent', agentId, agent.ownerId, granteeId);
+  }
+
+  /** Who a private agent has been shared with. Caller must already manage it (owner or admin). */
+  listShares(agentId: string, principal: { ownerId: string; isAdmin: boolean }): string[] {
+    const agent = this.getManaged(agentId, principal);
+    return this.grants.listGrantees('agent', agentId, agent.ownerId).map(g => g.granteeId);
   }
 
   /**
@@ -452,7 +482,7 @@ export class AgentRegistry {
   }
 
   /** Match a free-text skill query against local agent role, name and instructions. */
-  /** Owner-filtered the same way `list` is: own agents plus shared ones, or everything for an admin. */
+  /** Owner-filtered the same way `list` is: own agents plus shared ones (admin-wide or peer-granted), or everything for an admin. */
   findBySkill(query: string, principal: { ownerId: string; isAdmin: boolean }): AgentRecord | undefined {
     const needle = `%${query.toLowerCase()}%`;
     const where = [
@@ -463,8 +493,10 @@ export class AgentRegistry {
     const params: unknown[] = [needle, needle, needle];
 
     if (!principal.isAdmin) {
-      where.push('(owner_id = ? OR owner_id = ?)');
-      params.push(principal.ownerId, SINGLE_OWNER);
+      const granted = this.grants.listGrantedResourceIds('agent', principal.ownerId);
+      const placeholders = granted.map(() => '?').join(', ');
+      where.push(`(owner_id = ? OR owner_id = ?${granted.length > 0 ? ` OR id IN (${placeholders})` : ''})`);
+      params.push(principal.ownerId, SINGLE_OWNER, ...granted);
     }
 
     const row = this.db
@@ -478,12 +510,15 @@ export class AgentRegistry {
     const params: unknown[] = [];
 
     if (filter.includeEphemeral !== true) where.push('ephemeral = 0');
-    // A caller's own agents plus shared ones — never another owner's private
-    // agents. An admin passes no ownerId at all (see ownerFilter) and gets
-    // everything, so this branch never runs for them.
+    // A caller's own agents, admin-wide shared ones, and ones a peer
+    // explicitly granted — never another owner's private agent otherwise. An
+    // admin passes no ownerId at all (see ownerFilter) and gets everything,
+    // so this branch never runs for them.
     if (filter.ownerId !== undefined) {
-      where.push('(owner_id = ? OR owner_id = ?)');
-      params.push(filter.ownerId, SINGLE_OWNER);
+      const granted = this.grants.listGrantedResourceIds('agent', filter.ownerId);
+      const placeholders = granted.map(() => '?').join(', ');
+      where.push(`(owner_id = ? OR owner_id = ?${granted.length > 0 ? ` OR id IN (${placeholders})` : ''})`);
+      params.push(filter.ownerId, SINGLE_OWNER, ...granted);
     }
     if (filter.kind !== undefined) {
       where.push('kind = ?');

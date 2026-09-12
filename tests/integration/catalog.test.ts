@@ -33,7 +33,7 @@ describe('tool catalog', () => {
   it.each([
     ['core', 11],
     ['standard', 37],
-    ['full', 59]
+    ['full', 65]
   ] as const)('%s exposes %i tools with A2A enabled', async (profile, expected) => {
     const names = await withClient(profile, true, async client =>
       (await client.listTools()).tools.map(t => t.name)

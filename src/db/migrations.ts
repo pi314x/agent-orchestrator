@@ -451,6 +451,30 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE UNIQUE INDEX idx_runs_idempotency ON workflow_runs (owner_id, idempotency_key)
         WHERE idempotency_key IS NOT NULL;
     `
+  },
+  {
+    version: 10,
+    name: 'peer_to_peer_grants',
+    up: `
+      -- Peer-to-peer sharing: one specific owner granting one specific other
+      -- user access to one resource they own. Separate from the admin
+      -- 'shared: true' sentinel (owner_id = '' visible to everyone) — a grant
+      -- names exactly one grantee, and only the resource's own owner (or an
+      -- admin) may create or remove it. Nothing is shared by default; a row
+      -- must exist for anyone but the owner to see the resource.
+      CREATE TABLE resource_grants (
+        id            TEXT PRIMARY KEY,
+        resource_type TEXT NOT NULL,
+        resource_id   TEXT NOT NULL,
+        owner_id      TEXT NOT NULL,
+        grantee_id    TEXT NOT NULL,
+        created_at    TEXT NOT NULL,
+        UNIQUE (resource_type, resource_id, owner_id, grantee_id)
+      );
+
+      CREATE INDEX idx_grants_grantee ON resource_grants (resource_type, grantee_id);
+      CREATE INDEX idx_grants_resource ON resource_grants (resource_type, resource_id, owner_id);
+    `
   }
 ] as const;
 

@@ -44,9 +44,9 @@ claude mcp add orchestrator -- node /absolute/path/to/dist/index.js
 | `workflow_start` | A DAG of steps, with conditions and human approval gates |
 | `agent_create` / `agent_template_list` | Define agents, or use the eight built-in roles |
 
-`ORCH_TOOL_PROFILE` controls how many of the 59 tools are exposed: `core` (11),
-`standard` (33, the default), `full` (50). With `A2A_ENABLED=true` the interop
-tools appear too, taking `full` to 59. A smaller profile means better tool
+`ORCH_TOOL_PROFILE` controls how many of the 65 tools are exposed: `core` (11),
+`standard` (33, the default), `full` (56). With `A2A_ENABLED=true` the interop
+tools appear too, taking `full` to 65. A smaller profile means better tool
 selection by the model, so raise it only when you need something.
 
 ## The eight built-in roles
@@ -263,6 +263,34 @@ Templates remain global and admin-only to change (`agent_template_save`),
 unrelated to sharing — a template is a role you can spin an ephemeral agent
 from, not a persistent agent itself.
 
+### Peer-to-peer sharing
+
+Everything a user creates is private by default — visible to nobody but its
+owner (and an admin) unless the owner explicitly shares it. `agent_share {
+agentId, granteeId }` and `memory_share { namespace, granteeId }` grant one
+named other user access to exactly that one resource; `agent_unshare`/
+`memory_unshare` revoke it, and `agent_share_list`/`memory_share_list` show
+current grantees. Only the resource's own owner (or an admin) may share or
+revoke it.
+
+This is distinct from the admin-wide `shared: true` sentinel above: a peer
+share names exactly one grantee and nothing else changes — the resource
+still doesn't show up for anyone else, and the owner keeps sole write access
+(a shared agent can be used via `delegate`, and a shared memory namespace can
+be read, but not modified by the grantee).
+
+`granteeId` is the other user's `ownerId` — the OAuth subject from their own
+token (their Entra object id, if Entra ID is the issuer). There is no user
+directory built in, so the owner needs to already know that id (e.g. from
+`orchestrator_status` output tied to their session, or simply because your
+own IdP shows it) — sharing by email or display name is not supported.
+
+Reading a namespace shared with you needs the owner's id on every call:
+`memory_read`/`memory_search` take an optional `ownerId`, and without a grant
+on that exact `(ownerId, namespace)` pair they behave exactly like a miss —
+`found: false`, or no results — never an error that would confirm whether
+the namespace exists at all.
+
 **Not yet isolated.** These remain global:
 
 | | |
@@ -293,7 +321,7 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 365 tests, no network, no model calls
+pnpm test        # 376 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 pnpm typecheck && pnpm lint && pnpm build
 ```

@@ -1,4 +1,5 @@
 import type { Db } from '../db/sqlite.js';
+import { GrantStore } from './grants.js';
 
 export type MemoryEntry = {
   namespace: string;
@@ -62,7 +63,10 @@ function toEntry(row: MemoryRow): MemoryEntry {
  * artifacts.
  */
 export class MemoryStore {
-  constructor(private readonly db: Db) {}
+  constructor(
+    private readonly db: Db,
+    private readonly grants: GrantStore = new GrantStore(db)
+  ) {}
 
   write(input: WriteMemoryInput): MemoryEntry {
     const now = new Date().toISOString();
@@ -103,6 +107,30 @@ export class MemoryStore {
     return row === undefined ? undefined : toEntry(row);
   }
 
+  /**
+   * Read a namespace belonging to `targetOwnerId`, which may not be the
+   * caller. Nothing is shared by default: a non-admin reading someone else's
+   * namespace needs an explicit grant on that exact (owner, namespace) pair
+   * from `memory_share`. Returns `undefined` rather than denying — the same
+   * "not found" a missing key gets, so a caller cannot distinguish "no such
+   * entry" from "not shared with you".
+   */
+  readVisible(
+    targetOwnerId: string,
+    namespace: string,
+    key: string,
+    principal: { ownerId: string; isAdmin: boolean }
+  ): MemoryEntry | undefined {
+    if (
+      !principal.isAdmin &&
+      targetOwnerId !== principal.ownerId &&
+      !this.grants.hasGrant('memory_namespace', namespace, targetOwnerId, principal.ownerId)
+    ) {
+      return undefined;
+    }
+    return this.read(targetOwnerId, namespace, key);
+  }
+
   search(input: SearchMemoryInput): MemoryEntry[] {
     this.purgeExpired();
 
@@ -133,6 +161,45 @@ export class MemoryStore {
 
     if (input.tags === undefined || input.tags.length === 0) return entries;
     return entries.filter(entry => input.tags?.every(tag => entry.tags.includes(tag)));
+  }
+
+  /**
+   * `search` scoped to what `principal` may actually see. Own entries always
+   * match. Reaching into another owner's namespace needs both an explicit
+   * `ownerId` and `namespace` (searching "everything shared with me" across
+   * every owner and namespace is not supported — a grant is per namespace,
+   * not global) and a grant on that exact pair, unless the caller is admin.
+   */
+  searchVisible(
+    input: SearchMemoryInput,
+    principal: { ownerId: string; isAdmin: boolean }
+  ): MemoryEntry[] {
+    if (principal.isAdmin) return this.search(input);
+    if (input.ownerId === undefined || input.ownerId === principal.ownerId) {
+      return this.search({ ...input, ownerId: principal.ownerId });
+    }
+    if (
+      input.namespace === undefined ||
+      !this.grants.hasGrant('memory_namespace', input.namespace, input.ownerId, principal.ownerId)
+    ) {
+      return [];
+    }
+    return this.search(input);
+  }
+
+  /** Share a namespace with one named user. Only its owner (or an admin, via principal) may call this. */
+  share(ownerId: string, namespace: string, granteeId: string): void {
+    this.grants.grant('memory_namespace', namespace, ownerId, granteeId);
+  }
+
+  /** Revoke a peer share on a namespace. */
+  unshare(ownerId: string, namespace: string, granteeId: string): boolean {
+    return this.grants.revoke('memory_namespace', namespace, ownerId, granteeId);
+  }
+
+  /** Who a namespace has been shared with. */
+  listShares(ownerId: string, namespace: string): string[] {
+    return this.grants.listGrantees('memory_namespace', namespace, ownerId).map(g => g.granteeId);
   }
 
   /** Delete one key, or every key under a prefix, within one owner's namespace. */

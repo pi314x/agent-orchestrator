@@ -7,6 +7,7 @@ import { ArtifactStore } from './core/artifacts.js';
 import { BudgetTracker } from './core/budget.js';
 import { MessageBus } from './core/bus.js';
 import { EventLog } from './core/events.js';
+import { GrantStore } from './core/grants.js';
 import { JobStore } from './core/jobs.js';
 import { MemoryStore } from './core/memory.js';
 import { AgentRegistry } from './core/registry.js';
@@ -60,9 +61,10 @@ export interface CreateServicesInput {
  */
 export function createServices({ config, db, logger, a2aClientProvider }: CreateServicesInput): Services {
   const events = new EventLog(db);
-  const agents = new AgentRegistry(db);
+  const grants = new GrantStore(db);
+  const agents = new AgentRegistry(db, grants);
   const jobs = new JobStore(db);
-  const memory = new MemoryStore(db);
+  const memory = new MemoryStore(db, grants);
   const artifacts = new ArtifactStore(db);
   const bus = new MessageBus(db);
   const budgets = new BudgetTracker(db);

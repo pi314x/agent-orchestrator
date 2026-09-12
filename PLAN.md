@@ -114,13 +114,13 @@ A Job always records: agent/card snapshot at submit time, instruction, inputs, r
 
 ---
 
-## 5. Tool catalog (59 tools)
+## 5. Tool catalog (65 tools)
 
 Annotation legend: **RO** readOnlyHint · **D** destructiveHint · **I** idempotentHint · **OW** openWorldHint · **T** task-capable (MCP Tasks extension).
-Profile legend: **C** core (11) · **S** standard (37, cumulative) · **F** full (59, cumulative).
+Profile legend: **C** core (11) · **S** standard (37, cumulative) · **F** full (65, cumulative).
 Every tool returns `structuredContent` validated by an `outputSchema`, plus a 1–3 line text summary.
 
-### 5.1 Agents — local & registered (8)
+### 5.1 Agents — local & registered (11)
 
 | Tool | Purpose | Key inputs | Ann. | Prof. |
 |---|---|---|---|---|
@@ -130,6 +130,9 @@ Every tool returns `structuredContent` validated by an `outputSchema`, plus a 1�
 | `agent_get` | Config/card, stats, recent jobs, trustLevel | agentId | RO | S |
 | `agent_update` | Patch a local agent's config (future jobs only) | agentId, patch | I | F |
 | `agent_delete` | Remove agent or unregister remote; with force cancels its jobs | agentId, force? | D (MRTR confirm) | F |
+| `agent_share` | Grant one named user (peer-to-peer, not admin-wide) read/delegate access to your agent | agentId, granteeId | I | F |
+| `agent_unshare` | Revoke a peer share | agentId, granteeId | D | F |
+| `agent_share_list` | List who a private agent is shared with | agentId | RO | F |
 | `agent_template_list` | Built-in and custom role templates | — | RO | C |
 | `agent_template_save` | Create or overwrite a template | name, spec | I | F |
 
@@ -180,14 +183,17 @@ Built-in templates: `planner`, `researcher`, `coder`, `reviewer`, `tester`, `wri
 | `channel_create` | Topic channel for a team | name, members[] | I | F |
 | `channel_list` | List channels | — | RO | F |
 
-### 5.6 Shared memory / blackboard (4)
+### 5.6 Shared memory / blackboard (7)
 
 | Tool | Purpose | Key inputs | Ann. | Prof. |
 |---|---|---|---|---|
 | `memory_write` | JSON key-value with tags and TTL | namespace, key, value, tags, ttlSec | I | S |
-| `memory_read` | Read one entry | namespace, key | RO | S |
-| `memory_search` | Full-text search (FTS5) | namespace?, query, tags, limit | RO | S |
+| `memory_read` | Read one entry, or another user's shared namespace if granted | namespace, key, ownerId? | RO | S |
+| `memory_search` | Full-text search (FTS5), or another user's shared namespace if granted | namespace?, query, tags, limit, ownerId? | RO | S |
 | `memory_delete` | Delete key or prefix | namespace, key or prefix | D | F |
+| `memory_share` | Grant one named user (peer-to-peer) read access to a namespace you own | namespace, granteeId | I | F |
+| `memory_unshare` | Revoke a peer share | namespace, granteeId | D | F |
+| `memory_share_list` | List who a namespace is shared with | namespace | RO | F |
 
 Memory is orchestrator-local. Remote agents never get direct memory access — only whatever is placed into their `context` at submit time.
 
@@ -255,7 +261,7 @@ Remote A2A agents are opaque and bring their own tools; this section never appli
 
 - **core (11):** `delegate`, `fan_out`, `job_submit`, `job_get`, `job_wait`, `job_cancel`, `agent_template_list`, `artifact_get`, `approval_list`, `approval_resolve`, `orchestrator_status`
 - **standard (37):** core + agents (create/register/list/get) + jobs (list/retry/steer) + `plan_create` + workflows (define/list/get/start/run_get/run_control) + memory (write/read/search) + artifacts (put/list) + `a2a_card_get` + `a2a_server_info` + `agent_publish` + observability (events/trace/usage) + `runner_list`
-- **full (59):** everything, incl. destructive/admin tools, messaging, `consensus`, `toolserver_*`, `budget_set`, and the remaining `a2a_*` debug tools (`card_verify`, `discover`, `task_get`, `task_cancel`, `push_config_set`)
+- **full (65):** everything, incl. destructive/admin tools, messaging, `consensus`, `toolserver_*`, `budget_set`, the remaining `a2a_*` debug tools (`card_verify`, `discover`, `task_get`, `task_cancel`, `push_config_set`), and peer-to-peer sharing (`agent_share`/`agent_unshare`/`agent_share_list`, `memory_share`/`memory_unshare`/`memory_share_list`)
 
 Rationale: large tool lists degrade model tool selection — MCP's own roadmap flags this and is working on progressive discovery. Default to `standard`; select via `ORCH_TOOL_PROFILE`.
 

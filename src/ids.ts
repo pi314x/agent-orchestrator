@@ -15,7 +15,8 @@ export const ID_PREFIXES = {
   artifact: 'art_',
   approval: 'apr_',
   toolServer: 'ts_',
-  event: 'evt_'
+  event: 'evt_',
+  grant: 'grt_'
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;

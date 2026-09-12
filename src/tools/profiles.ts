@@ -17,8 +17,11 @@ import {
   agentDeleteTool,
   agentGetTool,
   agentListTool,
+  agentShareListTool,
+  agentShareTool,
   agentTemplateListTool,
   agentTemplateSaveTool,
+  agentUnshareTool,
   agentUpdateTool
 } from './agents.js';
 import { approvalListTool, approvalResolveTool } from './approvals.js';
@@ -33,7 +36,15 @@ import {
   jobSubmitTool,
   jobWaitTool
 } from './jobs.js';
-import { memoryDeleteTool, memoryReadTool, memorySearchTool, memoryWriteTool } from './memory.js';
+import {
+  memoryDeleteTool,
+  memoryReadTool,
+  memorySearchTool,
+  memoryShareListTool,
+  memoryShareTool,
+  memoryUnshareTool,
+  memoryWriteTool
+} from './memory.js';
 import { channelCreateTool, channelListTool, messageListTool, messageSendTool } from './messaging.js';
 import { budgetSetTool, eventsQueryTool, traceGetTool, usageReportTool } from './observability.js';
 import {
@@ -67,6 +78,9 @@ export const TOOL_REGISTRY: readonly ToolRegistration[] = [
   agentGetTool,
   agentUpdateTool,
   agentDeleteTool,
+  agentShareTool,
+  agentUnshareTool,
+  agentShareListTool,
   agentTemplateListTool,
   agentTemplateSaveTool,
   // §5.2 Jobs
@@ -101,6 +115,9 @@ export const TOOL_REGISTRY: readonly ToolRegistration[] = [
   memoryReadTool,
   memorySearchTool,
   memoryDeleteTool,
+  memoryShareTool,
+  memoryUnshareTool,
+  memoryShareListTool,
   // §5.7 Artifacts
   artifactPutTool,
   artifactGetTool,

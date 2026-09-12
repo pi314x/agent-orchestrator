@@ -4,12 +4,22 @@ import {
   agentDeleteTool,
   agentGetTool,
   agentListTool,
+  agentShareListTool,
+  agentShareTool,
   agentTemplateSaveTool,
+  agentUnshareTool,
   agentUpdateTool
 } from '../../src/tools/agents.js';
 import { delegateTool } from '../../src/tools/delegation.js';
 import { jobCancelTool, jobGetTool, jobListTool, jobSubmitTool } from '../../src/tools/jobs.js';
-import { memoryReadTool, memorySearchTool, memoryWriteTool } from '../../src/tools/memory.js';
+import {
+  memoryReadTool,
+  memorySearchTool,
+  memoryShareListTool,
+  memoryShareTool,
+  memoryUnshareTool,
+  memoryWriteTool
+} from '../../src/tools/memory.js';
 import {
   workflowDefineTool,
   workflowDeleteTool,
@@ -44,6 +54,7 @@ function handlerFor(
 
 const alice: Principal = { ownerId: 'user_alice', isAdmin: false };
 const bob: Principal = { ownerId: 'user_bob', isAdmin: false };
+const carol: Principal = { ownerId: 'user_carol', isAdmin: false };
 const admin: Principal = { ownerId: 'user_admin', isAdmin: true };
 
 const depsFor = (services: Services, principal: Principal): ToolDeps => ({
@@ -543,6 +554,266 @@ describe('workflow and run isolation', () => {
 
     expect(gotByAdmin.isError).toBe(false);
     expect(deletedByAdmin.isError).toBe(false);
+    await closeServices(services);
+  });
+});
+
+describe('peer-to-peer sharing', () => {
+  it('is off by default: an agent created by one user is invisible to another', async () => {
+    const services = testServices();
+    const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
+      name: 'alice-default-private',
+      instructions: 'x',
+      runner: 'mock'
+    });
+    const agentId = (created.out['agent'] as { agentId: string }).agentId;
+
+    const byBob = await callAs(services, bob, agentGetTool, 'agent_get', { agentId });
+
+    expect(byBob.isError).toBe(true);
+    expect(byBob.text).toContain('NOT_FOUND');
+    await closeServices(services);
+  });
+
+  it('a memory namespace is off by default: not readable by another user even by name', async () => {
+    const services = testServices();
+    await callAs(services, alice, memoryWriteTool, 'memory_write', {
+      namespace: 'private-notes',
+      key: 'k',
+      value: 'secret'
+    });
+
+    const byBob = await callAs(services, bob, memoryReadTool, 'memory_read', {
+      namespace: 'private-notes',
+      key: 'k',
+      ownerId: alice.ownerId
+    });
+
+    expect(byBob.out['found']).toBe(false);
+    await closeServices(services);
+  });
+
+  it('agent_share grants exactly the named user access, and no one else', async () => {
+    const services = testServices({ mockScript: () => ({ text: 'agent answer' }) });
+    const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
+      name: 'alice-shareable',
+      instructions: 'x',
+      runner: 'mock'
+    });
+    const agentId = (created.out['agent'] as { agentId: string }).agentId;
+
+    const shared = await callAs(services, alice, agentShareTool, 'agent_share', {
+      agentId,
+      granteeId: bob.ownerId
+    });
+    expect(shared.isError).toBe(false);
+
+    const byBob = await callAs(services, bob, agentGetTool, 'agent_get', { agentId });
+    const stillDeniedToCarol = await callAs(services, carol, agentGetTool, 'agent_get', { agentId });
+    const delegatedByBob = await callAs(services, bob, delegateTool, 'delegate', {
+      agentId,
+      instruction: 'hi',
+      wait: true,
+      timeoutSec: 5
+    });
+
+    expect(byBob.isError).toBe(false);
+    expect(stillDeniedToCarol.isError).toBe(true);
+    expect(stillDeniedToCarol.text).toContain('NOT_FOUND');
+    expect(delegatedByBob.isError).toBe(false);
+    expect((delegatedByBob.out['job'] as { resultText: string }).resultText).toBe('agent answer');
+    await closeServices(services);
+  });
+
+  it('agent_unshare revokes access again', async () => {
+    const services = testServices();
+    const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
+      name: 'alice-revocable',
+      instructions: 'x',
+      runner: 'mock'
+    });
+    const agentId = (created.out['agent'] as { agentId: string }).agentId;
+
+    await callAs(services, alice, agentShareTool, 'agent_share', { agentId, granteeId: bob.ownerId });
+    const beforeRevoke = await callAs(services, bob, agentGetTool, 'agent_get', { agentId });
+
+    const revoked = await callAs(services, alice, agentUnshareTool, 'agent_unshare', {
+      agentId,
+      granteeId: bob.ownerId
+    });
+    const afterRevoke = await callAs(services, bob, agentGetTool, 'agent_get', { agentId });
+
+    expect(beforeRevoke.isError).toBe(false);
+    expect(revoked.out['revoked']).toBe(true);
+    expect(afterRevoke.isError).toBe(true);
+    expect(afterRevoke.text).toContain('NOT_FOUND');
+    await closeServices(services);
+  });
+
+  it('only the owner (or an admin) may share or unshare an agent', async () => {
+    const services = testServices();
+    const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
+      name: 'alice-guarded',
+      instructions: 'x',
+      runner: 'mock'
+    });
+    const agentId = (created.out['agent'] as { agentId: string }).agentId;
+
+    const byBob = await callAs(services, bob, agentShareTool, 'agent_share', {
+      agentId,
+      granteeId: 'user_carol'
+    });
+    const byAdmin = await callAs(services, admin, agentShareTool, 'agent_share', {
+      agentId,
+      granteeId: 'user_carol'
+    });
+
+    expect(byBob.isError).toBe(true);
+    expect(byAdmin.isError).toBe(false);
+    await closeServices(services);
+  });
+
+  it('agent_share_list reports current grantees', async () => {
+    const services = testServices();
+    const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
+      name: 'alice-listed',
+      instructions: 'x',
+      runner: 'mock'
+    });
+    const agentId = (created.out['agent'] as { agentId: string }).agentId;
+
+    await callAs(services, alice, agentShareTool, 'agent_share', { agentId, granteeId: bob.ownerId });
+    const listed = await callAs(services, alice, agentShareListTool, 'agent_share_list', { agentId });
+    const listedByBob = await callAs(services, bob, agentShareListTool, 'agent_share_list', { agentId });
+
+    expect(listed.out['granteeIds']).toEqual([bob.ownerId]);
+    expect(listedByBob.isError).toBe(true);
+    await closeServices(services);
+  });
+
+  it('memory_share grants read access to exactly one namespace for one named user', async () => {
+    const services = testServices();
+    await callAs(services, alice, memoryWriteTool, 'memory_write', {
+      namespace: 'shared-notes',
+      key: 'k',
+      value: 'for bob'
+    });
+    await callAs(services, alice, memoryWriteTool, 'memory_write', {
+      namespace: 'other-notes',
+      key: 'k',
+      value: 'not for bob'
+    });
+
+    const shared = await callAs(services, alice, memoryShareTool, 'memory_share', {
+      namespace: 'shared-notes',
+      granteeId: bob.ownerId
+    });
+    expect(shared.isError).toBe(false);
+
+    const readShared = await callAs(services, bob, memoryReadTool, 'memory_read', {
+      namespace: 'shared-notes',
+      key: 'k',
+      ownerId: alice.ownerId
+    });
+    const readUnshared = await callAs(services, bob, memoryReadTool, 'memory_read', {
+      namespace: 'other-notes',
+      key: 'k',
+      ownerId: alice.ownerId
+    });
+
+    expect((readShared.out['entry'] as { value: string }).value).toBe('for bob');
+    expect(readUnshared.out['found']).toBe(false);
+    await closeServices(services);
+  });
+
+  it('memory_search across a shared namespace needs both ownerId and namespace', async () => {
+    const services = testServices();
+    await callAs(services, alice, memoryWriteTool, 'memory_write', {
+      namespace: 'shared-search',
+      key: 'k',
+      value: 'the launch plan'
+    });
+    await callAs(services, alice, memoryShareTool, 'memory_share', {
+      namespace: 'shared-search',
+      granteeId: bob.ownerId
+    });
+
+    const withNamespace = await callAs(services, bob, memorySearchTool, 'memory_search', {
+      query: 'launch',
+      ownerId: alice.ownerId,
+      namespace: 'shared-search'
+    });
+    const withoutNamespace = await callAs(services, bob, memorySearchTool, 'memory_search', {
+      query: 'launch',
+      ownerId: alice.ownerId
+    });
+
+    expect((withNamespace.out['entries'] as unknown[]).length).toBe(1);
+    expect((withoutNamespace.out['entries'] as unknown[]).length).toBe(0);
+    await closeServices(services);
+  });
+
+  it('memory_unshare revokes access again', async () => {
+    const services = testServices();
+    await callAs(services, alice, memoryWriteTool, 'memory_write', {
+      namespace: 'revocable-notes',
+      key: 'k',
+      value: 'x'
+    });
+    await callAs(services, alice, memoryShareTool, 'memory_share', {
+      namespace: 'revocable-notes',
+      granteeId: bob.ownerId
+    });
+
+    const beforeRevoke = await callAs(services, bob, memoryReadTool, 'memory_read', {
+      namespace: 'revocable-notes',
+      key: 'k',
+      ownerId: alice.ownerId
+    });
+    await callAs(services, alice, memoryUnshareTool, 'memory_unshare', {
+      namespace: 'revocable-notes',
+      granteeId: bob.ownerId
+    });
+    const afterRevoke = await callAs(services, bob, memoryReadTool, 'memory_read', {
+      namespace: 'revocable-notes',
+      key: 'k',
+      ownerId: alice.ownerId
+    });
+
+    expect(beforeRevoke.out['found']).toBe(true);
+    expect(afterRevoke.out['found']).toBe(false);
+    await closeServices(services);
+  });
+
+  it('memory_share_list reports current grantees, only to the namespace owner', async () => {
+    const services = testServices();
+    await callAs(services, alice, memoryWriteTool, 'memory_write', { namespace: 'ns', key: 'k', value: 'x' });
+    await callAs(services, alice, memoryShareTool, 'memory_share', { namespace: 'ns', granteeId: bob.ownerId });
+
+    const listed = await callAs(services, alice, memoryShareListTool, 'memory_share_list', { namespace: 'ns' });
+    const listedByBob = await callAs(services, bob, memoryShareListTool, 'memory_share_list', { namespace: 'ns' });
+
+    expect(listed.out['granteeIds']).toEqual([bob.ownerId]);
+    // Bob has no "ns" namespace of his own, so this reports his own (empty) grants, not alice's.
+    expect(listedByBob.out['granteeIds']).toEqual([]);
+    await closeServices(services);
+  });
+
+  it('cannot share a resource with its own owner', async () => {
+    const services = testServices();
+    const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
+      name: 'alice-self-share',
+      instructions: 'x',
+      runner: 'mock'
+    });
+    const agentId = (created.out['agent'] as { agentId: string }).agentId;
+
+    const result = await callAs(services, alice, agentShareTool, 'agent_share', {
+      agentId,
+      granteeId: alice.ownerId
+    });
+
+    expect(result.isError).toBe(true);
     await closeServices(services);
   });
 });
