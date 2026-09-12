@@ -36,15 +36,23 @@ export class MockRunner implements Runner {
     }
 
     if (script.gate !== undefined) {
-      await Promise.race([
-        script.gate,
-        new Promise<never>((_, reject) => {
-          if (signal.aborted) reject(new OrchestratorError('INTERRUPTED', 'Cancelled.'));
-          signal.addEventListener('abort', () => reject(new OrchestratorError('INTERRUPTED', 'Cancelled.')), {
-            once: true
-          });
-        })
-      ]);
+      signal.throwIfAborted();
+      // Only the abort path used to remove itself (`{ once: true }` fires on
+      // the event, not on the race being decided) — a test whose gate
+      // resolves normally, the far more common case, left the listener on
+      // the job's AbortSignal forever. Same shape as the two leaks already
+      // fixed in the A2A gateway/executor: remove it in `finally` so both
+      // exits clean up, not just the "interesting" one.
+      let onAbort: () => void = () => undefined;
+      const aborted = new Promise<never>((_, reject) => {
+        onAbort = () => reject(new OrchestratorError('INTERRUPTED', 'Cancelled.'));
+        signal.addEventListener('abort', onAbort, { once: true });
+      });
+      try {
+        await Promise.race([script.gate, aborted]);
+      } finally {
+        signal.removeEventListener('abort', onAbort);
+      }
     }
 
     signal.throwIfAborted();
