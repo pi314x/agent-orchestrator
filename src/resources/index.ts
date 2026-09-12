@@ -71,14 +71,14 @@ export function registerResources(
     'workflow',
     new ResourceTemplate('orch://workflows/{workflowId}', { list: undefined }),
     { title: 'Workflow', mimeType: 'application/json', cacheHint: { ttlMs: 60_000 } },
-    (uri, { workflowId }) => json(uri, services.workflows.getWorkflowOrThrow(String(workflowId)))
+    (uri, { workflowId }) => json(uri, services.workflows.getVisibleWorkflow(String(workflowId), principal))
   );
 
   server.registerResource(
     'workflow-run',
     new ResourceTemplate('orch://workflow-runs/{runId}', { list: undefined }),
     { title: 'Workflow run', mimeType: 'application/json', cacheHint: { ttlMs: 2_000 } },
-    (uri, { runId }) => json(uri, services.workflows.getRun(String(runId)))
+    (uri, { runId }) => json(uri, services.workflows.getVisibleRun(String(runId), principal))
   );
 
   server.registerResource(

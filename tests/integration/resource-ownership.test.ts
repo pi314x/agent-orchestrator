@@ -160,6 +160,43 @@ describe('resource ownership', () => {
     expect(JSON.parse(asBob.body)).toBeNull();
     await closeServices(owner.services);
   });
+
+  // Regression: this resource used getWorkflowOrThrow, the unchecked internal
+  // fetch, even after workflow_get (the tool) was scoped to getVisibleWorkflow.
+  // The tool and the resource are separate registration paths, so scoping one
+  // does nothing for the other.
+  it("cannot read another user's workflow via orch://workflows/{workflowId}", async () => {
+    const owner = captureResources(alice);
+    const workflow = owner.services.workflows.define(
+      { name: 'alice-wf', steps: [{ id: 'a', instruction: 'x', template: 'writer' }] },
+      alice.ownerId
+    );
+
+    const bobHandlers = captureResourcesAgainst(owner.services, bob);
+    const asBob = await read(bobHandlers, 'workflow', { workflowId: workflow.workflowId });
+    const asAlice = await read(owner.handlers, 'workflow', { workflowId: workflow.workflowId });
+
+    expect(asAlice.isError).toBe(false);
+    expect(asBob.isError).toBe(true);
+    await closeServices(owner.services);
+  });
+
+  // Same bug, the run side: getRun instead of getVisibleRun.
+  it("cannot read another user's run via orch://workflow-runs/{runId}", async () => {
+    const owner = captureResources(alice);
+    const run = owner.services.workflows.start({
+      ownerId: alice.ownerId,
+      spec: { name: 'alice-run', steps: [{ id: 'a', instruction: 'x', template: 'writer' }] }
+    });
+
+    const bobHandlers = captureResourcesAgainst(owner.services, bob);
+    const asBob = await read(bobHandlers, 'workflow-run', { runId: run.runId });
+    const asAlice = await read(owner.handlers, 'workflow-run', { runId: run.runId });
+
+    expect(asAlice.isError).toBe(false);
+    expect(asBob.isError).toBe(true);
+    await closeServices(owner.services);
+  });
 });
 
 /** Re-registers resources against an existing Services instance, as a different principal. */

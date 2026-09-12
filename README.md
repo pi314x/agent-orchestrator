@@ -231,6 +231,11 @@ new tool cannot forget:
 | Workflow definitions | listed, fetched and deleted only by their owner; names are unique per owner, so two users can each define `"deploy"` |
 | Workflow runs | listed, fetched and controlled (`pause`/`resume`/`cancel`/`retry_step`) only by their owner; `workflow_start`'s `workflowId` resolves only a workflow the caller can see, and `idempotencyKey` is scoped per owner so two users choosing the same key never collide |
 | `delegate`/`fan_out`/`consensus` by `agentId` or `skillQuery` | resolve only agents the caller can see — never another owner's private agent, even by naming its id directly |
+| `job_wait` | can only be pointed at jobs the caller already owns or can see — naming another owner's jobId is refused before any waiting starts, not just filtered out of the result |
+| `agent_register` | the registered remote agent belongs to whoever registered it, exactly like `agent_create` |
+| `a2a_task_get`/`a2a_task_cancel`/`a2a_push_config_set` | all resolve `jobId` through the same visibility check as `job_get`/`job_cancel` — naming another owner's job is refused, not just routed to a different (and possibly missing) remote task |
+| `events_query`/`trace_get` | a non-admin must scope these to a `jobId`, `agentId` or `runId` they can see; there is no unscoped view of every owner's event history |
+| `orch://workflows/{id}` and `orch://workflow-runs/{id}` resources | scoped the same way as the `workflow_get`/`workflow_run_get` tools — a resource is a separate registration path from a tool and does not inherit a tool's checks automatically |
 
 A job spawned by an agent inherits the parent's owner, and artifacts and memory
 an agent writes belong to the job's owner. Asking for something another user
@@ -297,7 +302,7 @@ the namespace exists at all.
 |---|---|
 | Messages and channels | agent-to-agent messaging is shared |
 | Approvals | the review queue is shared, which may well be what you want — resolving one resumes the run regardless of who owns it, since a reviewer resuming a run they don't own is the point of the gate, not a bypass of it |
-| Events | the audit log is global; an admin-only view is the intended shape |
+| Events (unscoped) | a non-admin can only query events tied to a specific job/agent/run they can see (above); there is no per-owner view of the *whole* log, only the admin one |
 
 Templates, registered tool servers, cached Agent Cards, published skills and
 budgets are shared **by design** — they are operator configuration, already
@@ -321,7 +326,7 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 376 tests, no network, no model calls
+pnpm test        # 390 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 pnpm typecheck && pnpm lint && pnpm build
 ```

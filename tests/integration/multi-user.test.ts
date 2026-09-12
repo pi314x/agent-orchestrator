@@ -12,7 +12,9 @@ import {
   agentUpdateTool
 } from '../../src/tools/agents.js';
 import { delegateTool } from '../../src/tools/delegation.js';
-import { jobCancelTool, jobGetTool, jobListTool, jobSubmitTool } from '../../src/tools/jobs.js';
+import { a2aPushConfigSetTool, a2aTaskCancelTool, a2aTaskGetTool } from '../../src/tools/a2a.js';
+import { jobCancelTool, jobGetTool, jobListTool, jobSubmitTool, jobWaitTool } from '../../src/tools/jobs.js';
+import { eventsQueryTool } from '../../src/tools/observability.js';
 import {
   memoryReadTool,
   memorySearchTool,
@@ -336,6 +338,143 @@ describe('agent_register defaults to private', () => {
     expect(seenByBob.isError).toBe(true);
     expect(seenByBob.text).toContain('NOT_FOUND');
     expect((listedByBob.out['agents'] as { name: string }[]).map(a => a.name)).not.toContain('alice-remote-bot');
+    await closeServices(services);
+  });
+});
+
+describe('events_query is scoped by the id it is asked about', () => {
+  // Regression: events_query had no visibility check at all — any caller
+  // could pass any other owner's jobId/agentId/runId (or none, for the
+  // entire log) and get back that owner's full event history and payloads.
+  it("a non-admin cannot read another user's job events by naming its jobId", async () => {
+    const services = testServices();
+    const submitted = await callAs(services, alice, jobSubmitTool, 'job_submit', {
+      instruction: 'alice secret work',
+      template: 'writer'
+    });
+    const jobId = (submitted.out['job'] as { jobId: string }).jobId;
+
+    const byBob = await callAs(services, bob, eventsQueryTool, 'events_query', { jobId });
+    const byAlice = await callAs(services, alice, eventsQueryTool, 'events_query', { jobId });
+
+    expect(byBob.isError).toBe(true);
+    expect(byAlice.isError).toBe(false);
+    await closeServices(services);
+  });
+
+  it('a non-admin cannot query the unscoped event log', async () => {
+    const services = testServices();
+    await callAs(services, alice, jobSubmitTool, 'job_submit', { instruction: 'x', template: 'writer' });
+
+    const byBob = await callAs(services, bob, eventsQueryTool, 'events_query', {});
+
+    expect(byBob.isError).toBe(true);
+    await closeServices(services);
+  });
+
+  it('an admin can query the unscoped event log and any jobId', async () => {
+    const services = testServices();
+    const submitted = await callAs(services, alice, jobSubmitTool, 'job_submit', {
+      instruction: 'x',
+      template: 'writer'
+    });
+    const jobId = (submitted.out['job'] as { jobId: string }).jobId;
+
+    const scoped = await callAs(services, admin, eventsQueryTool, 'events_query', { jobId });
+    const unscoped = await callAs(services, admin, eventsQueryTool, 'events_query', {});
+
+    expect(scoped.isError).toBe(false);
+    expect(unscoped.isError).toBe(false);
+    await closeServices(services);
+  });
+});
+
+describe("job_wait and the A2A debug tools do not leak another owner's job", () => {
+  // Regression: scheduler.wait() resolves ids through the unchecked
+  // getOrThrow — fine for every other caller, which only ever waits on a job
+  // it just submitted itself, but job_wait takes caller-supplied jobIds
+  // directly and returns the full job view, result included.
+  it("job_wait cannot be used to read another user's job result", async () => {
+    const services = testServices({ mockScript: () => ({ text: 'alice secret result' }) });
+    const submitted = await callAs(services, alice, jobSubmitTool, 'job_submit', {
+      instruction: 'x',
+      template: 'writer'
+    });
+    const jobId = (submitted.out['job'] as { jobId: string }).jobId;
+    await services.scheduler.drain();
+
+    const byBob = await callAs(services, bob, jobWaitTool, 'job_wait', { jobIds: [jobId], timeoutSec: 1 });
+
+    expect(byBob.isError).toBe(true);
+    expect(byBob.text).toContain(`No job with id ${jobId}`);
+    await closeServices(services);
+  });
+
+  // Same bug shape, three more spots: a2a_task_get/task_cancel/push_config_set
+  // resolved jobId via getOrThrow instead of getVisible. task_get would leak
+  // the remote task's raw payload; task_cancel could cancel another owner's
+  // remote work outright; push_config_set could redirect another owner's
+  // task-update webhook to an attacker-controlled URL.
+  // A job with no remoteTaskId makes the gateway itself throw NOT_FOUND
+  // ("has no remote task yet") regardless of ownership, which would mask
+  // whether the ownership check actually ran. Stamp a fake remoteTaskId
+  // directly (there is no public setter — the gateway sets this itself once
+  // a real remote task exists) so a leak would instead reach the gateway and
+  // fail some other way, and assert on JobStore.getVisible's own exact
+  // message, not just isError, to make sure the rejection is really the
+  // ownership check and not a coincidence of the job's shape.
+  const stampRemoteTask = (services: ReturnType<typeof testServices>, jobId: string) => {
+    services.db.prepare('UPDATE jobs SET remote_task_id = ? WHERE id = ?').run('remote-task-1', jobId);
+  };
+
+  it("a2a_task_get cannot read another user's job", async () => {
+    const services = testServices();
+    const submitted = await callAs(services, alice, jobSubmitTool, 'job_submit', {
+      instruction: 'x',
+      template: 'writer'
+    });
+    const jobId = (submitted.out['job'] as { jobId: string }).jobId;
+    stampRemoteTask(services, jobId);
+
+    const byBob = await callAs(services, bob, a2aTaskGetTool, 'a2a_task_get', { jobId });
+
+    expect(byBob.isError).toBe(true);
+    expect(byBob.text).toContain(`No job with id ${jobId}`);
+    await closeServices(services);
+  });
+
+  it("a2a_task_cancel cannot cancel another user's job", async () => {
+    const services = testServices({ mockScript: () => ({ gate: new Promise<void>(() => {}) }) });
+    const submitted = await callAs(services, alice, jobSubmitTool, 'job_submit', {
+      instruction: 'x',
+      template: 'writer'
+    });
+    const jobId = (submitted.out['job'] as { jobId: string }).jobId;
+    stampRemoteTask(services, jobId);
+
+    const byBob = await callAs(services, bob, a2aTaskCancelTool, 'a2a_task_cancel', { jobId });
+
+    expect(byBob.isError).toBe(true);
+    expect(byBob.text).toContain(`No job with id ${jobId}`);
+    await closeServices(services);
+  });
+
+  it("a2a_push_config_set cannot redirect another user's job callback", async () => {
+    const services = testServices();
+    const submitted = await callAs(services, alice, jobSubmitTool, 'job_submit', {
+      instruction: 'x',
+      template: 'writer'
+    });
+    const jobId = (submitted.out['job'] as { jobId: string }).jobId;
+    stampRemoteTask(services, jobId);
+
+    const byBob = await callAs(services, bob, a2aPushConfigSetTool, 'a2a_push_config_set', {
+      jobId,
+      callbackUrl: 'https://attacker.example/hook'
+    });
+
+    expect(byBob.isError).toBe(true);
+    expect(byBob.text).toContain(`No job with id ${jobId}`);
     await closeServices(services);
   });
 });

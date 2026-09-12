@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { BUDGET_SCOPES } from '../core/budget.js';
 import { EVENT_TYPES } from '../core/events.js';
 import { ownerFilter } from '../core/principal.js';
+import { OrchestratorError } from '../errors.js';
 import { toolError, toolOk } from './result.js';
 import { denyWithoutAdminScope } from './scopes.js';
 import type { ToolRegistration } from './types.js';
@@ -16,7 +17,7 @@ export const eventsQueryTool: ToolRegistration = {
       {
         title: 'Query the event log',
         description:
-          'Read the append-only audit trail across both backends, filtered by job, agent, run or event type. Use it to explain what happened during a run; use job_get for the outcome alone.',
+          'Read the append-only audit trail across both backends, filtered by job, agent, run or event type. Use it to explain what happened during a run; use job_get for the outcome alone. A non-admin caller must scope this to a jobId, agentId or runId they can see — there is no unscoped view of everyone’s events.',
         inputSchema: z.object({
           jobId: z.string().optional(),
           agentId: z.string().optional(),
@@ -47,6 +48,27 @@ export const eventsQueryTool: ToolRegistration = {
       },
       args => {
         try {
+          // events carries no owner column of its own — it is keyed by
+          // jobId/agentId/runId, whose ownership already lives on those
+          // tables. So an unscoped query (no id at all) has nothing to check
+          // against and would otherwise return every owner's history; require
+          // one of the three ids, and check it the same way trace_get does.
+          if (!deps.principal.isAdmin) {
+            if (args.jobId !== undefined) {
+              deps.services.jobs.getVisible(args.jobId, deps.principal);
+            } else if (args.agentId !== undefined) {
+              deps.services.agents.getVisible(args.agentId, deps.principal);
+            } else if (args.runId !== undefined) {
+              deps.services.workflows.getVisibleRun(args.runId, deps.principal);
+            } else {
+              throw new OrchestratorError(
+                'POLICY_DENIED',
+                'Scope events_query to a jobId, agentId or runId you can see.',
+                'There is no unscoped view of every owner’s events; an operator with orch:admin can see the full log.'
+              );
+            }
+          }
+
           const events = deps.services.events.query(args);
           return toolOk({ events }, `${events.length} event(s).`);
         } catch (error) {
@@ -175,7 +197,7 @@ export const traceGetTool: ToolRegistration = {
             args.jobId !== undefined
               ? [deps.services.jobs.getVisible(args.jobId, deps.principal)]
               : deps.services.workflows
-                  .getRun(args.runId as string)
+                  .getVisibleRun(args.runId as string, deps.principal)
                   .steps.flatMap(step =>
                     step.jobId === undefined
                       ? []

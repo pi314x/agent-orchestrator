@@ -169,6 +169,15 @@ export const jobWaitTool: ToolRegistration = {
       },
       async args => {
         try {
+          // scheduler.wait resolves ids through the unchecked getOrThrow —
+          // fine for its other callers, which only ever wait on a job they
+          // just submitted themselves, but job_wait takes caller-supplied
+          // ids directly. Without this, naming another owner's jobId here
+          // would hand back that job's full result, not just its state.
+          for (const jobId of args.jobIds) {
+            deps.services.jobs.getVisible(jobId, deps.principal);
+          }
+
           const jobs = await deps.services.scheduler.wait(args.jobIds, args.mode, args.timeoutSec * 1000);
           const terminal = jobs.filter(j => j.finishedAt !== undefined);
           const settled = args.mode === 'all' ? terminal.length === jobs.length : terminal.length > 0;

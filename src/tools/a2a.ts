@@ -223,7 +223,7 @@ export const a2aTaskGetTool: ToolRegistration = {
       },
       async args => {
         try {
-          const job = deps.services.jobs.getOrThrow(args.jobId);
+          const job = deps.services.jobs.getVisible(args.jobId, deps.principal);
           const task = await deps.services.a2aGateway.getRawTask(job);
 
           return toolOk(
@@ -261,7 +261,7 @@ export const a2aTaskCancelTool: ToolRegistration = {
       },
       async args => {
         try {
-          const job = deps.services.jobs.getOrThrow(args.jobId);
+          const job = deps.services.jobs.getVisible(args.jobId, deps.principal);
           const task = await deps.services.a2aGateway.cancelRemoteTask(job);
           return toolOk(
             { taskId: task.id, state: String(task.status?.state ?? 'unknown') },
@@ -298,7 +298,7 @@ export const a2aPushConfigSetTool: ToolRegistration = {
       },
       async args => {
         try {
-          const job = deps.services.jobs.getOrThrow(args.jobId);
+          const job = deps.services.jobs.getVisible(args.jobId, deps.principal);
           const url = await deps.services.a2aGateway.setPushConfig(job, args.callbackUrl);
           return toolOk({ callbackUrl: url }, `Remote agent will push updates to ${url}.`);
         } catch (error) {
