@@ -49,6 +49,44 @@ claude mcp add orchestrator -- node /absolute/path/to/dist/index.js
 tools appear too, taking `full` to 59. A smaller profile means better tool
 selection by the model, so raise it only when you need something.
 
+## The eight built-in roles
+
+Every one is just a name and a system prompt. Target one with
+`delegate { template: "reviewer" }`, or shadow any of them with your own wording
+using `agent_template_save`.
+
+| Role | What it is for |
+|---|---|
+| `planner` | Breaks a goal into an ordered set of concrete steps |
+| `researcher` | Gathers and synthesizes information on a question |
+| `coder` | Writes and modifies code to a specification |
+| `reviewer` | Reviews work for correctness and risk |
+| `tester` | Designs and evaluates tests |
+| `writer` | Produces clear prose for a stated audience |
+| `critic` | Argues against a proposal to surface weaknesses |
+| `summarizer` | Condenses material without losing load-bearing detail |
+
+`agent_create` makes a named agent of your own; `agent_template_list` shows the
+roles currently available, custom ones included.
+
+## What an agent can actually do
+
+Two sources, and the `cli` runner is neither of them — that is *how* an agent
+runs, not what it can call.
+
+**The built-in toolkit.** Every local agent gets these inside its own loop, with
+no configuration: `report_progress`, `finish`, `memory_write` / `memory_read` /
+`memory_search`, `artifact_put` / `artifact_get`, `message_send` /
+`message_list`, and `spawn_job`. They are internal — never exposed over MCP, and
+a remote A2A agent never sees them.
+
+**Granted downstream MCP tools.** Register a server with `toolserver_register`,
+then grant an agent access through `toolGrants` — `"files"` for everything that
+server offers, `"files/read_file"` for a single tool. They arrive in the agent's
+loop namespaced `files__read_file`. A deny-list beats an allow-list, an empty
+allow-list means everything that server offers, and attaching grants to an agent
+requires the `orch:admin` scope once OAuth is configured.
+
 ## Agents as Markdown
 
 `ORCH_AGENTS_DIR` (default `agents/`) is scanned at startup. The directory is the
@@ -120,16 +158,34 @@ state to change between the read and the decision made from it. Local SQLite rea
 are microseconds, and the process is not serving high-concurrency HTTP traffic, so
 the usual reason to go async does not apply.
 
-Two consequences worth knowing before you scale it:
+### Concurrency
 
-- **No Postgres adapter.** PLAN.md §13 sketches one, and it is not built. Because
-  every network database driver is async, adding one is not a drop-in: it means
-  making ten store classes async and then every caller, including the scheduler
-  loops above. That is a real refactor, not a config switch.
-- **One process per database.** Job state lives in one SQLite file with one
-  scheduler owning the queue. Two processes pointed at the same file will fight
-  over queued jobs — WAL makes the writes safe, but nothing coordinates *which*
-  scheduler picks up a job. Run one.
+WAL mode means one writer and any number of concurrent readers, with competing
+writers queueing against the busy timeout rather than failing. **Several
+orchestrator processes can share one database file**, which is how you run behind
+a round-robin front end.
+
+What makes that safe is that the two places where instances could collide are
+each a single atomic statement rather than a read followed by a write:
+
+- taking a queued job (`UPDATE ... WHERE state = 'queued' RETURNING *`), so two
+  schedulers never run the same job, and the loser simply moves on;
+- resolving an approval (`UPDATE ... WHERE status = 'pending'`), so an approve can
+  never land on top of someone else's reject.
+
+`tests/integration/shared-db.test.ts` covers both against a real shared file, and
+runs twelve jobs across two schedulers to check each executes exactly once.
+
+The boundary is the **host**: every instance must reach the same file, and SQLite
+over NFS or SMB is not safe. Multiple hosts need Postgres.
+
+### No Postgres adapter
+
+PLAN.md §13 sketches one and it is not built. Every network database driver is
+async, so it is not a drop-in: it means making the store classes async and then
+every caller, including the scheduler loops above, where the synchronous read is
+currently doing real work for correctness. That is a refactor, not a config
+switch.
 
 ## Configuration
 
@@ -146,7 +202,7 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 312 tests, no network, no model calls
+pnpm test        # 324 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 pnpm typecheck && pnpm lint && pnpm build
 ```
@@ -164,4 +220,10 @@ anything under `src/`.
   and tested over a real socket, using the SDK's own serializers — but every peer
   so far has been ours. Expect to find interop surprises on first contact with
   someone else's implementation.
-- **SQLite only, and single process.** See [Storage](#storage) below.
+- **SQLite only.** See [Storage](#storage) below — several processes on one host
+  are fine; multiple hosts are not.
+- **No multi-user isolation.** There is no owner column on any table: every agent,
+  job, memory entry and artifact is global. OAuth identifies callers for the
+  `orch:admin` scope but that identity never reaches the data layer, so any user
+  can see, cancel or delete another's work. Fine for one team sharing an
+  orchestrator; not a tenancy boundary.
