@@ -1,7 +1,36 @@
 import { z } from 'zod';
-import { APPROVAL_SCOPES, APPROVAL_STATUSES } from '../core/approvals.js';
+import { APPROVAL_SCOPES, APPROVAL_STATUSES, type ApprovalRecord } from '../core/approvals.js';
+import { OrchestratorError } from '../errors.js';
 import { toolError, toolOk } from './result.js';
-import type { ToolRegistration } from './types.js';
+import type { ToolDeps, ToolRegistration } from './types.js';
+
+/**
+ * Approvals carry no owner column of their own (same shape as events) — they
+ * are reached through the job or run they gate. Without this check,
+ * approval_list handed every caller every owner's pending gates (summary,
+ * rendered step instruction and all), and approval_resolve let anyone
+ * approve or reject another owner's workflow step outright.
+ */
+function isApprovalVisible(deps: ToolDeps, approval: ApprovalRecord): boolean {
+  if (deps.principal.isAdmin) return true;
+
+  try {
+    if (approval.runId !== undefined) {
+      deps.services.workflows.getVisibleRun(approval.runId, deps.principal);
+      return true;
+    }
+    if (approval.jobId !== undefined) {
+      deps.services.jobs.getVisible(approval.jobId, deps.principal);
+      return true;
+    }
+  } catch {
+    return false;
+  }
+
+  // Neither id is set: nothing ties this approval to a caller we can check,
+  // so only an admin may see or resolve it.
+  return false;
+}
 
 const ApprovalSchema = z.object({
   approvalId: z.string(),
@@ -44,11 +73,14 @@ export const approvalListTool: ToolRegistration = {
       },
       args => {
         try {
-          const approvals = deps.services.approvals.list({
-            status: args.status ?? 'pending',
-            ...(args.scope !== undefined && { scope: args.scope }),
-            ...(args.limit !== undefined && { limit: args.limit })
-          });
+          const approvals = deps.services.approvals
+            .list({
+              status: args.status ?? 'pending',
+              ...(args.scope !== undefined && { scope: args.scope }),
+              ...(args.limit !== undefined && { limit: args.limit })
+            })
+            .filter(approval => isApprovalVisible(deps, approval));
+
           return toolOk({ approvals }, `${approvals.length} ${args.status ?? 'pending'} approval(s).`);
         } catch (error) {
           return toolError(error);
@@ -85,6 +117,18 @@ export const approvalResolveTool: ToolRegistration = {
       },
       args => {
         try {
+          // Resolve through the visibility guard first, so resolving someone
+          // else's approval reads as "no such approval" rather than
+          // succeeding — same pattern as job_cancel.
+          const existing = deps.services.approvals.getOrThrow(args.approvalId);
+          if (!isApprovalVisible(deps, existing)) {
+            throw new OrchestratorError(
+              'NOT_FOUND',
+              `No approval with id ${args.approvalId}.`,
+              'Call approval_list to see pending approvals.'
+            );
+          }
+
           const approval = deps.services.approvals.resolve(args.approvalId, args.decision, {
             ...(args.comment !== undefined && { comment: args.comment }),
             ...(args.editedInput !== undefined && { editedInput: args.editedInput })

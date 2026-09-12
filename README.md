@@ -243,6 +243,7 @@ new tool cannot forget:
 | `agent_register` | the registered remote agent belongs to whoever registered it, exactly like `agent_create` |
 | `a2a_task_get`/`a2a_task_cancel`/`a2a_push_config_set` | all resolve `jobId` through the same visibility check as `job_get`/`job_cancel` — naming another owner's job is refused, not just routed to a different (and possibly missing) remote task |
 | `events_query`/`trace_get` | a non-admin must scope these to a `jobId`, `agentId` or `runId` they can see; there is no unscoped view of every owner's event history |
+| `approval_list`/`approval_resolve` | approvals carry no owner column of their own — resolved through the run they gate, the same way as `events_query` — so a non-admin sees and can only resolve gates on a run they can see; naming another owner's `approvalId` reads as `NOT_FOUND` |
 | `orch://workflows/{id}` and `orch://workflow-runs/{id}` resources | scoped the same way as the `workflow_get`/`workflow_run_get` tools — a resource is a separate registration path from a tool and does not inherit a tool's checks automatically |
 
 A job spawned by an agent inherits the parent's owner, and artifacts and memory
@@ -337,7 +338,7 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 442 tests, no network, no model calls
+pnpm test        # 443 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 pnpm typecheck && pnpm lint && pnpm build
 ```

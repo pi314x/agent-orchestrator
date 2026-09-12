@@ -13,6 +13,7 @@ import {
 } from '../../src/tools/agents.js';
 import { delegateTool } from '../../src/tools/delegation.js';
 import { a2aPushConfigSetTool, a2aTaskCancelTool, a2aTaskGetTool } from '../../src/tools/a2a.js';
+import { approvalListTool, approvalResolveTool } from '../../src/tools/approvals.js';
 import { artifactDeleteTool } from '../../src/tools/artifacts.js';
 import { jobCancelTool, jobGetTool, jobListTool, jobSubmitTool, jobWaitTool } from '../../src/tools/jobs.js';
 import { eventsQueryTool } from '../../src/tools/observability.js';
@@ -816,6 +817,48 @@ describe('workflow and run isolation', () => {
 
     expect(gotByAdmin.isError).toBe(false);
     expect(deletedByAdmin.isError).toBe(false);
+    await closeServices(services);
+  });
+
+  // Regression: approvals carry no owner column of their own — they are
+  // reached through the run they gate — and approval_list/approval_resolve
+  // never checked that run's ownership at all. Any caller could read every
+  // owner's pending gates (including the rendered step instruction in
+  // payload) and approve or reject them outright.
+  it("an approval gate on one user's run is invisible to, and unresolvable by, another user", async () => {
+    const services = testServices();
+    const started = await callAs(services, alice, workflowStartTool, 'workflow_start', {
+      spec: {
+        name: 'alice-gated',
+        steps: [{ id: 'deploy', instruction: 'ship it', template: 'coder', approval: true }]
+      }
+    });
+    const runId = (started.out['run'] as { runId: string }).runId;
+    await services.scheduler.drain();
+
+    const approvalId = services.approvals.list({ status: 'pending' }).find(a => a.runId === runId)!
+      .approvalId;
+
+    const listedByBob = await callAs(services, bob, approvalListTool, 'approval_list', {});
+    const listedByAlice = await callAs(services, alice, approvalListTool, 'approval_list', {});
+    const resolvedByBob = await callAs(services, bob, approvalResolveTool, 'approval_resolve', {
+      approvalId,
+      decision: 'approve'
+    });
+
+    expect((listedByBob.out['approvals'] as unknown[]).length).toBe(0);
+    expect((listedByAlice.out['approvals'] as { approvalId: string }[]).map(a => a.approvalId)).toEqual([
+      approvalId
+    ]);
+    expect(resolvedByBob.isError).toBe(true);
+    expect(resolvedByBob.text).toContain('NOT_FOUND');
+    expect(services.approvals.getOrThrow(approvalId).status).toBe('pending');
+
+    const resolvedByAlice = await callAs(services, alice, approvalResolveTool, 'approval_resolve', {
+      approvalId,
+      decision: 'approve'
+    });
+    expect(resolvedByAlice.isError).toBe(false);
     await closeServices(services);
   });
 });
