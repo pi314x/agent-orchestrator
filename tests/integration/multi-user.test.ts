@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { agentCreateTool, agentDeleteTool, agentGetTool, agentListTool } from '../../src/tools/agents.js';
 import { jobCancelTool, jobGetTool, jobListTool, jobSubmitTool } from '../../src/tools/jobs.js';
+import { memoryReadTool, memorySearchTool, memoryWriteTool } from '../../src/tools/memory.js';
 import type { Principal } from '../../src/core/principal.js';
 import type { ToolDeps } from '../../src/tools/types.js';
 import type { Services } from '../../src/services.js';
@@ -194,6 +195,54 @@ describe('multi-user isolation', () => {
 
   // With OAuth unconfigured there is no identity, so everything belongs to one
   // owner and the orchestrator behaves exactly as it did before ownership.
+  it("cannot write to another user's memory namespace via the shared-key path", async () => {
+    const services = testServices();
+
+    await callAs(services, alice, memoryWriteTool, 'memory_write', {
+      namespace: 'notes',
+      key: 'todo',
+      value: 'alice plan'
+    });
+    await callAs(services, bob, memoryWriteTool, 'memory_write', {
+      namespace: 'notes',
+      key: 'todo',
+      value: 'bob plan'
+    });
+
+    const aliceRead = await callAs(services, alice, memoryReadTool, 'memory_read', {
+      namespace: 'notes',
+      key: 'todo'
+    });
+    const bobRead = await callAs(services, bob, memoryReadTool, 'memory_read', {
+      namespace: 'notes',
+      key: 'todo'
+    });
+
+    // Same namespace, same key, chosen by two different users — must not collide.
+    expect((aliceRead.out['entry'] as { value: string }).value).toBe('alice plan');
+    expect((bobRead.out['entry'] as { value: string }).value).toBe('bob plan');
+    await closeServices(services);
+  });
+
+  it("memory_search does not surface another user's entries", async () => {
+    const services = testServices();
+    await callAs(services, alice, memoryWriteTool, 'memory_write', {
+      namespace: 'n',
+      key: 'a',
+      value: 'the incident report'
+    });
+    await callAs(services, bob, memoryWriteTool, 'memory_write', {
+      namespace: 'n',
+      key: 'b',
+      value: 'the incident timeline'
+    });
+
+    const bobSearch = await callAs(services, bob, memorySearchTool, 'memory_search', { query: 'incident' });
+
+    expect((bobSearch.out['entries'] as { key: string }[]).map(e => e.key)).toEqual(['b']);
+    await closeServices(services);
+  });
+
   it('a single-owner deployment is unaffected', async () => {
     const services = testServices();
     const single: Principal = { ownerId: '', isAdmin: true };

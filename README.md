@@ -204,18 +204,24 @@ new tool cannot forget:
 | Agents | listed, fetched, updated and deleted only by their owner |
 | Jobs | listed, fetched, cancelled and retried only by their owner |
 | Artifacts | read and listed only by their owner |
+| Memory | `namespace`/`key` uniqueness is per owner, so two users can both use `"notes"`; reads, writes, deletes and full-text search are all scoped |
 
-A job spawned by an agent inherits the parent's owner, and artifacts an agent
-writes belong to the job's owner. Asking for something another user owns returns
-`NOT_FOUND` rather than `POLICY_DENIED` — confirming it exists would leak the id
-space.
+A job spawned by an agent inherits the parent's owner, and artifacts and memory
+an agent writes belong to the job's owner. Asking for something another user
+owns returns `NOT_FOUND` rather than `POLICY_DENIED` — confirming it exists
+would leak the id space.
 
-**Not yet isolated.** These remain global, and are the reason this is not a
-tenancy boundary:
+This applies to **both the MCP tools and the `orch://` resources** — `orch://agents/{id}`,
+`orch://jobs/{id}`, `orch://jobs/{id}/transcript`, `orch://artifacts/{id}` and
+`orch://memory/{namespace}/{key}` are all owner-checked. The resources were the
+sharper gap when this was built: they carry no tool-shaped call site to guard,
+so scoping the tools alone would have left every one of them readable by URI
+regardless of who owned the row.
+
+**Not yet isolated.** These remain global:
 
 | | |
 |---|---|
-| **Memory** | `memory_read` and `memory_search` take a namespace argument, and a search with no namespace spans all of them. Any user can read any other's blackboard. |
 | Workflows | the columns exist; the store and tools are not wired to them |
 | Messages and channels | agent-to-agent messaging is shared |
 | Approvals | the review queue is shared, which may well be what you want |
@@ -226,8 +232,9 @@ budgets are shared **by design** — they are operator configuration, already
 behind `orch:admin`.
 
 So: safe for separating colleagues' work on a shared team instance, where
-everyone is trusted and the point is not tripping over each other. Not safe for
-users who must not read each other's data — memory alone defeats that.
+everyone is trusted and the point is not tripping over each other. Workflows
+still cross owners if you use them, so treat those as shared until that gap
+closes too.
 
 ## Configuration
 
@@ -244,7 +251,7 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 324 tests, no network, no model calls
+pnpm test        # 346 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 pnpm typecheck && pnpm lint && pnpm build
 ```

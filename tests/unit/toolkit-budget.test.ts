@@ -35,7 +35,7 @@ describe('agent-side toolkit', () => {
     const done = services.jobs.getOrThrow(job.id);
     expect(done.state).toBe('succeeded');
     expect(done.resultText).toBe('all done');
-    expect(services.memory.read(`job:${job.id}`, 'note')?.value).toBe('remembered');
+    expect(services.memory.read('', `job:${job.id}`, 'note')?.value).toBe('remembered');
 
     await closeServices(services);
   });

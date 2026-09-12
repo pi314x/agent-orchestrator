@@ -205,6 +205,7 @@ export function createAgentToolkit(deps: ToolkitDeps, job: JobRecord): AgentTool
 
     memory_write: input => {
       const entry = deps.memory.write({
+        ownerId: job.ownerId,
         namespace: namespaceFor(input['namespace'] as string | undefined),
         key: asString(input['key'], 'key'),
         value: input['value'],
@@ -215,6 +216,7 @@ export function createAgentToolkit(deps: ToolkitDeps, job: JobRecord): AgentTool
 
     memory_read: input => {
       const entry = deps.memory.read(
+        job.ownerId,
         namespaceFor(input['namespace'] as string | undefined),
         asString(input['key'], 'key')
       );
@@ -223,6 +225,7 @@ export function createAgentToolkit(deps: ToolkitDeps, job: JobRecord): AgentTool
 
     memory_search: input => {
       const entries = deps.memory.search({
+        ownerId: job.ownerId,
         query: asString(input['query'], 'query'),
         ...(typeof input['namespace'] === 'string' && { namespace: input['namespace'] })
       });

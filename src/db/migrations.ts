@@ -340,6 +340,68 @@ export const MIGRATIONS: readonly Migration[] = [
       -- losing the ordering the scheduler depends on.
       CREATE INDEX idx_jobs_owner_queue ON jobs (owner_id, state, priority DESC, created_at);
     `
+  },
+  {
+    version: 8,
+    name: 'memory_owner_scoping',
+    up: `
+      -- Isolate memory per user. The table-level UNIQUE(namespace, key) cannot
+      -- be widened to UNIQUE(owner_id, namespace, key) in place, so the table
+      -- is rebuilt. Rowids are preserved on the copy (explicit id column) so
+      -- the FTS5 external-content index, keyed by content_rowid='id', can be
+      -- rebuilt against the same ids rather than needing a rowid remap.
+      DROP TRIGGER memory_ai;
+      DROP TRIGGER memory_ad;
+      DROP TRIGGER memory_au;
+      DROP TABLE memory_fts;
+
+      CREATE TABLE memory_new (
+        id         INTEGER PRIMARY KEY,
+        owner_id   TEXT NOT NULL DEFAULT '',
+        namespace  TEXT NOT NULL,
+        key        TEXT NOT NULL,
+        value      TEXT NOT NULL,
+        tags       TEXT NOT NULL DEFAULT '[]',
+        expires_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE (owner_id, namespace, key)
+      );
+
+      -- Existing rows predate ownership, so they land on the single-owner
+      -- sentinel, same as every other table migration 7 touched.
+      INSERT INTO memory_new (id, owner_id, namespace, key, value, tags, expires_at, created_at, updated_at)
+      SELECT id, '', namespace, key, value, tags, expires_at, created_at, updated_at FROM memory;
+
+      DROP TABLE memory;
+      ALTER TABLE memory_new RENAME TO memory;
+
+      CREATE INDEX idx_memory_owner ON memory (owner_id, namespace);
+
+      CREATE VIRTUAL TABLE memory_fts USING fts5 (
+        namespace, key, value, tags, content='memory', content_rowid='id'
+      );
+
+      INSERT INTO memory_fts (rowid, namespace, key, value, tags)
+      SELECT id, namespace, key, value, tags FROM memory;
+
+      CREATE TRIGGER memory_ai AFTER INSERT ON memory BEGIN
+        INSERT INTO memory_fts (rowid, namespace, key, value, tags)
+        VALUES (new.id, new.namespace, new.key, new.value, new.tags);
+      END;
+
+      CREATE TRIGGER memory_ad AFTER DELETE ON memory BEGIN
+        INSERT INTO memory_fts (memory_fts, rowid, namespace, key, value, tags)
+        VALUES ('delete', old.id, old.namespace, old.key, old.value, old.tags);
+      END;
+
+      CREATE TRIGGER memory_au AFTER UPDATE ON memory BEGIN
+        INSERT INTO memory_fts (memory_fts, rowid, namespace, key, value, tags)
+        VALUES ('delete', old.id, old.namespace, old.key, old.value, old.tags);
+        INSERT INTO memory_fts (rowid, namespace, key, value, tags)
+        VALUES (new.id, new.namespace, new.key, new.value, new.tags);
+      END;
+    `
   }
 ] as const;
 

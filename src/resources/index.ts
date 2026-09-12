@@ -1,5 +1,6 @@
 import { ResourceTemplate, type McpServer } from '@modelcontextprotocol/server';
 import { buildAgentCard } from '../a2a/server.js';
+import type { Principal } from '../core/principal.js';
 import { toAgentView, toJobView } from '../schemas/common.js';
 import type { Services } from '../services.js';
 
@@ -16,7 +17,12 @@ const text = (uri: URL, value: string) => ({
  * pull context as resources. Cache hints follow PLAN §6: immutable artifacts
  * are long-lived, live job state is short.
  */
-export function registerResources(server: McpServer, services: Services, version: string): void {
+export function registerResources(
+  server: McpServer,
+  services: Services,
+  version: string,
+  principal: Principal
+): void {
   server.registerResource(
     'templates',
     'orch://templates',
@@ -29,7 +35,7 @@ export function registerResources(server: McpServer, services: Services, version
     new ResourceTemplate('orch://agents/{agentId}', { list: undefined }),
     { title: 'Agent', mimeType: 'application/json', cacheHint: { ttlMs: 60_000 } },
     (uri, { agentId }) => {
-      const agent = services.agents.getOrThrow(String(agentId));
+      const agent = services.agents.getVisible(String(agentId), principal);
       const { jobs } = services.jobs.list({ agentId: agent.id, limit: 10 });
       return json(uri, {
         agent: toAgentView(agent),
@@ -43,7 +49,7 @@ export function registerResources(server: McpServer, services: Services, version
     'job',
     new ResourceTemplate('orch://jobs/{jobId}', { list: undefined }),
     { title: 'Job', mimeType: 'application/json', cacheHint: { ttlMs: 2_000 } },
-    (uri, { jobId }) => json(uri, toJobView(services.jobs.getOrThrow(String(jobId))))
+    (uri, { jobId }) => json(uri, toJobView(services.jobs.getVisible(String(jobId), principal)))
   );
 
   server.registerResource(
@@ -52,9 +58,11 @@ export function registerResources(server: McpServer, services: Services, version
     { title: 'Job transcript', mimeType: 'text/plain', cacheHint: { ttlMs: 2_000 } },
     (uri, { jobId }) => {
       const id = String(jobId);
+      // Resolve visibility before touching the event log — a caller with no
+      // access to the job must not learn anything about it from the trail.
+      const job = services.jobs.getVisible(id, principal);
       const events = services.events.query({ jobId: id });
       const lines = events.map(event => `${event.ts} ${event.type} ${JSON.stringify(event.payload)}`);
-      const job = services.jobs.getOrThrow(id);
       return text(uri, [...lines, '', job.resultText ?? ''].join('\n'));
     }
   );
@@ -78,14 +86,15 @@ export function registerResources(server: McpServer, services: Services, version
     new ResourceTemplate('orch://artifacts/{artifactId}', { list: undefined }),
     // Artifacts are content-hashed and never mutated, so they cache hard.
     { title: 'Artifact', mimeType: 'text/plain', cacheHint: { ttlMs: 86_400_000 } },
-    (uri, { artifactId }) => text(uri, services.artifacts.read(String(artifactId)).content)
+    (uri, { artifactId }) => text(uri, services.artifacts.readVisible(String(artifactId), principal).content)
   );
 
   server.registerResource(
     'memory',
     new ResourceTemplate('orch://memory/{namespace}/{key}', { list: undefined }),
     { title: 'Memory entry', mimeType: 'application/json', cacheHint: { ttlMs: 2_000 } },
-    (uri, { namespace, key }) => json(uri, services.memory.read(String(namespace), String(key)) ?? null)
+    (uri, { namespace, key }) =>
+      json(uri, services.memory.read(principal.ownerId, String(namespace), String(key)) ?? null)
   );
 
   if (services.config.a2aEnabled) {

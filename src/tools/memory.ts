@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ownerFilter } from '../core/principal.js';
 import { toolError, toolOk } from './result.js';
 import type { ToolRegistration } from './types.js';
 
@@ -40,6 +41,7 @@ export const memoryWriteTool: ToolRegistration = {
       args => {
         try {
           const entry = deps.services.memory.write({
+            ownerId: deps.principal.ownerId,
             namespace: args.namespace,
             key: args.key,
             value: args.value,
@@ -77,7 +79,7 @@ export const memoryReadTool: ToolRegistration = {
       },
       args => {
         try {
-          const entry = deps.services.memory.read(args.namespace, args.key);
+          const entry = deps.services.memory.read(deps.principal.ownerId, args.namespace, args.key);
           return entry === undefined
             ? toolOk({ found: false }, `No entry at ${args.namespace}/${args.key}.`)
             : toolOk({ found: true, entry }, `Read ${entry.namespace}/${entry.key}.`);
@@ -118,6 +120,7 @@ export const memorySearchTool: ToolRegistration = {
         try {
           const entries = deps.services.memory.search({
             query: args.query,
+            ...ownerFilter(deps.principal),
             ...(args.namespace !== undefined && { namespace: args.namespace }),
             ...(args.tags !== undefined && { tags: args.tags }),
             ...(args.limit !== undefined && { limit: args.limit })
@@ -157,7 +160,7 @@ export const memoryDeleteTool: ToolRegistration = {
       },
       args => {
         try {
-          const deleted = deps.services.memory.delete(args.namespace, {
+          const deleted = deps.services.memory.delete(deps.principal.ownerId, args.namespace, {
             ...(args.key !== undefined && { key: args.key }),
             ...(args.prefix !== undefined && { prefix: args.prefix })
           });

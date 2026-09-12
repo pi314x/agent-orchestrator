@@ -20,17 +20,19 @@ export function createServerFactory(deps: ServerDeps): McpServerFactory {
   return ctx => {
     const server = new McpServer({ name: SERVER_NAME, version: VERSION });
 
+    // One serving unit is one request under createMcpHandler, so the caller's
+    // identity is settled once here rather than re-derived per tool or resource.
+    const principal = principalFor(ctx.authInfo);
+
     registerTools(server, {
       services: deps.services,
       version: VERSION,
       startedAt: deps.startedAt,
       era: ctx.era,
-      // One serving unit is one request under createMcpHandler, so the caller's
-      // identity is settled here rather than re-derived in each tool.
-      principal: principalFor(ctx.authInfo)
+      principal
     });
 
-    registerResources(server, deps.services, VERSION);
+    registerResources(server, deps.services, VERSION, principal);
     registerPrompts(server, deps.services);
 
     return server;

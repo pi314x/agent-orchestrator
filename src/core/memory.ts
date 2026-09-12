@@ -11,6 +11,8 @@ export type MemoryEntry = {
 };
 
 export interface WriteMemoryInput {
+  /** Whose entry this is. Required — a write always belongs to exactly one owner. */
+  ownerId: string;
   namespace: string;
   key: string;
   value: unknown;
@@ -20,6 +22,8 @@ export interface WriteMemoryInput {
 
 export interface SearchMemoryInput {
   query: string;
+  /** Restrict to one owner. Omitted searches every owner (the admin path). */
+  ownerId?: string;
   namespace?: string;
   tags?: readonly string[];
   limit?: number;
@@ -50,6 +54,12 @@ function toEntry(row: MemoryRow): MemoryEntry {
 /**
  * Orchestrator-local blackboard. Remote A2A agents never touch this — they only
  * ever see what is placed into a task's context at submit time.
+ *
+ * Scoped per owner: uniqueness is (owner_id, namespace, key), so two users can
+ * both write "shared"/"notes" without colliding, and every read, search and
+ * delete takes an explicit owner rather than defaulting quietly — the same
+ * "enforce it in the store, not the handler" shape as jobs, agents and
+ * artifacts.
  */
 export class MemoryStore {
   constructor(private readonly db: Db) {}
@@ -61,15 +71,16 @@ export class MemoryStore {
 
     this.db
       .prepare(
-        `INSERT INTO memory (namespace, key, value, tags, expires_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT (namespace, key) DO UPDATE SET
+        `INSERT INTO memory (owner_id, namespace, key, value, tags, expires_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (owner_id, namespace, key) DO UPDATE SET
            value = excluded.value,
            tags = excluded.tags,
            expires_at = excluded.expires_at,
            updated_at = excluded.updated_at`
       )
       .run(
+        input.ownerId,
         input.namespace,
         input.key,
         JSON.stringify(input.value ?? null),
@@ -79,16 +90,16 @@ export class MemoryStore {
         now
       );
 
-    const entry = this.read(input.namespace, input.key);
+    const entry = this.read(input.ownerId, input.namespace, input.key);
     if (entry === undefined) throw new Error('memory write did not persist');
     return entry;
   }
 
-  read(namespace: string, key: string): MemoryEntry | undefined {
+  read(ownerId: string, namespace: string, key: string): MemoryEntry | undefined {
     this.purgeExpired();
     const row = this.db
-      .prepare('SELECT * FROM memory WHERE namespace = ? AND key = ?')
-      .get(namespace, key) as MemoryRow | undefined;
+      .prepare('SELECT * FROM memory WHERE owner_id = ? AND namespace = ? AND key = ?')
+      .get(ownerId, namespace, key) as MemoryRow | undefined;
     return row === undefined ? undefined : toEntry(row);
   }
 
@@ -99,6 +110,10 @@ export class MemoryStore {
     const where: string[] = ['memory_fts MATCH ?'];
     const params: unknown[] = [escapeFtsQuery(input.query)];
 
+    if (input.ownerId !== undefined) {
+      where.push('m.owner_id = ?');
+      params.push(input.ownerId);
+    }
     if (input.namespace !== undefined) {
       where.push('m.namespace = ?');
       params.push(input.namespace);
@@ -120,18 +135,20 @@ export class MemoryStore {
     return entries.filter(entry => input.tags?.every(tag => entry.tags.includes(tag)));
   }
 
-  /** Delete one key, or every key under a prefix. Returns the number removed. */
-  delete(namespace: string, target: { key?: string; prefix?: string }): number {
+  /** Delete one key, or every key under a prefix, within one owner's namespace. */
+  delete(ownerId: string, namespace: string, target: { key?: string; prefix?: string }): number {
     if (target.key !== undefined) {
-      return this.db.prepare('DELETE FROM memory WHERE namespace = ? AND key = ?').run(namespace, target.key)
-        .changes;
+      return this.db
+        .prepare('DELETE FROM memory WHERE owner_id = ? AND namespace = ? AND key = ?')
+        .run(ownerId, namespace, target.key).changes;
     }
     if (target.prefix !== undefined) {
       return this.db
-        .prepare('DELETE FROM memory WHERE namespace = ? AND key LIKE ?')
-        .run(namespace, `${target.prefix}%`).changes;
+        .prepare('DELETE FROM memory WHERE owner_id = ? AND namespace = ? AND key LIKE ?')
+        .run(ownerId, namespace, `${target.prefix}%`).changes;
     }
-    return this.db.prepare('DELETE FROM memory WHERE namespace = ?').run(namespace).changes;
+    return this.db.prepare('DELETE FROM memory WHERE owner_id = ? AND namespace = ?').run(ownerId, namespace)
+      .changes;
   }
 
   private purgeExpired(): void {

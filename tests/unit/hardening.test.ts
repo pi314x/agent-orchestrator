@@ -8,8 +8,8 @@ describe('memory search hardening', () => {
 
   it.each(nasty)('survives a query of %j', async q => {
     const services = testServices();
-    services.memory.write({ namespace: 'n', key: 'k', value: 'hello world' });
-    expect(() => services.memory.search({ query: q })).not.toThrow();
+    services.memory.write({ ownerId: '', namespace: 'n', key: 'k', value: 'hello world' });
+    expect(() => services.memory.search({ ownerId: '', query: q })).not.toThrow();
     await closeServices(services);
   });
 });

@@ -97,7 +97,7 @@ describe('openai-compatible runner against a real wire protocol', () => {
     );
 
     expect(text).toBe('all done');
-    expect((services as Services).memory.read(`job:${job.id}`, 'k')?.value).toBe('v');
+    expect((services as Services).memory.read('', `job:${job.id}`, 'k')?.value).toBe('v');
   });
 
   it('sends one tool message per tool call, keyed by call id', async () => {
