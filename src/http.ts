@@ -103,7 +103,30 @@ export async function startHttpServer({
       }
 
       (req as IncomingMessage & { auth?: typeof auth }).auth = auth;
-      await nodeHandler(req, res, request.body === null ? undefined : await request.json());
+
+      // Reading the body here (rather than letting nodeHandler do it, the way
+      // the no-OAuth path below does) is what lets the gate see the request
+      // at all — toWebRequest already consumed the stream. But a malformed
+      // body is a client protocol error, not an authentication one: without
+      // this try/catch it fell into the outer catch below, which logged it
+      // as "authentication failed" and answered a bare 500, instead of the
+      // JSON-RPC parse error every other malformed-body path on this server
+      // returns.
+      let body: unknown;
+      if (request.body !== null) {
+        try {
+          body = await request.json();
+        } catch {
+          sendJson(res, 400, {
+            jsonrpc: '2.0',
+            error: { code: -32700, message: 'Parse error: Invalid JSON' },
+            id: null
+          });
+          return;
+        }
+      }
+
+      await nodeHandler(req, res, body);
     })().catch(error => {
       logger.error({ err: error }, 'authentication failed');
       sendJson(res, 500, { error: 'internal' });

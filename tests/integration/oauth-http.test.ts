@@ -83,6 +83,34 @@ function rawToolsList(url: string, authorization?: string): Promise<number> {
   });
 }
 
+/** Same as rawToolsList, but with a caller-chosen body and the response text. */
+function rawPost(url: string, authorization: string, body: string): Promise<{ status: number; text: string }> {
+  const target = new URL(url);
+  return new Promise((resolve, reject) => {
+    const req = request(
+      {
+        hostname: target.hostname,
+        port: target.port,
+        path: target.pathname,
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          accept: 'application/json, text/event-stream',
+          'content-length': Buffer.byteLength(body),
+          authorization
+        }
+      },
+      res => {
+        let data = '';
+        res.on('data', (chunk: Buffer) => (data += chunk.toString()));
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, text: data }));
+      }
+    );
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
 describe('MCP over Streamable HTTP with a real OAuth token', () => {
   it('refuses a request with no Authorization header at all', async () => {
     server = await start();
@@ -119,6 +147,25 @@ describe('MCP over Streamable HTTP with a real OAuth token', () => {
     const token = await (jwks as Jwks).sign({ sub: 'user_alice', scope: '' });
 
     await expect(rawToolsList(server.url, `Bearer ${token}`)).resolves.toBe(200);
+  });
+
+  // Regression: a malformed body from an authenticated caller fell into the
+  // same catch block as a genuine auth failure — toWebRequest had already
+  // consumed the stream, so parsing it for the gate threw, and the outer
+  // catch logged "authentication failed" and answered a bare 500. The
+  // no-OAuth path (nodeHandler parses the body itself) already returns a
+  // proper JSON-RPC parse error for the same malformed body; the
+  // OAuth-configured path must match, not blame authentication for a client
+  // protocol error that has nothing to do with the token.
+  it('answers a malformed body from an authenticated caller with a JSON-RPC parse error, not a 500', async () => {
+    server = await start();
+    const token = await (jwks as Jwks).sign({ sub: 'user_alice', scope: '' });
+
+    const { status, text } = await rawPost(server.url, `Bearer ${token}`, '{not json');
+
+    expect(status).toBe(400);
+    const body = JSON.parse(text) as { error?: { code?: number } };
+    expect(body.error?.code).toBe(-32700);
   });
 
   // Regression territory: every other cross-owner test in this suite drives
