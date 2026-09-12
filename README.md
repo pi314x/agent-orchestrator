@@ -44,10 +44,12 @@ claude mcp add orchestrator -- node /absolute/path/to/dist/index.js
 | `workflow_start` | A DAG of steps, with conditions and human approval gates |
 | `agent_create` / `agent_template_list` | Define agents, or use the eight built-in roles |
 
-`ORCH_TOOL_PROFILE` controls how many of the 65 tools are exposed: `core` (11),
-`standard` (33, the default), `full` (56). With `A2A_ENABLED=true` the interop
-tools appear too, taking `full` to 65. A smaller profile means better tool
-selection by the model, so raise it only when you need something.
+`ORCH_TOOL_PROFILE` controls how many tools are exposed: `core` (11), `standard`
+(33, the default), `full` (56) — with A2A off, which it is by default. Turning
+on `A2A_ENABLED=true` adds the interop tools to whichever profile is active
+except `core` (none of its tools require A2A): `standard` grows to 37, `full`
+to 65. A smaller profile means better tool selection by the model, so raise it
+only when you need something.
 
 ## The eight built-in roles
 
@@ -352,3 +354,11 @@ anything under `src/`.
   are fine; multiple hosts are not.
 - **Multi-user isolation is partial — do not treat it as a tenancy boundary yet.**
   See [Ownership](#ownership) below for exactly what is and is not separated.
+- **Human-in-the-loop only covers a paused workflow step today.** `approval_list`
+  / `approval_resolve` and the `awaiting_approval` gate work; a downstream tool
+  marked `requireApprovalFor` fails the call outright instead of pausing for a
+  human, an unverified remote agent card is only ever allowed or blocked by
+  `A2A_TRUST_MODE` (never gated through an approval), and an A2A task that
+  reports `input-required` fails the job immediately rather than waiting for
+  someone to answer it — there is no way yet to feed a remote task more input
+  mid-run.
