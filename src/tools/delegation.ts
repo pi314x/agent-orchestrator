@@ -492,19 +492,25 @@ export const consensusTool: ToolRegistration = {
           }
 
           // Agreement is measured on normalized text, so trivial formatting
-          // differences do not read as disagreement.
+          // differences do not read as disagreement — but the verdict itself
+          // must stay the real answer an agent actually gave, not the
+          // lowercased key used only to group them.
           const counts = new Map<string, number>();
+          const originalText = new Map<string, string>();
           for (const answer of answered) {
-            const key = answer.text.trim().toLowerCase();
+            const original = answer.text.trim();
+            const key = original.toLowerCase();
             counts.set(key, (counts.get(key) ?? 0) + 1);
+            if (!originalText.has(key)) originalText.set(key, original);
           }
 
           const top = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
           const agreement = top === undefined ? 0 : top[1] / answered.length;
+          const verdict = top === undefined ? '' : (originalText.get(top[0]) ?? '');
 
           if (args.strategy === 'vote') {
             return toolOk(
-              { answers, agreement, answered: answered.length, failed, verdict: top?.[0] ?? '' },
+              { answers, agreement, answered: answered.length, failed, verdict },
               `${answered.length} of ${answers.length} answered${failureNote}; ${Math.round(agreement * 100)}% agreement.`
             );
           }

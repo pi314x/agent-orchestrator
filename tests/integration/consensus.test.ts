@@ -12,11 +12,14 @@ let services: Services;
 beforeAll(async () => {
   services = testServices({
     profile: 'full',
-    // Every participant fails except one.
+    // Every participant fails except one, unless named "cased-*", which
+    // answers with mixed-case text to exercise the verdict-casing regression.
     mockScript: job =>
-      job.agentSnapshot.name.startsWith('good')
-        ? { text: 'the sky is blue' }
-        : { fail: { code: 'RUNNER_FAILED' as const, message: 'model died' } }
+      job.agentSnapshot.name.startsWith('cased')
+        ? { text: 'The Sky Is Blue' }
+        : job.agentSnapshot.name.startsWith('good')
+          ? { text: 'the sky is blue' }
+          : { fail: { code: 'RUNNER_FAILED' as const, message: 'model died' } }
   });
 
   server = await startHttpServer({
@@ -93,6 +96,26 @@ describe('consensus with failing participants', () => {
 
     expect(answers.map(a => a.state).sort()).toEqual(['failed', 'succeeded']);
     expect(answers.find(a => a.state === 'failed')?.text).toBe('');
+  });
+
+  // Regression: the verdict was built from the same trimmed/lowercased key
+  // used only to tally agreement, so a winning answer like "The Sky Is Blue"
+  // came back as "the sky is blue" — a mangled answer nobody actually gave.
+  it('reports the verdict with its original casing, not the vote-tally key', async () => {
+    const ids = await agentIds(['cased-1', 'cased-2', 'bad-6']);
+
+    const result = await client.callTool({
+      name: 'consensus',
+      arguments: {
+        question: 'What colour is the sky?',
+        participants: ids.map(agentId => ({ agentId })),
+        strategy: 'vote',
+        timeoutSec: 5
+      }
+    });
+
+    const out = result.structuredContent as Record<string, unknown>;
+    expect(out['verdict']).toBe('The Sky Is Blue');
   });
 
   it('says plainly when nobody answered, rather than claiming consensus', async () => {
