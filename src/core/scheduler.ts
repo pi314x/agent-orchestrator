@@ -442,6 +442,8 @@ export class JobScheduler {
     );
 
     const child = this.submit({
+      // A child belongs to whoever owns the parent, not to nobody.
+      ownerId: parent.ownerId,
       backend: 'local',
       agentId: agent.id,
       agentSnapshot: toSnapshot(agent),

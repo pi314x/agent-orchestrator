@@ -1,6 +1,7 @@
 import type { AuthInfo, OAuthTokenVerifier } from '@modelcontextprotocol/server';
 import { createRemoteJWKSet, jwtVerify } from 'jose';
 import type { Config } from './config.js';
+import { SINGLE_USER_PRINCIPAL, type Principal } from './core/principal.js';
 
 /**
  * Scopes gating the tools that can change what the orchestrator is allowed to
@@ -54,6 +55,20 @@ export function createJwtVerifier(settings: OAuthSettings): OAuthTokenVerifier {
 
 function ensureTrailingSlash(url: string): string {
   return url.endsWith('/') ? url : `${url}/`;
+}
+
+/**
+ * The token's subject is the owner of what this caller creates. `clientId`
+ * carries `sub` (see `createJwtVerifier`): a stable per-user identifier the
+ * issuer mints, not a display name and not anything the client chooses.
+ *
+ * Lives here rather than in `core/` because it speaks the MCP SDK's AuthInfo,
+ * and core must not import the SDK.
+ */
+export function principalFor(authInfo: AuthInfo | undefined): Principal {
+  if (authInfo === undefined) return SINGLE_USER_PRINCIPAL;
+
+  return { ownerId: authInfo.clientId, isAdmin: authInfo.scopes.includes(ADMIN_SCOPE) };
 }
 
 /** True when the caller holds the scope, or when OAuth is not configured. */

@@ -1,9 +1,12 @@
 import type { McpServer } from '@modelcontextprotocol/server';
 import type { ToolProfile } from '../config.js';
+import type { Principal } from '../core/principal.js';
 import type { Services } from '../services.js';
 
 export interface ToolDeps {
   services: Services;
+  /** Who this request acts as. Stores filter and stamp rows from it. */
+  principal: Principal;
   version: string;
   /** Process start as epoch ms. */
   startedAt: number;

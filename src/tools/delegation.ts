@@ -64,6 +64,7 @@ export const delegateTool: ToolRegistration = {
           );
 
           const submitted = deps.services.scheduler.submit({
+            ownerId: deps.principal.ownerId,
             backend: 'local',
             agentId: agent.id,
             agentSnapshot: { ...toSnapshot(agent), ...(args.model !== undefined && { model: args.model }) },
@@ -169,6 +170,7 @@ export const fanOutTool: ToolRegistration = {
             );
 
             return deps.services.scheduler.submit({
+              ownerId: deps.principal.ownerId,
               backend: 'local',
               agentId: agent.id,
               agentSnapshot: {
@@ -244,6 +246,7 @@ export const fanOutTool: ToolRegistration = {
           );
 
           const reduceJob = deps.services.scheduler.submit({
+            ownerId: deps.principal.ownerId,
             backend: 'local',
             agentId: reduceAgent.id,
             agentSnapshot: toSnapshot(reduceAgent),
@@ -325,6 +328,7 @@ export const planCreateTool: ToolRegistration = {
             .join('\n');
 
           const submitted = deps.services.scheduler.submit({
+            ownerId: deps.principal.ownerId,
             backend: 'local',
             agentId: agent.id,
             agentSnapshot: toSnapshot(agent),
@@ -440,6 +444,7 @@ export const consensusTool: ToolRegistration = {
             return {
               agentName: agent.name,
               job: deps.services.scheduler.submit({
+                ownerId: deps.principal.ownerId,
                 backend: agent.kind === 'remote' ? 'a2a_remote' : 'local',
                 agentId: agent.id,
                 agentSnapshot: toSnapshot(agent),
@@ -507,6 +512,7 @@ export const consensusTool: ToolRegistration = {
           );
 
           const judgeJob = deps.services.scheduler.submit({
+            ownerId: deps.principal.ownerId,
             backend: 'local',
             agentId: judge.id,
             agentSnapshot: toSnapshot(judge),

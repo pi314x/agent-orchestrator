@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ownerFilter } from '../core/principal.js';
 import { toolError, toolOk } from './result.js';
 import type { ToolRegistration } from './types.js';
 
@@ -44,6 +45,7 @@ export const artifactPutTool: ToolRegistration = {
       args => {
         try {
           const artifact = deps.services.artifacts.put({
+            ownerId: deps.principal.ownerId,
             name: args.name,
             content: args.content,
             ...(args.mimeType !== undefined && { mimeType: args.mimeType }),
@@ -90,8 +92,9 @@ export const artifactGetTool: ToolRegistration = {
       },
       args => {
         try {
-          const { record, content, eof } = deps.services.artifacts.read(
+          const { record, content, eof } = deps.services.artifacts.readVisible(
             args.artifactId,
+            deps.principal,
             args.offset,
             args.length
           );
@@ -132,6 +135,7 @@ export const artifactListTool: ToolRegistration = {
       args => {
         try {
           const artifacts = deps.services.artifacts.list({
+            ...ownerFilter(deps.principal),
             ...(args.jobId !== undefined && { jobId: args.jobId }),
             ...(args.workflowRunId !== undefined && { workflowRunId: args.workflowRunId }),
             ...(args.tags !== undefined && { tags: args.tags }),

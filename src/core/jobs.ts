@@ -76,6 +76,8 @@ export type AgentSnapshot = {
 
 export type JobRecord = {
   id: string;
+  /** Who the job belongs to; '' in a single-owner deployment. */
+  ownerId: string;
   backend: JobBackend;
   state: JobState;
   agentId: string;
@@ -104,6 +106,8 @@ export type JobRecord = {
 };
 
 export interface CreateJobInput {
+  /** Owner of the new job. Omitted means the single-owner deployment. */
+  ownerId?: string;
   backend: JobBackend;
   agentId: string;
   agentSnapshot: AgentSnapshot;
@@ -132,10 +136,13 @@ export interface JobListFilter {
   parentJobId?: string;
   cursor?: string;
   limit?: number;
+  /** Restrict to one owner. Omitted means every owner, for admins and internals. */
+  ownerId?: string;
 }
 
 type JobRow = {
   id: string;
+  owner_id: string;
   backend: string;
   state: string;
   agent_id: string;
@@ -169,6 +176,7 @@ function parseJson<T>(raw: string | null): T | undefined {
 function toRecord(row: JobRow): JobRecord {
   const record: JobRecord = {
     id: row.id,
+    ownerId: row.owner_id,
     backend: row.backend as JobBackend,
     state: row.state as JobState,
     agentId: row.agent_id,
@@ -214,13 +222,14 @@ export class JobStore {
     this.db
       .prepare(
         `INSERT INTO jobs (
-           id, backend, state, agent_id, agent_snapshot, instruction, context, output_schema,
+           id, owner_id, backend, state, agent_id, agent_snapshot, instruction, context, output_schema,
            depends_on, priority, timeout_sec, idempotency_key, parent_job_id, depth, attempt,
            created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
       )
       .run(
         id,
+        input.ownerId ?? '',
         input.backend,
         dependsOn.length > 0 ? 'blocked' : 'queued',
         input.agentId,
@@ -284,6 +293,10 @@ export class JobStore {
       where.push('parent_job_id = ?');
       params.push(filter.parentJobId);
     }
+    if (filter.ownerId !== undefined) {
+      where.push('owner_id = ?');
+      params.push(filter.ownerId);
+    }
     // ULIDs sort by creation time, so the id doubles as the pagination cursor.
     if (filter.cursor !== undefined) {
       where.push('id < ?');
@@ -301,6 +314,18 @@ export class JobStore {
     const last = page.at(-1);
 
     return rows.length > limit && last !== undefined ? { jobs: page, nextCursor: last.id } : { jobs: page };
+  }
+
+  /**
+   * Fetch a job the caller is allowed to see. An owner who does not own it gets
+   * NOT_FOUND rather than POLICY_DENIED — a job's existence is itself
+   * information, and confirming it would leak the id space.
+   */
+  getVisible(id: string, principal: { ownerId: string; isAdmin: boolean }): JobRecord {
+    const job = this.getOrThrow(id);
+    if (principal.isAdmin || job.ownerId === principal.ownerId) return job;
+
+    throw new OrchestratorError('NOT_FOUND', `No job with id ${id}.`);
   }
 
   countByState(state: JobState): number {

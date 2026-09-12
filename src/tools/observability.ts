@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { BUDGET_SCOPES } from '../core/budget.js';
 import { EVENT_TYPES } from '../core/events.js';
+import { ownerFilter } from '../core/principal.js';
 import { toolError, toolOk } from './result.js';
 import { denyWithoutAdminScope } from './scopes.js';
 import type { ToolRegistration } from './types.js';
@@ -172,18 +173,26 @@ export const traceGetTool: ToolRegistration = {
           // A job span plus every job it spawned, so the tree mirrors delegation.
           const roots =
             args.jobId !== undefined
-              ? [deps.services.jobs.getOrThrow(args.jobId)]
+              ? [deps.services.jobs.getVisible(args.jobId, deps.principal)]
               : deps.services.workflows
                   .getRun(args.runId as string)
                   .steps.flatMap(step =>
-                    step.jobId === undefined ? [] : [deps.services.jobs.getOrThrow(step.jobId)]
+                    step.jobId === undefined
+                      ? []
+                      : [deps.services.jobs.getVisible(step.jobId, deps.principal)]
                   );
 
           const collected = [...roots];
           for (let index = 0; index < collected.length; index += 1) {
             const parent = collected[index];
             if (parent === undefined) continue;
-            collected.push(...deps.services.jobs.list({ parentJobId: parent.id, limit: 100 }).jobs);
+            collected.push(
+              ...deps.services.jobs.list({
+                ...ownerFilter(deps.principal),
+                parentJobId: parent.id,
+                limit: 100
+              }).jobs
+            );
           }
 
           const spans = collected.map(job => ({
@@ -255,7 +264,7 @@ export const usageReportTool: ToolRegistration = {
       },
       args => {
         try {
-          const { jobs } = deps.services.jobs.list({ limit: args.limit });
+          const { jobs } = deps.services.jobs.list({ ...ownerFilter(deps.principal), limit: args.limit });
           const since = args.since;
           const scoped = since === undefined ? jobs : jobs.filter(job => job.createdAt >= since);
 

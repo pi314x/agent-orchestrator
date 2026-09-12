@@ -187,6 +187,48 @@ every caller, including the scheduler loops above, where the synchronous read is
 currently doing real work for correctness. That is a refactor, not a config
 switch.
 
+## Ownership
+
+With OAuth configured, the token's subject becomes the owner of everything that
+caller creates, and each user sees only their own. Without OAuth there is no
+caller identity at all, so everything belongs to one owner and the orchestrator
+behaves exactly as it did before — the right default for a loopback server.
+
+The `orch:admin` scope reads and acts across owners.
+
+**Isolated today**, enforced in the store rather than in each tool handler, so a
+new tool cannot forget:
+
+| | |
+|---|---|
+| Agents | listed, fetched, updated and deleted only by their owner |
+| Jobs | listed, fetched, cancelled and retried only by their owner |
+| Artifacts | read and listed only by their owner |
+
+A job spawned by an agent inherits the parent's owner, and artifacts an agent
+writes belong to the job's owner. Asking for something another user owns returns
+`NOT_FOUND` rather than `POLICY_DENIED` — confirming it exists would leak the id
+space.
+
+**Not yet isolated.** These remain global, and are the reason this is not a
+tenancy boundary:
+
+| | |
+|---|---|
+| **Memory** | `memory_read` and `memory_search` take a namespace argument, and a search with no namespace spans all of them. Any user can read any other's blackboard. |
+| Workflows | the columns exist; the store and tools are not wired to them |
+| Messages and channels | agent-to-agent messaging is shared |
+| Approvals | the review queue is shared, which may well be what you want |
+| Events | the audit log is global; an admin-only view is the intended shape |
+
+Templates, registered tool servers, cached Agent Cards, published skills and
+budgets are shared **by design** — they are operator configuration, already
+behind `orch:admin`.
+
+So: safe for separating colleagues' work on a shared team instance, where
+everyone is trusted and the point is not tripping over each other. Not safe for
+users who must not read each other's data — memory alone defeats that.
+
 ## Configuration
 
 Every variable is listed with its default in [`.env.example`](.env.example);
@@ -222,8 +264,5 @@ anything under `src/`.
   someone else's implementation.
 - **SQLite only.** See [Storage](#storage) below — several processes on one host
   are fine; multiple hosts are not.
-- **No multi-user isolation.** There is no owner column on any table: every agent,
-  job, memory entry and artifact is global. OAuth identifies callers for the
-  `orch:admin` scope but that identity never reaches the data layer, so any user
-  can see, cancel or delete another's work. Fine for one team sharing an
-  orchestrator; not a tenancy boundary.
+- **Multi-user isolation is partial — do not treat it as a tenancy boundary yet.**
+  See [Ownership](#ownership) below for exactly what is and is not separated.

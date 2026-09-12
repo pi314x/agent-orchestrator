@@ -1,4 +1,5 @@
 import { McpServer, type McpServerFactory } from '@modelcontextprotocol/server';
+import { principalFor } from './auth.js';
 import { registerPrompts } from './prompts/index.js';
 import { registerResources } from './resources/index.js';
 import type { Services } from './services.js';
@@ -23,7 +24,10 @@ export function createServerFactory(deps: ServerDeps): McpServerFactory {
       services: deps.services,
       version: VERSION,
       startedAt: deps.startedAt,
-      era: ctx.era
+      era: ctx.era,
+      // One serving unit is one request under createMcpHandler, so the caller's
+      // identity is settled here rather than re-derived in each tool.
+      principal: principalFor(ctx.authInfo)
     });
 
     registerResources(server, deps.services, VERSION);

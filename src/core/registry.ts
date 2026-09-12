@@ -18,6 +18,8 @@ export type AgentLimits = {
 
 export type AgentRecord = {
   id: string;
+  /** Who the agent belongs to; '' in a single-owner deployment. */
+  ownerId: string;
   kind: AgentKind;
   name: string;
   role?: string;
@@ -41,6 +43,8 @@ export type AgentRecord = {
 };
 
 export interface CreateAgentInput {
+  /** Owner of the new agent. Omitted means the single-owner deployment. */
+  ownerId?: string;
   kind?: AgentKind;
   name: string;
   role?: string;
@@ -59,6 +63,8 @@ export interface CreateAgentInput {
 }
 
 export interface AgentListFilter {
+  /** Restrict to one owner; omitted means every owner. */
+  ownerId?: string;
   kind?: AgentKind;
   cursor?: string;
   limit?: number;
@@ -67,6 +73,7 @@ export interface AgentListFilter {
 
 type AgentRow = {
   id: string;
+  owner_id: string;
   kind: string;
   name: string;
   role: string | null;
@@ -90,6 +97,7 @@ type AgentRow = {
 function toRecord(row: AgentRow): AgentRecord {
   const record: AgentRecord = {
     id: row.id,
+    ownerId: row.owner_id,
     kind: row.kind as AgentKind,
     name: row.name,
     instructions: row.instructions,
@@ -201,12 +209,13 @@ export class AgentRegistry {
     this.db
       .prepare(
         `INSERT INTO agents (
-           id, kind, name, role, instructions, runner, model, tool_grants, limits, status, ephemeral, created_at, updated_at
+           id, owner_id, kind, name, role, instructions, runner, model, tool_grants, limits, status, ephemeral, created_at, updated_at
            , card_id, credentials_ref, trust_level, endpoint_url, source, source_path
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
+        input.ownerId ?? '',
         input.kind ?? 'local',
         input.name,
         input.role ?? null,
@@ -388,6 +397,17 @@ export class AgentRegistry {
     return agent;
   }
 
+  /**
+   * Fetch an agent the caller may see. Not-found rather than denied, for the
+   * same reason as jobs: existence is information.
+   */
+  getVisible(agentId: string, principal: { ownerId: string; isAdmin: boolean }): AgentRecord {
+    const agent = this.getOrThrow(agentId);
+    if (principal.isAdmin || agent.ownerId === principal.ownerId) return agent;
+
+    throw new OrchestratorError('NOT_FOUND', `No agent with id ${agentId}.`);
+  }
+
   findByName(name: string): AgentRecord | undefined {
     const row = this.db
       .prepare(`SELECT * FROM agents WHERE name = ? AND status = 'active' AND ephemeral = 0`)
@@ -414,6 +434,10 @@ export class AgentRegistry {
     const params: unknown[] = [];
 
     if (filter.includeEphemeral !== true) where.push('ephemeral = 0');
+    if (filter.ownerId !== undefined) {
+      where.push('owner_id = ?');
+      params.push(filter.ownerId);
+    }
     if (filter.kind !== undefined) {
       where.push('kind = ?');
       params.push(filter.kind);

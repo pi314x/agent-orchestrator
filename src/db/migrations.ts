@@ -312,6 +312,34 @@ export const MIGRATIONS: readonly Migration[] = [
         updated_at TEXT NOT NULL
       );
     `
+  },
+  {
+    version: 7,
+    name: 'owner_scoping',
+    up: `
+      -- Multi-user isolation. '' is the single-owner deployment: no OAuth means
+      -- no caller identity, so every existing row keeps working unchanged and a
+      -- loopback server behaves exactly as before.
+      --
+      -- Only the things a user creates and reasons about are owned. Templates,
+      -- tool servers, cached Agent Cards, published skills and budgets stay
+      -- shared: they are operator configuration, already behind orch:admin.
+      ALTER TABLE agents          ADD COLUMN owner_id TEXT NOT NULL DEFAULT '';
+      ALTER TABLE jobs            ADD COLUMN owner_id TEXT NOT NULL DEFAULT '';
+      ALTER TABLE artifacts       ADD COLUMN owner_id TEXT NOT NULL DEFAULT '';
+      ALTER TABLE workflows       ADD COLUMN owner_id TEXT NOT NULL DEFAULT '';
+      ALTER TABLE workflow_runs   ADD COLUMN owner_id TEXT NOT NULL DEFAULT '';
+
+      CREATE INDEX idx_agents_owner        ON agents (owner_id, status);
+      CREATE INDEX idx_jobs_owner          ON jobs (owner_id, created_at);
+      CREATE INDEX idx_artifacts_owner     ON artifacts (owner_id, created_at);
+      CREATE INDEX idx_workflows_owner     ON workflows (owner_id);
+      CREATE INDEX idx_workflow_runs_owner ON workflow_runs (owner_id);
+
+      -- The queue index gains the owner so a per-owner scan stays cheap without
+      -- losing the ordering the scheduler depends on.
+      CREATE INDEX idx_jobs_owner_queue ON jobs (owner_id, state, priority DESC, created_at);
+    `
   }
 ] as const;
 

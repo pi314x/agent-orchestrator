@@ -4,6 +4,7 @@ import { RUNNER_NAMES } from '../core/templates.js';
 import { OrchestratorError } from '../errors.js';
 import { AgentViewSchema, CursorSchema, LimitSchema, toAgentView } from '../schemas/common.js';
 import { toolError, toolOk } from './result.js';
+import { ownerFilter } from '../core/principal.js';
 import { denyUngrantedToolGrants } from './scopes.js';
 import type { ToolRegistration } from './types.js';
 
@@ -50,6 +51,7 @@ export const agentCreateTool: ToolRegistration = {
 
         try {
           const agent = deps.services.agents.create({
+            ownerId: deps.principal.ownerId,
             name: args.name,
             instructions: args.instructions,
             runner: args.runner ?? deps.services.config.defaultRunner,
@@ -102,6 +104,7 @@ export const agentListTool: ToolRegistration = {
       args => {
         try {
           const result = deps.services.agents.list({
+            ...ownerFilter(deps.principal),
             ...(args.kind !== undefined && { kind: args.kind }),
             ...(args.includeEphemeral !== undefined && { includeEphemeral: args.includeEphemeral }),
             ...(args.cursor !== undefined && { cursor: args.cursor }),
@@ -148,7 +151,7 @@ export const agentGetTool: ToolRegistration = {
       },
       args => {
         try {
-          const agent = deps.services.agents.getOrThrow(args.agentId);
+          const agent = deps.services.agents.getVisible(args.agentId, deps.principal);
           const { jobs } = deps.services.jobs.list({ agentId: agent.id, limit: 10 });
 
           return toolOk(
@@ -247,6 +250,7 @@ export const agentUpdateTool: ToolRegistration = {
         if (denied !== undefined) return denied;
 
         try {
+          deps.services.agents.getVisible(args.agentId, deps.principal);
           const agent = deps.services.agents.update(args.agentId, args.patch);
           return toolOk(
             { agent: toAgentView(agent) },
@@ -285,7 +289,7 @@ export const agentDeleteTool: ToolRegistration = {
       },
       (args, ctx) => {
         try {
-          const agent = deps.services.agents.getOrThrow(args.agentId);
+          const agent = deps.services.agents.getVisible(args.agentId, deps.principal);
           const live = deps.services.jobs
             .list({ agentId: agent.id, limit: 100 })
             .jobs.filter(job => job.finishedAt === undefined);

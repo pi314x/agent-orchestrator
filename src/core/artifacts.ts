@@ -5,6 +5,7 @@ import { newId } from '../ids.js';
 
 export type ArtifactRecord = {
   artifactId: string;
+  ownerId: string;
   name: string;
   mimeType: string;
   contentHash: string;
@@ -16,6 +17,8 @@ export type ArtifactRecord = {
 };
 
 export interface PutArtifactInput {
+  /** Owner of the artifact. Omitted means the single-owner deployment. */
+  ownerId?: string;
   name: string;
   content: string;
   mimeType?: string;
@@ -25,6 +28,8 @@ export interface PutArtifactInput {
 }
 
 export interface ArtifactListFilter {
+  /** Restrict to one owner; omitted means every owner. */
+  ownerId?: string;
   jobId?: string;
   workflowRunId?: string;
   tags?: readonly string[];
@@ -33,6 +38,7 @@ export interface ArtifactListFilter {
 
 type ArtifactRow = {
   id: string;
+  owner_id: string;
   name: string;
   mime_type: string;
   content_hash: string;
@@ -47,6 +53,7 @@ type ArtifactRow = {
 function toRecord(row: ArtifactRow): ArtifactRecord {
   return {
     artifactId: row.id,
+    ownerId: row.owner_id,
     name: row.name,
     mimeType: row.mime_type,
     contentHash: row.content_hash,
@@ -72,11 +79,12 @@ export class ArtifactStore {
 
     this.db
       .prepare(
-        `INSERT INTO artifacts (id, name, mime_type, content_hash, size_bytes, content, job_id, workflow_run_id, tags, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO artifacts (id, owner_id, name, mime_type, content_hash, size_bytes, content, job_id, workflow_run_id, tags, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
+        input.ownerId ?? '',
         input.name,
         input.mimeType ?? 'text/plain',
         contentHash,
@@ -122,9 +130,28 @@ export class ArtifactStore {
     return { record, content, eof: end >= full.length };
   }
 
+  /** Fetch an artifact the caller may see; not-found rather than denied. */
+  readVisible(
+    artifactId: string,
+    principal: { ownerId: string; isAdmin: boolean },
+    offset = 0,
+    length?: number
+  ): { record: ArtifactRecord; content: string; eof: boolean } {
+    const record = this.getOrThrow(artifactId);
+    if (!principal.isAdmin && record.ownerId !== principal.ownerId) {
+      throw new OrchestratorError('NOT_FOUND', `No artifact with id ${artifactId}.`);
+    }
+    return this.read(artifactId, offset, length);
+  }
+
   list(filter: ArtifactListFilter = {}): ArtifactRecord[] {
     const where: string[] = [];
     const params: unknown[] = [];
+
+    if (filter.ownerId !== undefined) {
+      where.push('owner_id = ?');
+      params.push(filter.ownerId);
+    }
 
     if (filter.jobId !== undefined) {
       where.push('job_id = ?');

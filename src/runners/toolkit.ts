@@ -231,6 +231,7 @@ export function createAgentToolkit(deps: ToolkitDeps, job: JobRecord): AgentTool
 
     artifact_put: input => {
       const record = deps.artifacts.put({
+        ownerId: job.ownerId,
         name: asString(input['name'], 'name'),
         content: asString(input['content'], 'content'),
         jobId: job.id,

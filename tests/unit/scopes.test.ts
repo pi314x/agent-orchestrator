@@ -3,6 +3,7 @@ import { agentCreateTool, agentUpdateTool } from '../../src/tools/agents.js';
 import { toolserverRegisterTool } from '../../src/tools/toolservers.js';
 import { budgetSetTool } from '../../src/tools/observability.js';
 import type { ToolDeps } from '../../src/tools/types.js';
+import { SINGLE_USER_PRINCIPAL } from '../../src/core/principal.js';
 import type { Services } from '../../src/services.js';
 import { closeServices, testServices } from '../helpers.js';
 
@@ -25,11 +26,12 @@ function handlerFor(
   return handler;
 }
 
-const depsFor = (services: Services): ToolDeps => ({
+const depsFor = (services: Services, principal = SINGLE_USER_PRINCIPAL): ToolDeps => ({
   services,
   version: '0.0.0',
   startedAt: Date.now(),
-  era: 'modern'
+  era: 'modern',
+  principal
 });
 
 /** A caller who authenticated but holds no admin scope. */

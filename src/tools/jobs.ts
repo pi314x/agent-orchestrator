@@ -9,6 +9,7 @@ import {
   OutputSchemaSchema,
   toJobView
 } from '../schemas/common.js';
+import { ownerFilter } from '../core/principal.js';
 import { toolError, toolOk } from './result.js';
 import type { ToolRegistration } from './types.js';
 
@@ -66,6 +67,7 @@ export const jobSubmitTool: ToolRegistration = {
           );
 
           const job = deps.services.scheduler.submit({
+            ownerId: deps.principal.ownerId,
             backend: 'local',
             agentId: agent.id,
             agentSnapshot: { ...toSnapshot(agent), ...(args.model !== undefined && { model: args.model }) },
@@ -117,7 +119,7 @@ export const jobGetTool: ToolRegistration = {
       },
       args => {
         try {
-          const job = deps.services.jobs.getOrThrow(args.jobId);
+          const job = deps.services.jobs.getVisible(args.jobId, deps.principal);
           const events =
             args.includeEvents === true
               ? deps.services.events
@@ -209,6 +211,9 @@ export const jobCancelTool: ToolRegistration = {
       },
       args => {
         try {
+          // Resolve through the visibility guard first, so cancelling someone
+          // else's job reads as "no such job" rather than succeeding.
+          deps.services.jobs.getVisible(args.jobId, deps.principal);
           const job = deps.services.scheduler.cancel(
             args.jobId,
             ...(args.reason !== undefined ? [args.reason] : [])
@@ -251,6 +256,7 @@ export const jobListTool: ToolRegistration = {
       args => {
         try {
           const result = deps.services.jobs.list({
+            ...ownerFilter(deps.principal),
             ...(args.state !== undefined && { state: args.state }),
             ...(args.agentId !== undefined && { agentId: args.agentId }),
             ...(args.backend !== undefined && { backend: args.backend }),
@@ -295,6 +301,7 @@ export const jobRetryTool: ToolRegistration = {
       },
       args => {
         try {
+          deps.services.jobs.getVisible(args.jobId, deps.principal);
           const job = deps.services.scheduler.retry(args.jobId);
           return toolOk({ job: toJobView(job) }, `Job ${job.id} re-queued (attempt ${job.attempt}).`);
         } catch (error) {
@@ -327,7 +334,7 @@ export const jobSteerTool: ToolRegistration = {
       },
       args => {
         try {
-          const job = deps.services.jobs.getOrThrow(args.jobId);
+          const job = deps.services.jobs.getVisible(args.jobId, deps.principal);
 
           if (job.finishedAt !== undefined) {
             return toolError(
