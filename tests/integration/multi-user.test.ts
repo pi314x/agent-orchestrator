@@ -16,6 +16,7 @@ import { a2aPushConfigSetTool, a2aTaskCancelTool, a2aTaskGetTool } from '../../s
 import { approvalListTool, approvalResolveTool } from '../../src/tools/approvals.js';
 import { artifactDeleteTool } from '../../src/tools/artifacts.js';
 import { jobCancelTool, jobGetTool, jobListTool, jobSubmitTool, jobWaitTool } from '../../src/tools/jobs.js';
+import { messageListTool, messageSendTool } from '../../src/tools/messaging.js';
 import { eventsQueryTool } from '../../src/tools/observability.js';
 import {
   memoryReadTool,
@@ -567,6 +568,84 @@ describe("job_wait and the A2A debug tools do not leak another owner's job", () 
 
     expect(byBob.isError).toBe(true);
     expect(byBob.text).toContain(`No job with id ${jobId}`);
+    await closeServices(services);
+  });
+});
+
+// Regression: the message bus carries no owner column of its own — an
+// agent's inbox or a job's steering channel was only as private as whoever
+// could name its id, and message_send/message_list checked nothing at all.
+// Any caller could read another owner's private conversation, or worse,
+// inject a message straight into another owner's running job exactly like
+// job_steer does, bypassing the visibility check job_steer itself already
+// has.
+describe('message_send and message_list are scoped to visible agents and jobs', () => {
+  it("a non-admin cannot read another user's agent inbox or job messages", async () => {
+    const services = testServices();
+    const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
+      name: 'alice-agent',
+      instructions: 'x',
+      runner: 'mock'
+    });
+    const agentId = (created.out['agent'] as { agentId: string }).agentId;
+    const submitted = await callAs(services, alice, jobSubmitTool, 'job_submit', {
+      instruction: 'x',
+      agentId
+    });
+    const jobId = (submitted.out['job'] as { jobId: string }).jobId;
+
+    services.bus.send({ toAgentId: agentId, body: 'agent secret' });
+    services.bus.send({ toJobId: jobId, body: 'job secret' });
+
+    const byBobAgent = await callAs(services, bob, messageListTool, 'message_list', { agentId });
+    const byBobJob = await callAs(services, bob, messageListTool, 'message_list', { jobId });
+    const byAlice = await callAs(services, alice, messageListTool, 'message_list', { agentId });
+
+    expect(byBobAgent.isError).toBe(true);
+    expect(byBobJob.isError).toBe(true);
+    expect(byAlice.isError).toBe(false);
+    expect((byAlice.out['messages'] as { body: string }[]).map(m => m.body)).toEqual(['agent secret']);
+    await closeServices(services);
+  });
+
+  it("a non-admin cannot inject a message into another user's agent inbox or running job", async () => {
+    const services = testServices();
+    const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
+      name: 'alice-agent-2',
+      instructions: 'x',
+      runner: 'mock'
+    });
+    const agentId = (created.out['agent'] as { agentId: string }).agentId;
+    const submitted = await callAs(services, alice, jobSubmitTool, 'job_submit', {
+      instruction: 'x',
+      agentId
+    });
+    const jobId = (submitted.out['job'] as { jobId: string }).jobId;
+
+    const toAgent = await callAs(services, bob, messageSendTool, 'message_send', {
+      toAgentId: agentId,
+      body: 'injected'
+    });
+    const toJob = await callAs(services, bob, messageSendTool, 'message_send', {
+      toJobId: jobId,
+      body: 'injected'
+    });
+
+    expect(toAgent.isError).toBe(true);
+    expect(toJob.isError).toBe(true);
+    expect(services.bus.list({ agentId })).toEqual([]);
+    expect(services.bus.list({ jobId })).toEqual([]);
+    await closeServices(services);
+  });
+
+  it('a channel stays shared team space, not scoped to one owner', async () => {
+    const services = testServices();
+    await callAs(services, alice, messageSendTool, 'message_send', { toChannel: 'team', body: 'hi' });
+
+    const byBob = await callAs(services, bob, messageListTool, 'message_list', { channel: 'team' });
+
+    expect(byBob.isError).toBe(false);
+    expect((byBob.out['messages'] as { body: string }[]).map(m => m.body)).toEqual(['hi']);
     await closeServices(services);
   });
 });

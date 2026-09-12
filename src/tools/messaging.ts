@@ -50,6 +50,20 @@ export const messageSendTool: ToolRegistration = {
       },
       args => {
         try {
+          // The bus itself carries no owner column — an agent's inbox or a
+          // job's steering channel is only as private as whoever can name its
+          // id. Without this, any caller could inject a message straight into
+          // another owner's running job (exactly what job_steer already
+          // guards against) or agent, or read back its history via
+          // message_list below. A channel is deliberately shared team space,
+          // so it is left unchecked.
+          if (args.toAgentId !== undefined) {
+            deps.services.agents.getVisible(args.toAgentId, deps.principal);
+          }
+          if (args.toJobId !== undefined) {
+            deps.services.jobs.getVisible(args.toJobId, deps.principal);
+          }
+
           const message = deps.services.bus.send(args);
           return toolOk({ message }, `Sent ${message.messageId}.`);
         } catch (error) {
@@ -89,6 +103,16 @@ export const messageListTool: ToolRegistration = {
       },
       args => {
         try {
+          // Same reasoning as message_send: agentId/jobId name a private
+          // inbox, not a shared one, so reading it requires seeing the
+          // agent/job itself. A channel stays open by design.
+          if (args.agentId !== undefined) {
+            deps.services.agents.getVisible(args.agentId, deps.principal);
+          }
+          if (args.jobId !== undefined) {
+            deps.services.jobs.getVisible(args.jobId, deps.principal);
+          }
+
           const messages = deps.services.bus.list(args);
           return toolOk({ messages }, `${messages.length} message(s).`);
         } catch (error) {
