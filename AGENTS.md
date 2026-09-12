@@ -184,6 +184,7 @@ Verified against the installed SDK — check here before guessing at an API.
 - Enforce depth limits and budgets in `src/core/policy.ts` / `budget.ts`, not only in tool adapters.
 - CLI runner may only operate inside configured workspace directories.
 - HTTP mode (MCP and A2A) binds `127.0.0.1` by default and validates the Host header.
+- **Gate the read side of an admin-only resource, not just its writes.** `toolserver_register`/`toolserver_remove` and attaching `toolGrants` to an agent were all behind `orch:admin`, but `toolserver_list`/`toolserver_tools` were not — any authenticated caller could read out every registered downstream MCP server's full connection details (stdio `command`/`args`/`cwd`, or the HTTP `url`) and its `authRef` credential-name reference, despite having no scope that lets them act on any of it. README §Configuration already documented `toolserver_*` as fully admin-gated; the code just hadn't caught up. Fixed by adding `denyWithoutAdminScope` to both read tools in `src/tools/toolservers.ts`. Same shape as the `getManaged`/NAT64/CardStore fixes earlier in this file: an established boundary applied to some siblings but not an adjacent one — always check whether a resource's *read* tools got the same gate as its *write* tools, not just whether the writes are covered. `tests/unit/scopes.test.ts` had no coverage for this at all before.
 
 ## Code style
 

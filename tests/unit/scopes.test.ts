@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { agentCreateTool, agentUpdateTool } from '../../src/tools/agents.js';
-import { toolserverRegisterTool } from '../../src/tools/toolservers.js';
+import {
+  toolserverListTool,
+  toolserverRegisterTool,
+  toolserverToolsTool
+} from '../../src/tools/toolservers.js';
 import { budgetSetTool } from '../../src/tools/observability.js';
 import type { ToolDeps } from '../../src/tools/types.js';
 import { SINGLE_USER_PRINCIPAL } from '../../src/core/principal.js';
@@ -58,6 +62,34 @@ describe('admin scope', () => {
 
     expect(registered).toMatchObject({ isError: true });
     expect(budget).toMatchObject({ isError: true });
+    await closeServices(services);
+  });
+
+  // Regression: toolserver_register, toolserver_remove and granting a server
+  // to an agent were all admin-gated, but toolserver_list/toolserver_tools —
+  // which hand back every server's stdio command/args, HTTP url, and authRef
+  // credential-name reference — were not. A non-admin could read out that
+  // connection detail even though nothing they can do lets them act on it.
+  it('refuses toolserver_list and toolserver_tools without the scope', async () => {
+    const services = testServices();
+    const deps = depsFor(services);
+
+    await handlerFor(
+      toolserverRegisterTool,
+      deps,
+      'toolserver_register'
+    )({ name: 'files', transport: { type: 'http', url: 'https://files.example.com/mcp' } } as never, admin);
+
+    const list = await handlerFor(toolserverListTool, deps, 'toolserver_list')({} as never, nonAdmin);
+    const tools = await handlerFor(
+      toolserverToolsTool,
+      deps,
+      'toolserver_tools'
+    )({ name: 'files' } as never, nonAdmin);
+
+    expect(list).toMatchObject({ isError: true });
+    expect(tools).toMatchObject({ isError: true });
+    expect(JSON.stringify(list)).not.toContain('files.example.com');
     await closeServices(services);
   });
 

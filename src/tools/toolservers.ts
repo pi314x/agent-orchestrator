@@ -118,7 +118,15 @@ export const toolserverListTool: ToolRegistration = {
         }),
         annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
       },
-      async () => {
+      async (_args, ctx) => {
+        // Registering, removing and granting a server are all admin-only, and
+        // a non-admin can never act on what this returns — so leaving the
+        // read side open just hands out every server's connection details
+        // (stdio command/args, HTTP urls, the authRef credential name) to
+        // anyone who can call a tool, for no reachable benefit.
+        const denied = denyWithoutAdminScope(ctx, 'toolserver_list');
+        if (denied !== undefined) return denied;
+
         try {
           const records = deps.services.proxy.list();
           const servers = await Promise.all(
@@ -166,7 +174,13 @@ export const toolserverToolsTool: ToolRegistration = {
         }),
         annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
       },
-      async args => {
+      async (args, ctx) => {
+        // Same reasoning as toolserver_list: a non-admin cannot grant this
+        // server's tools to anything, so exposing their names and schemas is
+        // pure reconnaissance with no legitimate use.
+        const denied = denyWithoutAdminScope(ctx, 'toolserver_tools');
+        if (denied !== undefined) return denied;
+
         try {
           const tools = await deps.services.proxy.tools(args.name);
           return toolOk(
