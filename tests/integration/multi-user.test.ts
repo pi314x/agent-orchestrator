@@ -405,6 +405,52 @@ describe('events_query is scoped by the id it is asked about', () => {
     expect(unscoped.isError).toBe(false);
     await closeServices(services);
   });
+
+  // Regression: unlike jobId/runId, an agentId does not pin to one owner —
+  // a shared agent is used by many. The visibility check only proved the
+  // agent itself was visible, then events.query(args) filtered purely by
+  // agent_id with no owner filter at all, so a non-admin scoping by that
+  // agent's id got back every owner's job.submitted events for it, full
+  // instruction text included, for every job anyone had ever run against it.
+  it("a shared agent's events do not leak another owner's job instructions", async () => {
+    const services = testServices({ mockScript: () => ({ text: 'ok' }) });
+    const created = await callAs(services, admin, agentCreateTool, 'agent_create', {
+      name: 'shared-worker',
+      instructions: 'x',
+      runner: 'mock',
+      shared: true
+    });
+    const agentId = (created.out['agent'] as { agentId: string }).agentId;
+
+    await callAs(services, alice, delegateTool, 'delegate', {
+      agentId,
+      instruction: 'alice secret instruction',
+      wait: true,
+      timeoutSec: 5
+    });
+    await callAs(services, bob, delegateTool, 'delegate', {
+      agentId,
+      instruction: 'bob own instruction',
+      wait: true,
+      timeoutSec: 5
+    });
+
+    const byBob = await callAs(services, bob, eventsQueryTool, 'events_query', { agentId });
+    expect(byBob.isError).toBe(false);
+    const bobEvents = byBob.out['events'] as { payload?: { instruction?: string } }[];
+    const instructions = bobEvents.map(e => e.payload?.instruction).filter(i => i !== undefined);
+    expect(instructions).toContain('bob own instruction');
+    expect(instructions).not.toContain('alice secret instruction');
+
+    const byAdmin = await callAs(services, admin, eventsQueryTool, 'events_query', { agentId });
+    const adminInstructions = (byAdmin.out['events'] as { payload?: { instruction?: string } }[])
+      .map(e => e.payload?.instruction)
+      .filter(i => i !== undefined);
+    expect(adminInstructions).toContain('alice secret instruction');
+    expect(adminInstructions).toContain('bob own instruction');
+
+    await closeServices(services);
+  });
 });
 
 describe("job_wait and the A2A debug tools do not leak another owner's job", () => {

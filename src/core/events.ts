@@ -47,6 +47,14 @@ export interface EventQuery {
   types?: readonly EventType[];
   since?: string;
   limit?: number;
+  /**
+   * Restrict job-tied events to jobs this owner actually owns. Needed only for
+   * an `agentId` query: unlike jobId/runId, which already pin to one caller-
+   * checked job/run, a shared agent can be used by many owners' jobs, so
+   * "the agent is visible" does not mean every job that used it is too. An
+   * event with no job_id at all (agent.created) is unaffected.
+   */
+  ownerId?: string;
 }
 
 type EventRow = {
@@ -127,6 +135,10 @@ export class EventLog {
     if (filter.since !== undefined) {
       where.push('ts >= ?');
       params.push(filter.since);
+    }
+    if (filter.ownerId !== undefined) {
+      where.push('(job_id IS NULL OR job_id IN (SELECT id FROM jobs WHERE owner_id = ?))');
+      params.push(filter.ownerId);
     }
 
     const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';

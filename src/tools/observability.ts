@@ -69,7 +69,12 @@ export const eventsQueryTool: ToolRegistration = {
             }
           }
 
-          const events = deps.services.events.query(args);
+          // agentId is the one scope that can span multiple owners (a shared
+          // agent's jobs need not all belong to the caller), so the agent
+          // being visible does not clear every job-tied event for it — restrict
+          // those to jobs this caller actually owns. jobId/runId are already
+          // pinned to one caller-checked job/run, so this is a no-op there.
+          const events = deps.services.events.query({ ...args, ...ownerFilter(deps.principal) });
           return toolOk({ events }, `${events.length} event(s).`);
         } catch (error) {
           return toolError(error);
