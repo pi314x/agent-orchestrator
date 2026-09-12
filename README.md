@@ -235,6 +235,7 @@ new tool cannot forget:
 | Artifacts | read, listed and deleted only by their owner — including `artifact_get` inside a running agent's own toolkit, so an artifactId the model picks up from anywhere cannot reach another owner's content |
 | Memory | `namespace`/`key` uniqueness is per owner, so two users can both use `"notes"`; reads, writes, deletes and full-text search are all scoped |
 | Workflow jobs | a workflow's spawned jobs belong to whoever started it, so `job_list` finds them like any other job |
+| Inbound A2A task jobs | belong to whoever owns the published agent handling the delegation — the same "belongs to whoever owns the agent doing the work" rule as a spawned job, so the agent's real owner can `job_get`/`job_wait`/`job_cancel` it too, not only an admin |
 | Workflow definitions | listed, fetched and deleted only by their owner; names are unique per owner, so two users can each define `"deploy"` |
 | Workflow runs | listed, fetched and controlled (`pause`/`resume`/`cancel`/`retry_step`) only by their owner; `workflow_start`'s `workflowId` resolves only a workflow the caller can see, and `idempotencyKey` is scoped per owner so two users choosing the same key never collide |
 | `delegate`/`fan_out`/`consensus` by `agentId` or `skillQuery` | resolve only agents the caller can see — never another owner's private agent, even by naming its id directly |
@@ -339,7 +340,7 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 448 tests, no network, no model calls
+pnpm test        # 449 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 pnpm typecheck && pnpm lint && pnpm build
 ```

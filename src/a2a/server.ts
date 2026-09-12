@@ -250,6 +250,13 @@ class OrchestratorExecutor implements AgentExecutor {
       const timeoutSec = this.deps.taskTimeoutSec ?? DEFAULT_INBOUND_TASK_TIMEOUT_SEC;
 
       const job = this.deps.scheduler.submit({
+        // Same convention as a spawned sub-job: the job belongs to whoever
+        // owns the agent doing the work, not to nobody. Without this it
+        // defaulted to ownerId '' — the admin-wide shared sentinel — which
+        // JobStore.getVisible does not special-case the way agent visibility
+        // does, so job_get/job_list/job_wait/job_cancel could never find it
+        // for anyone but an admin, even the owner of the agent that ran it.
+        ownerId: agent.ownerId,
         backend: 'local',
         agentId: agent.id,
         agentSnapshot: toSnapshot(agent),

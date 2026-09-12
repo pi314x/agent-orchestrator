@@ -280,4 +280,35 @@ describe('A2A inbound server', () => {
     gate.resolve();
     await send;
   });
+
+  // Regression: the job behind an inbound A2A task was submitted with no
+  // ownerId, defaulting to '' — the admin-wide shared sentinel. Unlike
+  // AgentRegistry.getVisible, JobStore.getVisible does not special-case ''
+  // as visible to everyone, so job_get/job_list/job_wait/job_cancel could
+  // never find that job for anyone but an admin — not even the owner of the
+  // very agent that ran it, breaking the "a job belongs to whoever owns the
+  // agent doing the work" convention every other job-creation path follows.
+  it("the job behind an inbound task belongs to the published agent's owner", async () => {
+    services = testServices({ mockScript: job => ({ text: `handled:${job.instruction}` }) });
+    const agent = services.agents.create({
+      ownerId: 'user_alice',
+      name: 'alice-published',
+      instructions: 'x',
+      runner: 'mock'
+    });
+    services.publishedSkills.upsert({
+      skillId: 'review',
+      agentId: agent.id,
+      description: 'x',
+      exposed: true
+    });
+    server = await start(services);
+
+    const body = await rpc(server.url, 'SendMessage', sendParams('check this diff', 'review'));
+    expect(body['error']).toBeUndefined();
+
+    const job = services.jobs.list({}).jobs.find(j => j.agentId === agent.id);
+    expect(job?.ownerId).toBe('user_alice');
+    expect(services.jobs.getVisible(job!.id, { ownerId: 'user_alice', isAdmin: false }).id).toBe(job!.id);
+  });
 });
