@@ -8,7 +8,7 @@ import { isTerminal, type JobStore } from './jobs.js';
 import { resolveAgentTarget, toSnapshot, type AgentRegistry } from './registry.js';
 import type { JobScheduler } from './scheduler.js';
 import type { RunnerName } from './templates.js';
-import { assertResolvable, renderTemplate } from './templating.js';
+import { assertResolvable, renderTemplate, templateVariables } from './templating.js';
 
 export type WorkflowStep = {
   id: string;
@@ -121,13 +121,36 @@ export function validateWorkflow(spec: WorkflowSpec): void {
   }
 
   for (const step of spec.steps) {
-    for (const dep of step.dependsOn ?? []) {
+    const deps = new Set(step.dependsOn ?? []);
+    for (const dep of deps) {
       if (!ids.has(dep)) {
         throw new OrchestratorError('INVALID_INPUT', `Step "${step.id}" depends on unknown step "${dep}".`);
       }
     }
     assertResolvable(step.instruction, ['inputs', 'steps']);
     if (step.when !== undefined) assertResolvable(step.when, ['inputs', 'steps']);
+
+    // templateVars builds `steps` from every step in the run, not just this
+    // one's declared dependencies, so {{steps.X...}} resolves whether or not
+    // X is actually a dependency — but only a dependency is guaranteed to
+    // have already run when this step starts. Reference an independent
+    // step's output without depending on it and the render race is silent:
+    // when the scheduler happens to start this step first, {{steps.X.output}}
+    // is still null, stringifying to an empty substitution with no error
+    // anywhere — the same "quietly wrong instead of failing loudly" shape as
+    // every other silent-empty-output bug already fixed in this codebase.
+    const templates = [step.instruction, ...(step.when !== undefined ? [step.when] : [])];
+    for (const path of templates.flatMap(templateVariables)) {
+      const [root, referencedStepId] = path.split('.');
+      if (root !== 'steps' || referencedStepId === undefined) continue;
+      if (!deps.has(referencedStepId)) {
+        throw new OrchestratorError(
+          'INVALID_INPUT',
+          `Step "${step.id}" references {{steps.${referencedStepId}...}} but does not depend on "${referencedStepId}".`,
+          `Add "${referencedStepId}" to step "${step.id}"'s dependsOn, or remove the reference — otherwise it is not guaranteed to have run yet.`
+        );
+      }
+    }
   }
 
   assertAcyclic(spec.steps);

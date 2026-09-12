@@ -60,6 +60,31 @@ describe('validateWorkflow', () => {
       validateWorkflow({ name: 'w', steps: [step('a', { instruction: 'use {{bogus.value}}' })] })
     ).toThrow(/unknown variable/);
   });
+
+  // Regression: templateVars builds `steps` from every step in the run, not
+  // just a step's own declared dependencies, so {{steps.X...}} resolves
+  // whether or not this step actually depends on X - but only a declared
+  // dependency is guaranteed to have already run when this step starts. An
+  // independent step (no edge between them) referencing another's output
+  // rendered as an empty string whenever the scheduler happened to start it
+  // first, silently, with no error at definition time or at render time.
+  it('rejects a step that reads another step\'s output without depending on it', () => {
+    expect(() =>
+      validateWorkflow({
+        name: 'w',
+        steps: [step('a'), step('b', { instruction: 'use {{steps.a.output}}' })]
+      })
+    ).toThrow(/does not depend on "a"/);
+  });
+
+  it('accepts the same reference once the dependency is declared', () => {
+    expect(() =>
+      validateWorkflow({
+        name: 'w',
+        steps: [step('a'), step('b', { instruction: 'use {{steps.a.output}}', dependsOn: ['a'] })]
+      })
+    ).not.toThrow();
+  });
 });
 
 describe('WorkflowEngine', () => {
