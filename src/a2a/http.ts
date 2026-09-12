@@ -29,6 +29,32 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body));
 }
 
+/**
+ * A browser's fetch() always sends a Host matching the URL it targets,
+ * regardless of the page's own origin, so Host validation alone does not stop
+ * a page at any origin from posting JSON-RPC directly to a loopback server —
+ * only Origin validation does. Absent entirely for a non-browser caller (every
+ * real A2A peer), so only a present-and-disallowed value is rejected.
+ */
+function validateOrigin(req: IncomingMessage, res: ServerResponse, allowedHosts: ReadonlySet<string>): boolean {
+  const origin = req.headers.origin;
+  if (origin === undefined) return true;
+
+  let hostname: string;
+  try {
+    hostname = new URL(origin).hostname;
+  } catch {
+    sendJson(res, 403, { error: 'forbidden', hint: `Origin "${origin}" could not be parsed.` });
+    return false;
+  }
+
+  if (!allowedHosts.has(hostname)) {
+    sendJson(res, 403, { error: 'forbidden', hint: `Origin "${origin}" is not allowed.` });
+    return false;
+  }
+  return true;
+}
+
 function readBody(req: IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -77,15 +103,18 @@ export async function startA2AServer({
   const allowedHosts = new Set(['localhost', '127.0.0.1', '[::1]', host]);
 
   const server: Server = createServer((req, res) => {
-    // Host validation, matching the MCP surface. An explicitly configured
-    // public URL means the operator is fronting this with a proxy, so the
-    // check would only reject their own hostname.
+    // Host and Origin validation, matching the MCP surface (src/http.ts,
+    // which pulls in the MCP SDK's own host/origin guards — this file can't,
+    // since src/a2a is barred from importing the MCP SDK). An explicitly
+    // configured public URL means the operator is fronting this with a
+    // proxy, so the check would only reject their own hostname.
     if (deps.publicUrl === undefined) {
       const hostname = (req.headers.host ?? '').split(':')[0] ?? '';
       if (!allowedHosts.has(hostname)) {
         sendJson(res, 403, { error: 'forbidden', hint: `Host "${hostname}" is not allowed.` });
         return;
       }
+      if (!validateOrigin(req, res, allowedHosts)) return;
     }
 
     const path = (req.url ?? '/').split('?')[0];

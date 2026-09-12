@@ -150,8 +150,9 @@ arrives wrapped as untrusted data.
 
 **Inbound** — letting them call you. A second HTTP server starts on
 `A2A_HTTP_PORT` (3334), serving the Agent Card at `/.well-known/agent-card.json`
-and JSON-RPC at `/a2a`. It is loopback-bound and Host-validated like the MCP
-surface. Nothing is exposed until `agent_publish` opts a skill in explicitly:
+and JSON-RPC at `/a2a`. It is loopback-bound and Host- and Origin-validated
+like the MCP surface. Nothing is exposed until `agent_publish` opts a skill in
+explicitly:
 
 ```
 agent_publish  { skillId: "review", templateName: "reviewer",
@@ -329,7 +330,7 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 419 tests, no network, no model calls
+pnpm test        # 420 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 pnpm typecheck && pnpm lint && pnpm build
 ```

@@ -96,6 +96,32 @@ function getWithHost(url: string, host: string): Promise<number> {
   });
 }
 
+/** Same reason as getWithHost: drive the socket so a forbidden Origin actually reaches the server. */
+function postWithOrigin(url: string, origin: string | undefined, body: string): Promise<number> {
+  const target = new URL(url);
+  return new Promise((resolve, reject) => {
+    const req = request(
+      {
+        hostname: target.hostname,
+        port: target.port,
+        path: target.pathname,
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(body),
+          ...(origin !== undefined && { origin })
+        }
+      },
+      res => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      }
+    );
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
 describe('A2A inbound server', () => {
   it('serves the Agent Card at the well-known path', async () => {
     services = testServices();
@@ -169,6 +195,27 @@ describe('A2A inbound server', () => {
 
     await expect(getWithHost(server.cardUrl, 'evil.example.com')).resolves.toBe(403);
     await expect(getWithHost(server.cardUrl, '127.0.0.1')).resolves.toBe(200);
+  });
+
+  // Regression: only Host was checked here, never Origin. A browser's fetch()
+  // always sends a Host matching the URL it targets, regardless of the page's
+  // own origin, so Host validation alone does not stop a page at any origin
+  // from posting JSON-RPC directly to this loopback server - only Origin
+  // validation does, which is why the MCP surface (src/http.ts) checks both.
+  it('refuses a request whose Origin header is not allowed, even with a valid Host', async () => {
+    services = testServices();
+    server = await start(services);
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 'r1',
+      method: 'SendMessage',
+      params: sendParams('hi')
+    });
+
+    await expect(postWithOrigin(server.url, 'https://evil.example.com', body)).resolves.toBe(403);
+    await expect(postWithOrigin(server.url, 'http://127.0.0.1', body)).resolves.toBe(200);
+    // Real A2A peers are not browsers and do not send an Origin at all.
+    await expect(postWithOrigin(server.url, undefined, body)).resolves.toBe(200);
   });
 
   it('answers a malformed body with a JSON-RPC parse error, not a crash', async () => {
