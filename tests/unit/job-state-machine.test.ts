@@ -167,6 +167,35 @@ describe('JobStore', () => {
     db.close();
   });
 
+  // Regression: PLAN.md documents "running jobs become queued if idempotent,
+  // otherwise failed", but recoverInterrupted() always failed every orphaned
+  // job — an idempotent job that was safely resumable on restart was
+  // permanently lost instead, same as any other interrupted one.
+  it('re-queues an orphaned running job that carries an idempotencyKey', () => {
+    const { jobs, agent, db } = seed();
+    const job = submit(jobs, agent, { idempotencyKey: 'resume-me' });
+    jobs.transition(job.id, 'running');
+
+    expect(jobs.recoverInterrupted()).toEqual([job.id]);
+
+    const recovered = jobs.getOrThrow(job.id);
+    expect(recovered.state).toBe('queued');
+    expect(recovered.error).toBeUndefined();
+    // Not a fresh attempt — resumed, not retried.
+    expect(recovered.attempt).toBe(1);
+    db.close();
+  });
+
+  it('a re-queued job can be claimed again like any other queued job', () => {
+    const { jobs, agent, db } = seed();
+    const job = submit(jobs, agent, { idempotencyKey: 'resume-me' });
+    jobs.transition(job.id, 'running');
+    jobs.recoverInterrupted();
+
+    expect(jobs.claim(job.id)?.state).toBe('running');
+    db.close();
+  });
+
   it('paginates newest-first with a cursor', () => {
     const { jobs, agent, db } = seed();
     const created = Array.from({ length: 5 }, () => submit(jobs, agent).id).reverse();

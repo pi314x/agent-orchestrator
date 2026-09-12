@@ -112,6 +112,16 @@ export class JobScheduler {
     return job;
   }
 
+  /**
+   * Kick the queue once, for whatever is already sitting there with nothing
+   * to trigger it — recovered jobs after a restart, most notably. `submit`/
+   * `retry`/a finished run's `finally` all call the private `pump` on their
+   * own; this is the one public entry for "nothing changed, but check anyway".
+   */
+  start(): void {
+    this.pump();
+  }
+
   onChange(listener: () => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);

@@ -474,17 +474,39 @@ export class JobStore {
 
   /**
    * A process that died mid-run leaves `running` rows behind that no scheduler
-   * owns. Fail them explicitly so they never look live again.
+   * owns. A job with an idempotencyKey is safe to resume — a client retrying
+   * that same key would only ever get this same job handed back anyway, so
+   * queuing it again on our own initiative cannot create a duplicate. Anything
+   * else we cannot safely re-run unattended, so it fails explicitly instead of
+   * silently looking live again.
    */
   recoverInterrupted(): string[] {
-    const rows = this.db.prepare(`SELECT id FROM jobs WHERE state = 'running'`).all() as { id: string }[];
+    const rows = this.db.prepare(`SELECT * FROM jobs WHERE state = 'running'`).all() as JobRow[];
+    const affected: string[] = [];
 
-    for (const { id } of rows) {
-      this.transition(id, 'failed', {
-        error: { code: 'INTERRUPTED', message: 'The orchestrator restarted while this job was running.' }
-      });
+    for (const row of rows) {
+      const job = toRecord(row);
+      affected.push(job.id);
+
+      if (job.idempotencyKey !== undefined) {
+        // Not through transition(): the state machine deliberately never
+        // allows a general running -> queued edge (job_retry taking that
+        // same path against a job that is genuinely still executing would
+        // let it be claimed and run a second time while the first attempt is
+        // still in flight). This raw update is safe only because it runs
+        // once at startup, before the scheduler could have claimed anything
+        // into memory in this process — every 'running' row at that moment
+        // is necessarily orphaned by definition.
+        this.db
+          .prepare(`UPDATE jobs SET state = 'queued', updated_at = ? WHERE id = ? AND state = 'running'`)
+          .run(new Date().toISOString(), job.id);
+      } else {
+        this.transition(job.id, 'failed', {
+          error: { code: 'INTERRUPTED', message: 'The orchestrator restarted while this job was running.' }
+        });
+      }
     }
 
-    return rows.map(r => r.id);
+    return affected;
   }
 }

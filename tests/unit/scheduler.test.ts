@@ -25,6 +25,30 @@ afterEach(() => {
 });
 
 describe('JobScheduler', () => {
+  // Regression: recoverInterrupted() re-queues an idempotent job that was
+  // running when a previous process died, but nothing about that call
+  // itself triggers pump() — only submit/retry/a finished run's own finally
+  // do. A job created straight through JobStore (mirroring what a restart
+  // leaves behind) sat 'queued' forever until scheduler.start() existed to
+  // give recovery something to kick the queue with.
+  it('start() picks up a job that reached queued without going through submit()', async () => {
+    const services = testServices();
+    const agent = makeAgent(services);
+    services.jobs.create({
+      backend: 'local',
+      agentId: agent.id,
+      agentSnapshot: toSnapshot(agent),
+      instruction: 'resumed'
+    });
+
+    services.scheduler.start();
+    await services.scheduler.drain();
+
+    const { jobs } = services.jobs.list({});
+    expect(jobs[0]?.state).toBe('succeeded');
+    await closeServices(services);
+  });
+
   it('runs a submitted job through to succeeded', async () => {
     const services = testServices();
     const job = submit(services, makeAgent(services));

@@ -34,8 +34,13 @@ if (agentFiles.length > 0) {
 // A previous process may have died mid-run; those rows own no scheduler.
 const interrupted = services.jobs.recoverInterrupted();
 if (interrupted.length > 0) {
-  logger.warn({ jobIds: interrupted }, 'failed jobs interrupted by a previous shutdown');
+  logger.warn({ jobIds: interrupted }, 'jobs interrupted by a previous shutdown');
 }
+// Anything recoverInterrupted just re-queued (an idempotent job) has nothing
+// else to trigger it — pump only ever runs off submit/retry/a finished run,
+// none of which just happened. Without this it would sit queued until some
+// unrelated job submission happened to wake the scheduler.
+services.scheduler.start();
 
 // The inbound half of A2A, on its own port and only when asked for. Off by
 // default: a local-only deployment should never open a second listener.
