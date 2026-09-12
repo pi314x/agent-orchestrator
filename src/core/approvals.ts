@@ -150,6 +150,12 @@ export class ApprovalStore {
     return row === undefined ? undefined : toRecord(row);
   }
 
+  /** Clears a step's past decision so it is gated fresh next time it runs. Used by retry_step. */
+  deleteForStep(runId: string, stepId: string): number {
+    return this.db.prepare('DELETE FROM approvals WHERE run_id = ? AND step_id = ?').run(runId, stepId)
+      .changes;
+  }
+
   resolve(
     approvalId: string,
     decision: 'approve' | 'reject',

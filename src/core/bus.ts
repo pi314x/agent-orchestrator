@@ -142,25 +142,28 @@ export class MessageBus {
   }
 
   createChannel(name: string, members: readonly string[] = []): ChannelRecord {
-    const existing = this.db.prepare('SELECT * FROM channels WHERE name = ?').get(name) as
-      ChannelRow | undefined;
-    if (existing !== undefined) {
-      return {
-        channelId: existing.id,
-        name: existing.name,
-        members: JSON.parse(existing.members) as string[],
-        createdAt: existing.created_at
-      };
-    }
-
-    const id = newId('message');
-    const createdAt = new Date().toISOString();
-
+    // One statement, not check-then-insert: two instances sharing a database
+    // (or two near-simultaneous calls) could both see "no such channel" and
+    // both try to INSERT, and name carries a UNIQUE constraint — the loser
+    // would throw a raw SQLite constraint error instead of returning the
+    // channel the winner just created. DO UPDATE SET name = excluded.name is
+    // a no-op that exists only to make the statement succeed either way, so
+    // an existing channel's members are left untouched, matching the
+    // pre-existing behaviour of returning it unchanged.
     this.db
-      .prepare('INSERT INTO channels (id, name, members, created_at) VALUES (?, ?, ?, ?)')
-      .run(id, name, JSON.stringify([...members]), createdAt);
+      .prepare(
+        `INSERT INTO channels (id, name, members, created_at) VALUES (?, ?, ?, ?)
+         ON CONFLICT (name) DO UPDATE SET name = excluded.name`
+      )
+      .run(newId('channel'), name, JSON.stringify([...members]), new Date().toISOString());
 
-    return { channelId: id, name, members: [...members], createdAt };
+    const row = this.db.prepare('SELECT * FROM channels WHERE name = ?').get(name) as ChannelRow;
+    return {
+      channelId: row.id,
+      name: row.name,
+      members: JSON.parse(row.members) as string[],
+      createdAt: row.created_at
+    };
   }
 
   listChannels(): ChannelRecord[] {

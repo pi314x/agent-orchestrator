@@ -477,6 +477,12 @@ export class WorkflowEngine {
              WHERE run_id = ? AND step_id = ?`
           )
           .run(new Date().toISOString(), runId, stepId);
+        // Otherwise an approval-gated step that was rejected retries into an
+        // instant re-failure: findForStep would keep returning that same old
+        // rejected decision forever, since nothing else ever creates a new
+        // one once a decision exists. Clearing it here is what lets the step
+        // be gated fresh, exactly like a step running for the first time.
+        this.deps.approvals.deleteForStep(runId, stepId);
         this.setRunState(runId, 'running');
         this.advance(runId);
         break;
@@ -547,9 +553,12 @@ export class WorkflowEngine {
       const approval = this.deps.approvals.findPendingForStep(runId, step.stepId);
       if (approval !== undefined) continue;
 
-      const resolved = this.deps.approvals
-        .list({ limit: 100 })
-        .find(a => a.runId === runId && a.stepId === step.stepId && a.status !== 'pending');
+      // Not list({ limit: 100 }).find(...): that scans the 100 OLDEST
+      // approvals system-wide, so once the deployment has ever accumulated
+      // more than 100 approval rows, a just-resolved decision for this run
+      // falls outside the window and the step hangs in awaiting_approval
+      // forever. findForStep is scoped to this exact (runId, stepId).
+      const resolved = this.deps.approvals.findForStep(runId, step.stepId);
 
       if (resolved?.status === 'approved') {
         this.setStepState(runId, step.stepId, 'pending');

@@ -269,6 +269,76 @@ describe('WorkflowEngine', () => {
     await closeServices(services);
   });
 
+  // Regression: the approval-resolution loop in advanceOnce used to do
+  // `approvals.list({ limit: 100 }).find(a => a.runId === runId && ...)`,
+  // which scans the 100 OLDEST approvals system-wide (ORDER BY created_at
+  // ASC). Once a deployment has ever accumulated more than 100 approval rows
+  // in total, a just-resolved decision for the current run falls outside
+  // that window and the step hangs in awaiting_approval forever, even though
+  // a human already decided. Seed 100 unrelated older approvals first so the
+  // real one would be the 101st, exactly the case that broke.
+  it('resolves an approval gate even with 100+ older approvals already in the system', async () => {
+    const services = testServices();
+    for (let i = 0; i < 100; i += 1) {
+      services.approvals.create({ scope: 'job', summary: `unrelated ${i}` });
+    }
+
+    const run = services.workflows.start({
+      spec: { name: 'busy-system', steps: [step('risky', { approval: true })] }
+    });
+    await services.scheduler.drain();
+
+    const pending = services.approvals.findPendingForStep(run.runId, 'risky');
+    expect(pending).toBeDefined();
+    services.approvals.resolve(pending!.approvalId, 'approve');
+    services.workflows.control(run.runId, 'resume');
+    await services.scheduler.drain();
+
+    const finished = services.workflows.getRun(run.runId);
+    expect(finished.state).toBe('succeeded');
+    expect(finished.steps[0]?.state).toBe('succeeded');
+
+    await closeServices(services);
+  });
+
+  // Regression: retry_step reset the step itself but never touched its old
+  // approval decision, so findForStep kept returning the same stale
+  // 'rejected' record forever — the step re-failed instantly on retry_step,
+  // never actually asking for approval again.
+  it('retry_step re-gates a previously rejected approval step for a fresh decision', async () => {
+    const services = testServices();
+
+    const run = services.workflows.start({
+      spec: { name: 'retry-rejected', steps: [step('risky', { approval: true })] }
+    });
+    await services.scheduler.drain();
+
+    const firstPending = services.approvals.list({ status: 'pending' });
+    services.approvals.resolve(firstPending[0]!.approvalId, 'reject', { comment: 'not yet' });
+    services.workflows.control(run.runId, 'resume');
+    await services.scheduler.drain();
+
+    expect(services.workflows.getRun(run.runId).steps[0]?.state).toBe('failed');
+
+    services.workflows.control(run.runId, 'retry_step', 'risky');
+    await services.scheduler.drain();
+
+    const afterRetry = services.workflows.getRun(run.runId);
+    expect(afterRetry.steps[0]?.state).toBe('awaiting_approval');
+
+    const secondPending = services.approvals.findPendingForStep(run.runId, 'risky');
+    expect(secondPending).toBeDefined();
+    services.approvals.resolve(secondPending!.approvalId, 'approve');
+    services.workflows.control(run.runId, 'resume');
+    await services.scheduler.drain();
+
+    const finished = services.workflows.getRun(run.runId);
+    expect(finished.steps[0]?.state).toBe('succeeded');
+    expect(finished.state).toBe('succeeded');
+
+    await closeServices(services);
+  });
+
   it('returns the same run for a repeated idempotency key', async () => {
     const services = testServices();
     const spec: WorkflowSpec = { name: 'once', steps: [step('a')] };
