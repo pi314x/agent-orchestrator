@@ -70,6 +70,12 @@ export function toJobView(job: JobRecord): JobView {
   };
 }
 
+export const AgentLimitsSchema = z.object({
+  maxSteps: z.number().optional(),
+  timeoutSec: z.number().optional(),
+  maxCostUsd: z.number().optional()
+});
+
 export const AgentViewSchema = z.object({
   agentId: z.string(),
   kind: z.enum(['local', 'remote']),
@@ -79,6 +85,10 @@ export const AgentViewSchema = z.object({
   runner: z.enum(RUNNER_NAMES).optional(),
   model: z.string().optional(),
   toolGrants: z.array(z.string()),
+  // Round-trips what agent_create/agent_update accept, so a caller can read
+  // back exactly what they set — a agent's own limits were previously
+  // write-only, invisible to its owner through any tool.
+  limits: AgentLimitsSchema,
   ephemeral: z.boolean(),
   createdAt: z.string()
 });
@@ -92,6 +102,7 @@ export function toAgentView(agent: AgentRecord): AgentView {
     name: agent.name,
     instructions: agent.instructions,
     toolGrants: agent.toolGrants,
+    limits: agent.limits,
     ephemeral: agent.ephemeral,
     createdAt: agent.createdAt,
     ...(agent.role !== undefined && { role: agent.role }),

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AgentRegistry, resolveAgentTarget } from '../../src/core/registry.js';
 import { BUILTIN_TEMPLATES } from '../../src/core/templates.js';
+import { toAgentView } from '../../src/schemas/common.js';
 import { migratedDb } from '../helpers.js';
 
 function registry() {
@@ -91,6 +92,24 @@ describe('resolveAgentTarget', () => {
   it('requires a target', () => {
     const { agents, db } = registry();
     expect(() => resolveAgentTarget(agents, {}, defaults)).toThrow(/exactly one of/);
+    db.close();
+  });
+});
+
+describe('agent limits round-trip', () => {
+  // Regression: agent_create/agent_update accepted limits, but AgentViewSchema
+  // never carried the field back out, so an agent's own limits were invisible
+  // to its owner through agent_get/agent_list.
+  it('returns the limits a caller set, via toAgentView', () => {
+    const { db, agents } = registry();
+
+    const agent = agents.create({
+      name: 'limited',
+      instructions: 'x',
+      limits: { maxSteps: 5, timeoutSec: 30, maxCostUsd: 1.5 }
+    });
+
+    expect(toAgentView(agent).limits).toEqual({ maxSteps: 5, timeoutSec: 30, maxCostUsd: 1.5 });
     db.close();
   });
 });
