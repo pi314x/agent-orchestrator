@@ -159,11 +159,17 @@ function ipv6Hextets(hostname: string): number[] | undefined {
   return hextets.every(h => Number.isInteger(h) && h >= 0 && h <= 0xffff) ? hextets : undefined;
 }
 
+/** Render two hextets as the dotted-quad they encode. */
+function dottedQuad(high: number, low: number): string {
+  return `${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`;
+}
+
 function isPrivateIPv6(hostname: string): boolean {
   const hextets = ipv6Hextets(hostname);
   if (hextets === undefined) return false;
 
   const first = hextets[0] ?? 0;
+  const second = hextets[1] ?? 0;
 
   // ::/128 unspecified and ::1/128 loopback.
   if (hextets.every((h, i) => (i === 7 ? h <= 1 : h === 0))) return true;
@@ -176,9 +182,18 @@ function isPrivateIPv6(hostname: string): boolean {
   // renders these as hex (::ffff:7f00:1), so the dotted-quad check never saw
   // them and every loopback and private range was reachable through one.
   if (hextets.slice(0, 5).every(h => h === 0) && hextets[5] === 0xffff) {
-    const high = hextets[6] ?? 0;
-    const low = hextets[7] ?? 0;
-    return isPrivateIPv4(`${high >> 8}.${high & 0xff}.${low >> 8}.${low & 0xff}`);
+    return isPrivateIPv4(dottedQuad(hextets[6] ?? 0, hextets[7] ?? 0));
+  }
+
+  // 64:ff9b::/96 — the NAT64 well-known prefix (RFC 6052), the same
+  // IPv4-in-IPv6 embedding as ::ffff:0:0/96 above under a different prefix.
+  // On any network running NAT64 (common on IPv6-only/dual-stack cellular
+  // and cloud networks), a request to this address is actually routed to
+  // the embedded IPv4 address — including 127.0.0.1 and the 169.254.169.254
+  // cloud metadata endpoint, both reachable this way with nothing above
+  // catching it.
+  if (first === 0x0064 && second === 0xff9b && hextets.slice(2, 6).every(h => h === 0)) {
+    return isPrivateIPv4(dottedQuad(hextets[6] ?? 0, hextets[7] ?? 0));
   }
 
   return false;

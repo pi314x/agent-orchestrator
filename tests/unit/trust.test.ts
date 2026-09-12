@@ -57,6 +57,21 @@ describe('validateFetchUrl', () => {
   ])('refuses %s', (_name, url) => {
     expect(() => validateFetchUrl(url)).toThrow(/private or loopback/);
   });
+
+  // Regression: 64:ff9b::/96 is the NAT64 well-known prefix (RFC 6052), the
+  // same IPv4-in-IPv6 embedding as ::ffff:0:0/96 above under a different
+  // prefix — only the ::ffff:: form was checked. On a network running NAT64
+  // (common on IPv6-only cellular and cloud networks), a request to
+  // 64:ff9b::7f00:1 is actually routed to the embedded 127.0.0.1, and
+  // 64:ff9b::a9fe:a9fe reaches the cloud metadata endpoint the same way -
+  // nothing here caught either before this fix.
+  it.each([
+    ['NAT64-embedded loopback', 'https://[64:ff9b::7f00:1]/x'],
+    ['NAT64-embedded private', 'https://[64:ff9b::a00:1]/x'],
+    ['NAT64-embedded cloud metadata', 'https://[64:ff9b::a9fe:a9fe]/x']
+  ])('refuses %s', (_name, url) => {
+    expect(() => validateFetchUrl(url)).toThrow(/private or loopback/);
+  });
 });
 
 describe('validateWebhookUrl', () => {
