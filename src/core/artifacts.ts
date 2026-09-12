@@ -174,7 +174,17 @@ export class ArtifactStore {
     return records.filter(record => filter.tags?.every(tag => record.tags.includes(tag)));
   }
 
+  /** Unchecked — for internal use only where the caller already has authority. */
   delete(artifactId: string): boolean {
     return this.db.prepare('DELETE FROM artifacts WHERE id = ?').run(artifactId).changes > 0;
+  }
+
+  /** Delete an artifact the caller may see; not-found rather than denied for someone else's. */
+  deleteVisible(artifactId: string, principal: { ownerId: string; isAdmin: boolean }): boolean {
+    const record = this.getOrThrow(artifactId);
+    if (!principal.isAdmin && record.ownerId !== principal.ownerId) {
+      throw new OrchestratorError('NOT_FOUND', `No artifact with id ${artifactId}.`);
+    }
+    return this.delete(artifactId);
   }
 }

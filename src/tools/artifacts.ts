@@ -172,7 +172,7 @@ export const artifactDeleteTool: ToolRegistration = {
       },
       args => {
         try {
-          const deleted = deps.services.artifacts.delete(args.artifactId);
+          const deleted = deps.services.artifacts.deleteVisible(args.artifactId, deps.principal);
           return toolOk({ deleted }, deleted ? `Deleted ${args.artifactId}.` : 'Nothing to delete.');
         } catch (error) {
           return toolError(error);

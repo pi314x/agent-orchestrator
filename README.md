@@ -225,7 +225,7 @@ new tool cannot forget:
 |---|---|
 | Agents | listed, fetched, updated and deleted only by their owner |
 | Jobs | listed, fetched, cancelled and retried only by their owner |
-| Artifacts | read and listed only by their owner |
+| Artifacts | read, listed and deleted only by their owner — including `artifact_get` inside a running agent's own toolkit, so an artifactId the model picks up from anywhere cannot reach another owner's content |
 | Memory | `namespace`/`key` uniqueness is per owner, so two users can both use `"notes"`; reads, writes, deletes and full-text search are all scoped |
 | Workflow jobs | a workflow's spawned jobs belong to whoever started it, so `job_list` finds them like any other job |
 | Workflow definitions | listed, fetched and deleted only by their owner; names are unique per owner, so two users can each define `"deploy"` |
@@ -326,7 +326,7 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 395 tests, no network, no model calls
+pnpm test        # 398 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 pnpm typecheck && pnpm lint && pnpm build
 ```

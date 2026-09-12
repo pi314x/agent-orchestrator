@@ -13,6 +13,7 @@ import {
 } from '../../src/tools/agents.js';
 import { delegateTool } from '../../src/tools/delegation.js';
 import { a2aPushConfigSetTool, a2aTaskCancelTool, a2aTaskGetTool } from '../../src/tools/a2a.js';
+import { artifactDeleteTool } from '../../src/tools/artifacts.js';
 import { jobCancelTool, jobGetTool, jobListTool, jobSubmitTool, jobWaitTool } from '../../src/tools/jobs.js';
 import { eventsQueryTool } from '../../src/tools/observability.js';
 import {
@@ -223,6 +224,23 @@ describe('multi-user isolation', () => {
     expect(services.artifacts.readVisible(mine.artifactId, alice).content).toBe('classified');
     expect(() => services.artifacts.readVisible(mine.artifactId, bob)).toThrow(/No artifact/);
     expect(services.artifacts.readVisible(mine.artifactId, admin).content).toBe('classified');
+    await closeServices(services);
+  });
+
+  // Regression: artifact_delete called ArtifactStore.delete(artifactId)
+  // directly, with no ownership check of any kind — any authenticated caller
+  // could permanently delete any other owner's artifact just by knowing (or
+  // guessing) its id. Worse than a read leak: destructive, and irreversible.
+  it("one user cannot delete another's artifact", async () => {
+    const services = testServices();
+    const mine = services.artifacts.put({ ownerId: alice.ownerId, name: 'keep.txt', content: 'classified' });
+
+    const byBob = await callAs(services, bob, artifactDeleteTool, 'artifact_delete', {
+      artifactId: mine.artifactId
+    });
+
+    expect(byBob.isError).toBe(true);
+    expect(services.artifacts.getOrThrow(mine.artifactId).name).toBe('keep.txt');
     await closeServices(services);
   });
 

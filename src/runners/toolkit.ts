@@ -244,7 +244,14 @@ export function createAgentToolkit(deps: ToolkitDeps, job: JobRecord): AgentTool
     },
 
     artifact_get: input => {
-      const { content } = deps.artifacts.read(asString(input['artifactId'], 'artifactId'));
+      // Not the raw read(): a running agent constructs this call itself, so
+      // an artifactId the model picks up from anywhere (shared context, a
+      // message, its own guess) must not reach another owner's content just
+      // because this agent happens to be the one asking.
+      const { content } = deps.artifacts.readVisible(asString(input['artifactId'], 'artifactId'), {
+        ownerId: job.ownerId,
+        isAdmin: false
+      });
       return { content };
     },
 
