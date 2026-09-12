@@ -179,6 +179,12 @@ export class AnthropicRunner implements Runner {
     let inputTokens = 0;
     let outputTokens = 0;
     let turnText = '';
+    // Stays true only if the loop runs out of steps without ever reaching one
+    // of the two legitimate exits below — otherwise a model that just keeps
+    // calling tools finishes the job as a silent, empty "success" once the
+    // budget runs out, exactly the failure mode assertUsable already guards
+    // against for a refusal or a length cutoff.
+    let exhausted = true;
 
     for (let step = 0; step < maxSteps; step += 1) {
       signal.throwIfAborted();
@@ -214,7 +220,10 @@ export class AnthropicRunner implements Runner {
         (block): block is Anthropic.ToolUseBlock => block.type === 'tool_use'
       );
 
-      if (toolUses.length === 0) break;
+      if (toolUses.length === 0) {
+        exhausted = false;
+        break;
+      }
 
       messages.push({ role: 'assistant', content: message.content });
 
@@ -232,7 +241,18 @@ export class AnthropicRunner implements Runner {
       }
       messages.push({ role: 'user', content: results });
 
-      if (toolkit.finished() !== undefined) break;
+      if (toolkit.finished() !== undefined) {
+        exhausted = false;
+        break;
+      }
+    }
+
+    if (exhausted) {
+      throw new OrchestratorError(
+        'RUNNER_FAILED',
+        `The agent used all ${maxSteps} step(s) without calling finish or answering directly.`,
+        "Raise the agent's maxSteps limit, or have it call finish sooner."
+      );
     }
 
     // `finish` is authoritative when the agent called it; otherwise the last

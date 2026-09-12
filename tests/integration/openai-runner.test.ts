@@ -224,7 +224,13 @@ describe('openai-compatible runner against a real wire protocol', () => {
     expect(text).toBe('recovered');
   });
 
-  it('stops at maxSteps instead of looping forever when finish is never called', async () => {
+  // Regression: this only asserted the loop stopped at maxSteps, never what
+  // it produced when it did — which was a silent, empty "success", the same
+  // failure mode assertUsable already guards against for a refusal or a
+  // length cutoff. A model that just keeps calling tools must fail loudly,
+  // not hand a workflow's next step an empty resultText to treat as the
+  // real answer.
+  it('fails instead of silently succeeding when maxSteps runs out before finish is called', async () => {
     services = testServices();
     const { job, toolkit } = makeJob();
 
@@ -233,8 +239,7 @@ describe('openai-compatible runner against a real wire protocol', () => {
       calls: [{ id: `t${i}`, name: 'report_progress', arguments: { message: `step ${i}` } }]
     }));
 
-    await runToCompletion(turns, { job, toolkit, maxSteps: 3 });
-
+    await expect(runToCompletion(turns, { job, toolkit, maxSteps: 3 })).rejects.toThrow(/3 step/);
     expect((fake as FakeOpenAi).requests.length).toBe(3);
   });
 });

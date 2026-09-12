@@ -102,8 +102,15 @@ export class OpenAiCompatibleRunner implements Runner {
     // Buffered rather than yielded: a turn's running commentary must not be
     // concatenated onto the authoritative `finish` result.
     let turnText = '';
+    const stepBudget = maxSteps ?? DEFAULT_MAX_STEPS;
+    // Stays true only if the loop runs out of steps without ever reaching one
+    // of the two legitimate exits below — otherwise a model that just keeps
+    // calling tools finishes the job as a silent, empty "success" once the
+    // budget runs out, exactly the failure mode assertUsable already guards
+    // against for a refusal or a length cutoff.
+    let exhausted = true;
 
-    for (let step = 0; step < (maxSteps ?? DEFAULT_MAX_STEPS); step += 1) {
+    for (let step = 0; step < stepBudget; step += 1) {
       signal.throwIfAborted();
 
       const response = await this.chat(model, messages, tools, signal);
@@ -119,7 +126,10 @@ export class OpenAiCompatibleRunner implements Runner {
       turnText = choice.message.content ?? '';
 
       const toolCalls = choice.message.tool_calls ?? [];
-      if (toolCalls.length === 0 || toolkit === undefined) break;
+      if (toolCalls.length === 0 || toolkit === undefined) {
+        exhausted = false;
+        break;
+      }
 
       messages.push({ role: 'assistant', content: choice.message.content, tool_calls: toolCalls });
 
@@ -128,7 +138,18 @@ export class OpenAiCompatibleRunner implements Runner {
         messages.push({ role: 'tool', tool_call_id: call.id, content: result });
       }
 
-      if (toolkit.finished() !== undefined) break;
+      if (toolkit.finished() !== undefined) {
+        exhausted = false;
+        break;
+      }
+    }
+
+    if (exhausted) {
+      throw new OrchestratorError(
+        'RUNNER_FAILED',
+        `The agent used all ${stepBudget} step(s) without calling finish or answering directly.`,
+        "Raise the agent's maxSteps limit, or have it call finish sooner."
+      );
     }
 
     // `finish` is authoritative when the agent called it; otherwise the last
