@@ -4,7 +4,7 @@ import { BudgetTracker } from '../../src/core/budget.js';
 import { JobStore } from '../../src/core/jobs.js';
 import { MemoryStore } from '../../src/core/memory.js';
 import { AgentRegistry, toSnapshot } from '../../src/core/registry.js';
-import { migrate } from '../../src/db/migrate.js';
+import { getSchemaVersion, migrate, type MigrationResult } from '../../src/db/migrate.js';
 import { openDatabase } from '../../src/db/open.js';
 import { toPositional } from '../../src/db/postgres.js';
 import type { Db } from '../../src/db/types.js';
@@ -210,6 +210,45 @@ describePg('Postgres backend', () => {
     // next query works. Surviving is only half of it; recovering is the point.
     expect(await victim.prepare('SELECT 1 AS one').get()).toEqual({ one: 1 });
     await victim.close();
+  });
+
+  // Two instances booting at the same moment against one fresh database is
+  // the deployment Postgres was added for — a rolling restart, or a scaled-out
+  // service coming up. Reading the schema version outside the transaction let
+  // both see version 0 and both apply migration 1; the loser died at boot on a
+  // duplicate relation, and migrate() is awaited at the top level of index.ts,
+  // so that is a dead process.
+  it('lets two instances migrate one fresh database concurrently', async () => {
+    const other = `orch_test_${Date.now().toString(36)}_race`;
+    const admin = openDatabase({ url: url as string });
+    await admin.exec(`CREATE SCHEMA IF NOT EXISTS ${other}`);
+    await admin.close();
+
+    const handle = (): Db => {
+      const target = new URL(url as string);
+      target.searchParams.set('options', `-c search_path=${other}`);
+      return openDatabase({ url: target.toString() });
+    };
+
+    const [a, b] = [handle(), handle()];
+    try {
+      const results = await Promise.allSettled([migrate(a), migrate(b)]);
+
+      // Both boot. Exactly one does the work; the other waits on the advisory
+      // lock, re-reads the version inside its own transaction and finds
+      // nothing left to do.
+      expect(results.map(r => r.status)).toEqual(['fulfilled', 'fulfilled']);
+      const applied = results.map(r => (r as PromiseFulfilledResult<MigrationResult>).value.applied);
+      expect(applied.filter(list => list.length > 0)).toHaveLength(1);
+      expect(applied.flat()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+      expect(await getSchemaVersion(a)).toBe(10);
+    } finally {
+      await a.close();
+      await b.close();
+      const cleanup = openDatabase({ url: url as string });
+      await cleanup.exec(`DROP SCHEMA IF EXISTS ${other} CASCADE`);
+      await cleanup.close();
+    }
   });
 
   it('rolls a failed transaction back', async () => {

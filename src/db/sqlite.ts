@@ -86,7 +86,12 @@ class SqliteDb implements Db {
     // back into `this.enqueue` would deadlock waiting on a queue that cannot
     // advance until this very slot finishes.
     return this.enqueue(async () => {
-      this.raw.exec('BEGIN');
+      // IMMEDIATE, not deferred: a deferred transaction takes only a read lock
+      // at first, and upgrading it to a write lock while another connection
+      // holds one fails outright with SQLITE_BUSY instead of waiting out the
+      // busy timeout. Every transaction here writes, and two processes sharing
+      // one file may well start together.
+      this.raw.exec('BEGIN IMMEDIATE');
       try {
         const result = await fn(rawTx(this.raw));
         this.raw.exec('COMMIT');
