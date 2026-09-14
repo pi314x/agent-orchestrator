@@ -35,15 +35,12 @@ if (agentFiles.length > 0) {
   logger.info({ ...sync, dir: config.agentsDir }, 'synced agents from files');
 }
 
-// A previous process may have died mid-run; those rows own no scheduler.
-const interrupted = await services.jobs.recoverInterrupted();
-if (interrupted.length > 0) {
-  logger.warn({ jobIds: interrupted }, 'jobs interrupted by a previous shutdown');
-}
-// Anything recoverInterrupted just re-queued (an idempotent job) has nothing
-// else to trigger it — pump only ever runs off submit/retry/a finished run,
-// none of which just happened. Without this it would sit queued until some
-// unrelated job submission happened to wake the scheduler.
+// Jobs left running by a process that died are reclaimed once their lease
+// expires — which is also what stops us stealing work from a sibling instance
+// that is alive and busy. `start` runs a lease pass immediately and then on a
+// timer, and pumps: a reclaimed or merely-queued job has nothing else to
+// trigger it, since pump otherwise only runs off submit, retry or a finished
+// run, none of which just happened.
 services.scheduler.start();
 
 // The inbound half of A2A, on its own port and only when asked for. Off by

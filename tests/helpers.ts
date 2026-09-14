@@ -50,6 +50,8 @@ export interface TestServicesOptions {
   mockScript?: MockScriptFn;
   /** Point the A2A gateway at an in-repo fixture agent instead of the network. */
   a2aClientProvider?: ClientProvider;
+  /** Compress the job-lease clock so a reclaim test needs no real waiting. */
+  lease?: { heartbeatMs?: number; expiresAfterMs?: number };
 }
 
 export async function testServices(options: TestServicesOptions = {}): Promise<Services> {
@@ -63,7 +65,8 @@ export async function testServices(options: TestServicesOptions = {}): Promise<S
     config,
     db,
     logger: silentLogger(),
-    ...(options.a2aClientProvider !== undefined && { a2aClientProvider: options.a2aClientProvider })
+    ...(options.a2aClientProvider !== undefined && { a2aClientProvider: options.a2aClientProvider }),
+    ...(options.lease !== undefined && { lease: options.lease })
   });
 
   if (options.mockScript !== undefined) {

@@ -53,13 +53,19 @@ export interface CreateServicesInput {
   logger: Logger;
   /** Lets tests point the A2A gateway at an in-repo fixture agent. */
   a2aClientProvider?: ClientProvider;
+  /**
+   * Job-lease timings. The defaults suit every deployment — a lease is renewed
+   * while the job runs, so a long job never expires one — and exist here so a
+   * test can compress minutes into milliseconds.
+   */
+  lease?: { heartbeatMs?: number; expiresAfterMs?: number };
 }
 
 /**
  * Built once per process and shared by every serving unit. These are long-lived
  * handles, not per-request state — nothing here is keyed by connection.
  */
-export function createServices({ config, db, logger, a2aClientProvider }: CreateServicesInput): Services {
+export function createServices({ config, db, logger, a2aClientProvider, lease }: CreateServicesInput): Services {
   const events = new EventLog(db);
   const grants = new GrantStore(db);
   const agents = new AgentRegistry(db, grants);
@@ -118,7 +124,8 @@ export function createServices({ config, db, logger, a2aClientProvider }: Create
     proxy,
     maxConcurrency: config.maxConcurrency,
     maxDepth: config.maxDepth,
-    defaultRunner: config.defaultRunner
+    defaultRunner: config.defaultRunner,
+    ...(lease !== undefined && { lease })
   });
 
   const workflows = new WorkflowEngine({

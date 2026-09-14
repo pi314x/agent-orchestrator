@@ -390,5 +390,15 @@ export const POSTGRES_MIGRATIONS: readonly Migration[] = [
       CREATE INDEX idx_grants_grantee ON resource_grants (resource_type, grantee_id);
       CREATE INDEX idx_grants_resource ON resource_grants (resource_type, resource_id, owner_id);
     `
+  },
+  {
+    version: 11,
+    name: 'job_leases',
+    up: `
+      ALTER TABLE jobs ADD COLUMN claimed_by TEXT;
+      ALTER TABLE jobs ADD COLUMN heartbeat_at TEXT;
+
+      CREATE INDEX idx_jobs_lease ON jobs (state, heartbeat_at);
+    `
   }
 ] as const;

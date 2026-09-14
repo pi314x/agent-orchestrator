@@ -417,7 +417,7 @@ export class JobStore {
    * `nextQueued` still chooses *which* job to go for, carrying the priority,
    * capacity and starvation rules; this decides whether we actually got it.
    */
-  async claim(id: string): Promise<JobRecord | undefined> {
+  async claim(id: string, claimedBy?: string): Promise<JobRecord | undefined> {
     const now = new Date().toISOString();
 
     const rows = (await this.db
@@ -425,11 +425,13 @@ export class JobStore {
         `UPDATE jobs
             SET state = 'running',
                 started_at = COALESCE(started_at, ?),
-                updated_at = ?
+                updated_at = ?,
+                claimed_by = ?,
+                heartbeat_at = ?
           WHERE id = ? AND state = 'queued'
         RETURNING *`
       )
-      .all(now, now, id)) as JobRow[];
+      .all(now, now, claimedBy ?? null, now, id)) as JobRow[];
 
     const row = rows[0];
     return row === undefined ? undefined : toRecord(row);
@@ -477,38 +479,90 @@ export class JobStore {
   }
 
   /**
-   * A process that died mid-run leaves `running` rows behind that no scheduler
-   * owns. A job with an idempotencyKey is safe to resume — a client retrying
-   * that same key would only ever get this same job handed back anyway, so
-   * queuing it again on our own initiative cannot create a duplicate. Anything
-   * else we cannot safely re-run unattended, so it fails explicitly instead of
-   * silently looking live again.
+   * Renew this instance's lease on everything it is currently running. The
+   * scheduler calls this on a timer; a lease that stops being renewed is what
+   * tells another instance the owner is gone.
    */
-  async recoverInterrupted(): Promise<string[]> {
-    const rows = (await this.db.prepare(`SELECT * FROM jobs WHERE state = 'running'`).all()) as JobRow[];
+  async heartbeat(claimedBy: string): Promise<number> {
+    const result = await this.db
+      .prepare(`UPDATE jobs SET heartbeat_at = ? WHERE state = 'running' AND claimed_by = ?`)
+      .run(new Date().toISOString(), claimedBy);
+    return result.changes;
+  }
+
+  /**
+   * Take back jobs whose owner has stopped renewing their lease.
+   *
+   * This used to be `recoverInterrupted()`, which took *every* running row on
+   * the assumption that a process starting up must be the only one there is.
+   * That holds for a single instance and is badly wrong for any other
+   * deployment — the one Postgres was added to support. A second instance
+   * booting re-queued every running idempotent job, so it ran a second time
+   * while the first attempt was still in flight, and failed every other
+   * running job out from under the instance busy executing it. The atomic
+   * claim exists precisely to stop two schedulers running one job; recovery
+   * was handing that back.
+   *
+   * A lease makes the distinction the old code could not: a job whose
+   * heartbeat is recent belongs to someone alive and is left alone. A null
+   * heartbeat is an orphan by definition — it predates this migration, so
+   * whoever claimed it did so in a process that no longer exists.
+   *
+   * The recovery itself is unchanged. A job with an idempotencyKey is safe to
+   * re-queue, because a client retrying that key would only ever be handed
+   * this same job anyway, so re-running it cannot produce a duplicate.
+   * Anything else cannot be safely re-run unattended and fails explicitly
+   * rather than silently looking live again.
+   */
+  async recoverExpired(staleBefore: string): Promise<string[]> {
+    const rows = (await this.db
+      .prepare(
+        `SELECT * FROM jobs
+          WHERE state = 'running' AND (heartbeat_at IS NULL OR heartbeat_at < ?)`
+      )
+      .all(staleBefore)) as JobRow[];
+
     const affected: string[] = [];
 
     for (const row of rows) {
       const job = toRecord(row);
-      affected.push(job.id);
 
       if (job.idempotencyKey !== undefined) {
-        // Not through transition(): the state machine deliberately never
-        // allows a general running -> queued edge (job_retry taking that
-        // same path against a job that is genuinely still executing would
-        // let it be claimed and run a second time while the first attempt is
-        // still in flight). This raw update is safe only because it runs
-        // once at startup, before the scheduler could have claimed anything
-        // into memory in this process — every 'running' row at that moment
-        // is necessarily orphaned by definition.
-        await this.db
-          .prepare(`UPDATE jobs SET state = 'queued', updated_at = ? WHERE id = ? AND state = 'running'`)
-          .run(new Date().toISOString(), job.id);
-      } else {
-        await this.transition(job.id, 'failed', {
-          error: { code: 'INTERRUPTED', message: 'The orchestrator restarted while this job was running.' }
-        });
+        // Not through transition(): the state machine deliberately has no
+        // general running -> queued edge, because job_retry taking that path
+        // against a job that is genuinely executing would let it be claimed
+        // and run a second time. Here the guard is in the statement itself —
+        // `heartbeat_at` must still be the stale value we read, so an owner
+        // that came back to life in between renews its lease and keeps the
+        // job instead of losing it mid-run.
+        const result = await this.db
+          .prepare(
+            `UPDATE jobs SET state = 'queued', claimed_by = NULL, heartbeat_at = NULL, updated_at = ?
+              WHERE id = ? AND state = 'running'
+                AND (heartbeat_at IS NULL OR heartbeat_at < ?)`
+          )
+          .run(new Date().toISOString(), job.id, staleBefore);
+        if (result.changes > 0) affected.push(job.id);
+        continue;
       }
+
+      // Same guard for the terminal path, and for the same reason.
+      const claimed = await this.db
+        .prepare(
+          `UPDATE jobs SET claimed_by = NULL, heartbeat_at = ?, updated_at = ?
+            WHERE id = ? AND state = 'running'
+              AND (heartbeat_at IS NULL OR heartbeat_at < ?)`
+        )
+        .run(new Date().toISOString(), new Date().toISOString(), job.id, staleBefore);
+      if (claimed.changes === 0) continue;
+
+      await this.transition(job.id, 'failed', {
+        error: {
+          code: 'INTERRUPTED',
+          message: 'The orchestrator running this job stopped responding.'
+        }
+      });
+      affected.push(job.id);
     }
 
     return affected;

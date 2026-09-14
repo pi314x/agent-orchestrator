@@ -1,4 +1,5 @@
 import { OrchestratorError, toErrorPayload } from '../errors.js';
+import { newId } from '../ids.js';
 import type { Logger } from '../logger.js';
 import { createAgentToolkit, type DownstreamGrant, type SpawnJobInput } from '../runners/toolkit.js';
 import type { McpProxyPool } from '../proxy/pool.js';
@@ -45,7 +46,22 @@ export interface SchedulerDeps {
   a2aGateway?: RemoteExecutor;
   /** Grants downstream MCP tools to local agents only. */
   proxy?: McpProxyPool;
+  /**
+   * How often this instance renews its lease on the jobs it is running, and
+   * how long a lease may go unrenewed before another instance may take the
+   * job back. Defaults below; tests shorten them.
+   */
+  lease?: { heartbeatMs?: number; expiresAfterMs?: number };
 }
+
+/**
+ * A lease is renewed every 15 seconds and expires after 60, so an instance has
+ * to miss four heartbeats in a row before its work is considered abandoned.
+ * The gap is deliberate: reclaiming a job that is merely slow would run it
+ * twice, which is the exact failure the atomic claim exists to prevent.
+ */
+const DEFAULT_HEARTBEAT_MS = 15_000;
+const DEFAULT_LEASE_MS = 60_000;
 
 /**
  * The A2A gateway is not a runner (PLAN §9) but exposes the same shape, so the
@@ -82,8 +98,24 @@ export class JobScheduler {
    */
   private pumping = false;
   private pumpAgain = false;
+  /**
+   * Identifies this process in `jobs.claimed_by`. Random per process on
+   * purpose: it must never collide with a sibling's, and a restarted instance
+   * is a different owner from the one that died — its abandoned jobs are
+   * reclaimed by their expired lease, not by recognising the name.
+   */
+  private readonly instanceId = newId('instance');
+  private leaseTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(private readonly deps: SchedulerDeps) {}
+
+  private get heartbeatMs(): number {
+    return this.deps.lease?.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
+  }
+
+  private get leaseMs(): number {
+    return this.deps.lease?.expiresAfterMs ?? DEFAULT_LEASE_MS;
+  }
 
   async submit(input: CreateJobInput): Promise<JobRecord> {
     assertDepthWithinLimit(input.depth ?? 0, this.deps.maxDepth);
@@ -140,7 +172,46 @@ export class JobScheduler {
    * own; this is the one public entry for "nothing changed, but check anyway".
    */
   start(): void {
+    this.startLeaseTimer();
+    // One pass immediately, so a restart picks up work whose lease has already
+    // expired — and whose owner is therefore definitely gone — without waiting
+    // out a first heartbeat interval. It pumps for us when it reclaims
+    // anything; pump anyway for whatever was merely left queued.
+    this.track(this.renewAndReclaim(), 'scheduler lease tick failed');
     this.track(this.pump(), 'scheduler pump failed');
+  }
+
+  /**
+   * Renew our own leases, then reclaim whatever nobody is renewing. Both on
+   * one timer, so a lone instance still recovers its predecessor's work and a
+   * crashed instance's jobs are picked up by a live sibling rather than
+   * waiting for that instance to come back — which, behind a load balancer, it
+   * may never do.
+   */
+  private startLeaseTimer(): void {
+    if (this.leaseTimer !== undefined) return;
+
+    this.leaseTimer = setInterval(() => {
+      this.track(this.renewAndReclaim(), 'scheduler lease tick failed');
+    }, this.heartbeatMs);
+
+    // Never hold the process open for a heartbeat.
+    this.leaseTimer.unref?.();
+  }
+
+  /** One lease tick. Public so a caller can force one without waiting. */
+  async renewAndReclaim(): Promise<void> {
+    if (this.stopped) return;
+
+    await this.deps.jobs.heartbeat(this.instanceId);
+
+    const staleBefore = new Date(Date.now() - this.leaseMs).toISOString();
+    const reclaimed = await this.deps.jobs.recoverExpired(staleBefore);
+
+    if (reclaimed.length > 0) {
+      this.deps.logger.warn({ jobIds: reclaimed }, 'reclaimed jobs whose owner stopped responding');
+      await this.pump();
+    }
   }
 
   onChange(listener: ChangeListener): () => void {
@@ -230,6 +301,10 @@ export class JobScheduler {
 
   stop(): void {
     this.stopped = true;
+    if (this.leaseTimer !== undefined) {
+      clearInterval(this.leaseTimer);
+      this.leaseTimer = undefined;
+    }
     for (const [jobId, controller] of this.active) {
       this.abortReasons.set(jobId, 'cancelled');
       controller.abort();
@@ -346,7 +421,7 @@ export class JobScheduler {
       // loser of that race must simply move on to the next candidate.
       let claimed: JobRecord | undefined;
       for (const candidate of candidates) {
-        claimed = await this.deps.jobs.claim(candidate.id);
+        claimed = await this.deps.jobs.claim(candidate.id, this.instanceId);
         if (claimed !== undefined) break;
       }
 

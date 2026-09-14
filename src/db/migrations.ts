@@ -475,6 +475,27 @@ export const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX idx_grants_grantee ON resource_grants (resource_type, grantee_id);
       CREATE INDEX idx_grants_resource ON resource_grants (resource_type, resource_id, owner_id);
     `
+  },
+  {
+    version: 11,
+    name: 'job_leases',
+    up: `
+      -- Who is running a job, and when they last said so.
+      --
+      -- Without this there is no way to tell a job orphaned by a dead process
+      -- from one a live sibling is executing right now, and startup recovery
+      -- assumed the former: a second instance booting re-queued every running
+      -- idempotent job (so it ran twice) and failed every other one out from
+      -- under the instance still working on it.
+      --
+      -- Nullable, because every row that predates this migration is exactly
+      -- the orphan case it was written for: no heartbeat means no live owner.
+      ALTER TABLE jobs ADD COLUMN claimed_by TEXT;
+      ALTER TABLE jobs ADD COLUMN heartbeat_at TEXT;
+
+      -- The reaper's query: running jobs ordered by how stale their lease is.
+      CREATE INDEX idx_jobs_lease ON jobs (state, heartbeat_at);
+    `
   }
 ] as const;
 

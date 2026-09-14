@@ -5,6 +5,8 @@ import { JobStore } from '../../src/core/jobs.js';
 import { MemoryStore } from '../../src/core/memory.js';
 import { AgentRegistry, toSnapshot } from '../../src/core/registry.js';
 import { getSchemaVersion, migrate, type MigrationResult } from '../../src/db/migrate.js';
+import { LATEST_SCHEMA_VERSION, MIGRATIONS } from '../../src/db/migrations.js';
+import { POSTGRES_MIGRATIONS } from '../../src/db/migrations.postgres.js';
 import { openDatabase } from '../../src/db/open.js';
 import { toPositional } from '../../src/db/postgres.js';
 import type { Db } from '../../src/db/types.js';
@@ -71,12 +73,17 @@ describePg('Postgres backend', () => {
     new AgentRegistry(db).create({ name, instructions: 'x', runner: 'mock' });
 
   it('reports its dialect and runs the Postgres migration set', async () => {
+    // The two sets must stay in step: a migration added to one and not the
+    // other silently leaves that backend on an older schema.
+    expect(POSTGRES_MIGRATIONS.map(m => m.version)).toEqual(MIGRATIONS.map(m => m.version));
+    expect(POSTGRES_MIGRATIONS.map(m => m.name)).toEqual(MIGRATIONS.map(m => m.name));
+
     expect(db.dialect).toBe('postgres');
 
     const rows = (await db
       .prepare(`SELECT COUNT(*) AS n FROM schema_migrations`)
       .get()) as { n: number | string };
-    expect(Number(rows.n)).toBe(10);
+    expect(Number(rows.n)).toBe(LATEST_SCHEMA_VERSION);
   });
 
   it('round-trips an agent and a job through the real stores', async () => {
@@ -240,8 +247,8 @@ describePg('Postgres backend', () => {
       expect(results.map(r => r.status)).toEqual(['fulfilled', 'fulfilled']);
       const applied = results.map(r => (r as PromiseFulfilledResult<MigrationResult>).value.applied);
       expect(applied.filter(list => list.length > 0)).toHaveLength(1);
-      expect(applied.flat()).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
-      expect(await getSchemaVersion(a)).toBe(10);
+      expect(applied.flat()).toEqual(POSTGRES_MIGRATIONS.map(m => m.version));
+      expect(await getSchemaVersion(a)).toBe(LATEST_SCHEMA_VERSION);
     } finally {
       await a.close();
       await b.close();

@@ -204,7 +204,20 @@ statement rather than a read followed by a write:
 - resolving an approval (`UPDATE ... WHERE status = 'pending'`), so an approve can
   never land on top of someone else's reject.
 
-Their atomicity comes from being one statement, not from the caller running
+A third case needed more than one statement. A job left `running` by a process
+that died has to be recovered — but from a database row alone, "abandoned" and
+"a sibling is working on it right now" look identical. So a claim records
+**who** took the job, and that instance renews the lease every 15 seconds while
+it runs. Recovery only takes jobs whose lease has gone unrenewed for a minute:
+four missed heartbeats, because reclaiming a job that is merely slow would run
+it twice. A reclaimed job is re-queued if it carries an `idempotencyKey` (a
+client retrying that key would be handed the same job anyway, so it cannot
+duplicate) and failed as `INTERRUPTED` otherwise, rather than silently looking
+live. The reaper runs on every instance, so a crashed one's work is picked up by
+a live sibling instead of waiting for the dead process to come back — which,
+behind a load balancer, it may never do.
+
+The first two guarantees' atomicity comes from being one statement, not from the caller running
 synchronously, which is why it survived the async conversion intact and holds on
 both backends. `tests/integration/shared-db.test.ts` covers both against a real
 shared SQLite file, running twelve jobs across two schedulers to check each
@@ -368,11 +381,11 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 452 tests, no network, no model calls
+pnpm test        # 457 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 
 # The 10 Postgres tests skip unless pointed at a database (docker compose up -d db):
-TEST_POSTGRES_URL=postgres://orch:orch@127.0.0.1:5432/orch pnpm test   # 462
+TEST_POSTGRES_URL=postgres://orch:orch@127.0.0.1:5432/orch pnpm test   # 467
 pnpm typecheck && pnpm lint && pnpm build
 ```
 

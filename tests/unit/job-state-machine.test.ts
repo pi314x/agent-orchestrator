@@ -159,7 +159,7 @@ describe('JobStore', () => {
     const job = await submit(jobs, agent);
     await jobs.transition(job.id, 'running');
 
-    expect(await jobs.recoverInterrupted()).toEqual([job.id]);
+    expect(await jobs.recoverExpired(new Date().toISOString())).toEqual([job.id]);
     expect(await jobs.getOrThrow(job.id)).toMatchObject({
       state: 'failed',
       error: { code: 'INTERRUPTED' }
@@ -168,7 +168,7 @@ describe('JobStore', () => {
   });
 
   // Regression: PLAN.md documents "running jobs become queued if idempotent,
-  // otherwise failed", but recoverInterrupted() always failed every orphaned
+  // otherwise failed", but recovery always failed every orphaned
   // job — an idempotent job that was safely resumable on restart was
   // permanently lost instead, same as any other interrupted one.
   it('re-queues an orphaned running job that carries an idempotencyKey', async () => {
@@ -176,7 +176,7 @@ describe('JobStore', () => {
     const job = await submit(jobs, agent, { idempotencyKey: 'resume-me' });
     await jobs.transition(job.id, 'running');
 
-    expect(await jobs.recoverInterrupted()).toEqual([job.id]);
+    expect(await jobs.recoverExpired(new Date().toISOString())).toEqual([job.id]);
 
     const recovered = await jobs.getOrThrow(job.id);
     expect(recovered.state).toBe('queued');
@@ -190,7 +190,7 @@ describe('JobStore', () => {
     const { jobs, agent, db } = await seed();
     const job = await submit(jobs, agent, { idempotencyKey: 'resume-me' });
     await jobs.transition(job.id, 'running');
-    await jobs.recoverInterrupted();
+    await jobs.recoverExpired(new Date().toISOString());
 
     expect((await jobs.claim(job.id))?.state).toBe('running');
     await db.close();
