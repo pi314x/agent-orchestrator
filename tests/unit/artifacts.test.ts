@@ -2,79 +2,79 @@ import { describe, expect, it } from 'vitest';
 import { ArtifactStore } from '../../src/core/artifacts.js';
 import { migratedDb } from '../helpers.js';
 
-function store() {
-  const db = migratedDb();
+async function store() {
+  const db = await migratedDb();
   return { db, artifacts: new ArtifactStore(db) };
 }
 
 describe('ArtifactStore', () => {
-  it('stores content and reports its size and hash', () => {
-    const { artifacts, db } = store();
-    const record = artifacts.put({ name: 'report.md', content: 'hello' });
+  it('stores content and reports its size and hash', async () => {
+    const { artifacts, db } = await store();
+    const record = await artifacts.put({ name: 'report.md', content: 'hello' });
 
     expect(record.artifactId).toMatch(/^art_/);
     expect(record.sizeBytes).toBe(5);
     expect(record.contentHash).toHaveLength(64);
-    db.close();
+    await db.close();
   });
 
-  it('gives identical content the same hash', () => {
-    const { artifacts, db } = store();
-    const a = artifacts.put({ name: 'one', content: 'same bytes' });
-    const b = artifacts.put({ name: 'two', content: 'same bytes' });
+  it('gives identical content the same hash', async () => {
+    const { artifacts, db } = await store();
+    const a = await artifacts.put({ name: 'one', content: 'same bytes' });
+    const b = await artifacts.put({ name: 'two', content: 'same bytes' });
 
     expect(a.contentHash).toBe(b.contentHash);
     expect(a.artifactId).not.toBe(b.artifactId);
-    db.close();
+    await db.close();
   });
 
-  it('reads content back whole', () => {
-    const { artifacts, db } = store();
-    const record = artifacts.put({ name: 'f', content: 'abcdef' });
+  it('reads content back whole', async () => {
+    const { artifacts, db } = await store();
+    const record = await artifacts.put({ name: 'f', content: 'abcdef' });
 
-    const result = artifacts.read(record.artifactId);
+    const result = await artifacts.read(record.artifactId);
 
     expect(result.content).toBe('abcdef');
     expect(result.eof).toBe(true);
-    db.close();
+    await db.close();
   });
 
-  it('slices large content and reports eof correctly', () => {
-    const { artifacts, db } = store();
-    const record = artifacts.put({ name: 'f', content: 'abcdef' });
+  it('slices large content and reports eof correctly', async () => {
+    const { artifacts, db } = await store();
+    const record = await artifacts.put({ name: 'f', content: 'abcdef' });
 
-    const first = artifacts.read(record.artifactId, 0, 3);
+    const first = await artifacts.read(record.artifactId, 0, 3);
     expect(first.content).toBe('abc');
     expect(first.eof).toBe(false);
 
-    const rest = artifacts.read(record.artifactId, 3, 3);
+    const rest = await artifacts.read(record.artifactId, 3, 3);
     expect(rest.content).toBe('def');
     expect(rest.eof).toBe(true);
-    db.close();
+    await db.close();
   });
 
-  it('reports a missing artifact rather than returning empty content', () => {
-    const { artifacts, db } = store();
-    expect(() => artifacts.read('art_missing')).toThrow(/No artifact/);
-    db.close();
+  it('reports a missing artifact rather than returning empty content', async () => {
+    const { artifacts, db } = await store();
+    await expect(artifacts.read('art_missing')).rejects.toThrow(/No artifact/);
+    await db.close();
   });
 
-  it('filters by job and by tags', () => {
-    const { artifacts, db } = store();
-    artifacts.put({ name: 'a', content: '1', jobId: 'job_1', tags: ['draft'] });
-    artifacts.put({ name: 'b', content: '2', jobId: 'job_2', tags: ['final'] });
+  it('filters by job and by tags', async () => {
+    const { artifacts, db } = await store();
+    await artifacts.put({ name: 'a', content: '1', jobId: 'job_1', tags: ['draft'] });
+    await artifacts.put({ name: 'b', content: '2', jobId: 'job_2', tags: ['final'] });
 
-    expect(artifacts.list({ jobId: 'job_1' }).map(a => a.name)).toEqual(['a']);
-    expect(artifacts.list({ tags: ['final'] }).map(a => a.name)).toEqual(['b']);
-    db.close();
+    expect((await artifacts.list({ jobId: 'job_1' })).map(a => a.name)).toEqual(['a']);
+    expect((await artifacts.list({ tags: ['final'] })).map(a => a.name)).toEqual(['b']);
+    await db.close();
   });
 
-  it('deletes an artifact', () => {
-    const { artifacts, db } = store();
-    const record = artifacts.put({ name: 'gone', content: 'x' });
+  it('deletes an artifact', async () => {
+    const { artifacts, db } = await store();
+    const record = await artifacts.put({ name: 'gone', content: 'x' });
 
-    expect(artifacts.delete(record.artifactId)).toBe(true);
-    expect(artifacts.delete(record.artifactId)).toBe(false);
-    db.close();
+    expect(await artifacts.delete(record.artifactId)).toBe(true);
+    expect(await artifacts.delete(record.artifactId)).toBe(false);
+    await db.close();
   });
 });

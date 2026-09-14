@@ -7,12 +7,12 @@ import { closeServices, deferred, testServices } from '../helpers.js';
 /** Let queued microtasks run. The scheduler is event-driven, so no sleeps. */
 const flush = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
 
-function makeAgent(services: Services, name = 'worker'): AgentRecord {
-  return services.agents.create({ name, instructions: 'work', runner: 'mock' });
+async function makeAgent(services: Services, name = 'worker'): Promise<AgentRecord> {
+  return await services.agents.create({ name, instructions: 'work', runner: 'mock' });
 }
 
-function submit(services: Services, agent: AgentRecord, overrides: Record<string, unknown> = {}) {
-  return services.scheduler.submit({
+async function submit(services: Services, agent: AgentRecord, overrides: Record<string, unknown> = {}) {
+  return await services.scheduler.submit({
     backend: 'local',
     agentId: agent.id,
     agentSnapshot: toSnapshot(agent),
@@ -21,7 +21,7 @@ function submit(services: Services, agent: AgentRecord, overrides: Record<string
   });
 }
 
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers();
 });
 
@@ -32,10 +32,10 @@ describe('JobScheduler', () => {
   // do. A job created straight through JobStore (mirroring what a restart
   // leaves behind) sat 'queued' forever until scheduler.start() existed to
   // give recovery something to kick the queue with.
-  it('start() picks up a job that reached queued without going through submit()', async () => {
-    const services = testServices();
-    const agent = makeAgent(services);
-    services.jobs.create({
+  it('start() picks up a job that reached queued without going through await submit()', async () => {
+    const services = await testServices();
+    const agent = await makeAgent(services);
+    await services.jobs.create({
       backend: 'local',
       agentId: agent.id,
       agentSnapshot: toSnapshot(agent),
@@ -45,7 +45,7 @@ describe('JobScheduler', () => {
     services.scheduler.start();
     await services.scheduler.drain();
 
-    const { jobs } = services.jobs.list({});
+    const { jobs } = await services.jobs.list({});
     expect(jobs[0]?.state).toBe('succeeded');
     await closeServices(services);
   });
@@ -56,8 +56,8 @@ describe('JobScheduler', () => {
   // at this layer with a bare custom Runner rather than the real gateway,
   // since persisting the event is the scheduler's job, not the runner's.
   it("persists a runner's artifact event to the artifact store", async () => {
-    const services = testServices();
-    const agent = makeAgent(services);
+    const services = await testServices();
+    const agent = await makeAgent(services);
 
     const artifactRunner: Runner = {
       name: 'mock',
@@ -70,23 +70,23 @@ describe('JobScheduler', () => {
     };
     services.runners.register(artifactRunner);
 
-    const job = submit(services, agent);
+    const job = await submit(services, agent);
     await services.scheduler.drain();
 
-    const stored = services.artifacts.list({ jobId: job.id });
+    const stored = await services.artifacts.list({ jobId: job.id });
     expect(stored).toHaveLength(1);
     expect(stored[0]).toMatchObject({ name: 'from-remote.txt', mimeType: 'text/plain' });
-    expect(services.artifacts.read(stored[0]!.artifactId).content).toBe('remote content');
+    expect((await services.artifacts.read(stored[0]!.artifactId)).content).toBe('remote content');
     await closeServices(services);
   });
 
   it('runs a submitted job through to succeeded', async () => {
-    const services = testServices();
-    const job = submit(services, makeAgent(services));
+    const services = await testServices();
+    const job = await submit(services, await makeAgent(services));
 
     await services.scheduler.drain();
 
-    const done = services.jobs.getOrThrow(job.id);
+    const done = await services.jobs.getOrThrow(job.id);
     expect(done.state).toBe('succeeded');
     expect(done.resultText).toContain('go');
     expect(done.usage?.durationMs).toBeGreaterThanOrEqual(0);
@@ -94,14 +94,14 @@ describe('JobScheduler', () => {
   });
 
   it('records a runner failure with its error code', async () => {
-    const services = testServices({
+    const services = await testServices({
       mockScript: () => ({ fail: { code: 'RUNNER_FAILED', message: 'model exploded' } })
     });
-    const job = submit(services, makeAgent(services));
+    const job = await submit(services, await makeAgent(services));
 
     await services.scheduler.drain();
 
-    expect(services.jobs.getOrThrow(job.id)).toMatchObject({
+    expect(await services.jobs.getOrThrow(job.id)).toMatchObject({
       state: 'failed',
       error: { code: 'RUNNER_FAILED', message: 'model exploded' }
     });
@@ -110,53 +110,53 @@ describe('JobScheduler', () => {
 
   it('never runs more jobs at once than maxConcurrency', async () => {
     const gate = deferred();
-    const services = testServices({
+    const services = await testServices({
       config: { maxConcurrency: 2 },
       mockScript: () => ({ gate: gate.promise })
     });
-    const agent = makeAgent(services);
+    const agent = await makeAgent(services);
 
-    const ids = [1, 2, 3, 4].map(() => submit(services, agent).id);
+    const ids = await Promise.all([1, 2, 3, 4].map(async () => (await submit(services, agent)).id));
     await flush();
 
-    expect(services.jobs.countByState('running')).toBe(2);
-    expect(services.jobs.countByState('queued')).toBe(2);
+    expect(await services.jobs.countByState('running')).toBe(2);
+    expect(await services.jobs.countByState('queued')).toBe(2);
 
     gate.resolve();
     await services.scheduler.drain();
 
-    for (const id of ids) expect(services.jobs.getOrThrow(id).state).toBe('succeeded');
+    for (const id of ids) expect((await services.jobs.getOrThrow(id)).state).toBe('succeeded');
     await closeServices(services);
   });
 
   it('cancels a running job', async () => {
     const gate = deferred();
-    const services = testServices({ mockScript: () => ({ gate: gate.promise }) });
-    const job = submit(services, makeAgent(services));
+    const services = await testServices({ mockScript: () => ({ gate: gate.promise }) });
+    const job = await submit(services, await makeAgent(services));
     await flush();
 
-    expect(services.jobs.getOrThrow(job.id).state).toBe('running');
+    expect((await services.jobs.getOrThrow(job.id)).state).toBe('running');
 
-    services.scheduler.cancel(job.id, 'no longer needed');
+    await services.scheduler.cancel(job.id, 'no longer needed');
     await flush();
 
-    expect(services.jobs.getOrThrow(job.id).state).toBe('cancelled');
+    expect((await services.jobs.getOrThrow(job.id)).state).toBe('cancelled');
     gate.resolve();
     await closeServices(services);
   });
 
   it('cancels a queued job without running it', async () => {
     const gate = deferred();
-    const services = testServices({
+    const services = await testServices({
       config: { maxConcurrency: 1 },
       mockScript: () => ({ gate: gate.promise })
     });
-    const agent = makeAgent(services);
-    submit(services, agent);
-    const queued = submit(services, agent);
+    const agent = await makeAgent(services);
+    await submit(services, agent);
+    const queued = await submit(services, agent);
     await flush();
 
-    expect(services.scheduler.cancel(queued.id).state).toBe('cancelled');
+    expect((await services.scheduler.cancel(queued.id)).state).toBe('cancelled');
     gate.resolve();
     await closeServices(services);
   });
@@ -164,15 +164,15 @@ describe('JobScheduler', () => {
   it('times a job out at its own deadline', async () => {
     vi.useFakeTimers();
     const gate = deferred();
-    const services = testServices({ mockScript: () => ({ gate: gate.promise }) });
-    const job = submit(services, makeAgent(services), { timeoutSec: 5 });
+    const services = await testServices({ mockScript: () => ({ gate: gate.promise }) });
+    const job = await submit(services, await makeAgent(services), { timeoutSec: 5 });
 
     await vi.advanceTimersByTimeAsync(0);
-    expect(services.jobs.getOrThrow(job.id).state).toBe('running');
+    expect((await services.jobs.getOrThrow(job.id)).state).toBe('running');
 
     await vi.advanceTimersByTimeAsync(5_000);
 
-    expect(services.jobs.getOrThrow(job.id)).toMatchObject({
+    expect(await services.jobs.getOrThrow(job.id)).toMatchObject({
       state: 'timed_out',
       error: { code: 'TIMEOUT' }
     });
@@ -181,59 +181,59 @@ describe('JobScheduler', () => {
   });
 
   it('returns the existing job for a repeated idempotency key', async () => {
-    const services = testServices({ mockScript: () => ({ gate: deferred().promise }) });
-    const agent = makeAgent(services);
+    const services = await testServices({ mockScript: () => ({ gate: deferred().promise }) });
+    const agent = await makeAgent(services);
 
-    const first = submit(services, agent, { idempotencyKey: 'abc' });
-    const second = submit(services, agent, { idempotencyKey: 'abc' });
+    const first = await submit(services, agent, { idempotencyKey: 'abc' });
+    const second = await submit(services, agent, { idempotencyKey: 'abc' });
 
     expect(second.id).toBe(first.id);
-    expect(services.jobs.list().jobs).toHaveLength(1);
+    expect((await services.jobs.list()).jobs).toHaveLength(1);
     await closeServices(services);
   });
 
   it('refuses to submit past the depth limit', async () => {
-    const services = testServices({ config: { maxDepth: 1 } });
-    const agent = makeAgent(services);
+    const services = await testServices({ config: { maxDepth: 1 } });
+    const agent = await makeAgent(services);
 
-    expect(() => submit(services, agent, { depth: 2 })).toThrow(/exceeds the limit/);
+    await expect(submit(services, agent, { depth: 2 })).rejects.toThrow(/exceeds the limit/);
     await closeServices(services);
   });
 
   it('holds a dependent job until its dependency succeeds', async () => {
     const gate = deferred();
-    const services = testServices({ mockScript: () => ({ gate: gate.promise }) });
-    const agent = makeAgent(services);
+    const services = await testServices({ mockScript: () => ({ gate: gate.promise }) });
+    const agent = await makeAgent(services);
 
-    const first = submit(services, agent);
-    const second = submit(services, agent, { dependsOn: [first.id] });
+    const first = await submit(services, agent);
+    const second = await submit(services, agent, { dependsOn: [first.id] });
     await flush();
 
-    expect(services.jobs.getOrThrow(second.id).state).toBe('blocked');
+    expect((await services.jobs.getOrThrow(second.id)).state).toBe('blocked');
 
     gate.resolve();
     await services.scheduler.drain();
 
-    expect(services.jobs.getOrThrow(second.id).state).toBe('succeeded');
+    expect((await services.jobs.getOrThrow(second.id)).state).toBe('succeeded');
     await closeServices(services);
   });
 
   it('re-queues a failed job on retry and succeeds on the next attempt', async () => {
     let shouldFail = true;
-    const services = testServices({
+    const services = await testServices({
       mockScript: () =>
         shouldFail ? { fail: { code: 'RUNNER_FAILED', message: 'flaky' } } : { text: 'recovered' }
     });
-    const job = submit(services, makeAgent(services));
+    const job = await submit(services, await makeAgent(services));
     await services.scheduler.drain();
 
-    expect(services.jobs.getOrThrow(job.id).state).toBe('failed');
+    expect((await services.jobs.getOrThrow(job.id)).state).toBe('failed');
 
     shouldFail = false;
-    services.scheduler.retry(job.id);
+    await services.scheduler.retry(job.id);
     await services.scheduler.drain();
 
-    expect(services.jobs.getOrThrow(job.id)).toMatchObject({
+    expect(await services.jobs.getOrThrow(job.id)).toMatchObject({
       state: 'succeeded',
       attempt: 2,
       resultText: 'recovered'
@@ -244,8 +244,8 @@ describe('JobScheduler', () => {
 
 describe('JobScheduler.wait', () => {
   it('resolves as soon as the job finishes', async () => {
-    const services = testServices();
-    const job = submit(services, makeAgent(services));
+    const services = await testServices();
+    const job = await submit(services, await makeAgent(services));
 
     const [waited] = await services.scheduler.wait([job.id], 'all', 5_000);
 
@@ -254,8 +254,8 @@ describe('JobScheduler.wait', () => {
   });
 
   it('returns immediately for an already-finished job', async () => {
-    const services = testServices();
-    const job = submit(services, makeAgent(services));
+    const services = await testServices();
+    const job = await submit(services, await makeAgent(services));
     await services.scheduler.drain();
 
     const [waited] = await services.scheduler.wait([job.id], 'all', 5_000);
@@ -266,14 +266,14 @@ describe('JobScheduler.wait', () => {
 
   it('resolves on the first finisher in "any" mode', async () => {
     const slow = deferred();
-    const services = testServices({
+    const services = await testServices({
       config: { maxConcurrency: 2 },
       mockScript: job => (job.instruction === 'slow' ? { gate: slow.promise } : {})
     });
-    const agent = makeAgent(services);
+    const agent = await makeAgent(services);
 
-    const slowJob = submit(services, agent, { instruction: 'slow' });
-    const fastJob = submit(services, agent, { instruction: 'fast' });
+    const slowJob = await submit(services, agent, { instruction: 'slow' });
+    const fastJob = await submit(services, agent, { instruction: 'fast' });
 
     const jobs = await services.scheduler.wait([slowJob.id, fastJob.id], 'any', 5_000);
 
@@ -288,8 +288,8 @@ describe('JobScheduler.wait', () => {
   it('returns the current state when the deadline passes first', async () => {
     vi.useFakeTimers();
     const gate = deferred();
-    const services = testServices({ mockScript: () => ({ gate: gate.promise }) });
-    const job = submit(services, makeAgent(services));
+    const services = await testServices({ mockScript: () => ({ gate: gate.promise }) });
+    const job = await submit(services, await makeAgent(services));
 
     const pending = services.scheduler.wait([job.id], 'all', 1_000);
     await vi.advanceTimersByTimeAsync(1_000);
@@ -324,11 +324,11 @@ describe('per-scope concurrency budgets', () => {
   // read it — only the global ORCH_MAX_CONCURRENCY applied.
   it('honours a per-agent maxConcurrent budget', async () => {
     const { gate, script, peak } = tracker();
-    const services = testServices({ config: { maxConcurrency: 4 }, mockScript: script });
-    const agent = makeAgent(services);
+    const services = await testServices({ config: { maxConcurrency: 4 }, mockScript: script });
+    const agent = await makeAgent(services);
 
-    services.budgets.set({ scope: 'agent', scopeId: agent.id, maxConcurrent: 1 });
-    for (let i = 0; i < 4; i += 1) submit(services, agent);
+    await services.budgets.set({ scope: 'agent', scopeId: agent.id, maxConcurrent: 1 });
+    for (let i = 0; i < 4; i += 1) await submit(services, agent);
 
     await flush();
     await flush();
@@ -341,11 +341,11 @@ describe('per-scope concurrency budgets', () => {
 
   it('honours a global maxConcurrent budget below the configured limit', async () => {
     const { gate, script, peak } = tracker();
-    const services = testServices({ config: { maxConcurrency: 4 }, mockScript: script });
-    const agent = makeAgent(services);
+    const services = await testServices({ config: { maxConcurrency: 4 }, mockScript: script });
+    const agent = await makeAgent(services);
 
-    services.budgets.set({ scope: 'global', maxConcurrent: 2 });
-    for (let i = 0; i < 4; i += 1) submit(services, agent);
+    await services.budgets.set({ scope: 'global', maxConcurrent: 2 });
+    for (let i = 0; i < 4; i += 1) await submit(services, agent);
 
     await flush();
     await flush();
@@ -358,20 +358,20 @@ describe('per-scope concurrency budgets', () => {
 
   it('does not let one capped agent starve another agent queued behind it', async () => {
     const { gate, script } = tracker();
-    const services = testServices({ config: { maxConcurrency: 4 }, mockScript: script });
-    const capped = makeAgent(services, 'capped');
-    const other = makeAgent(services, 'other');
+    const services = await testServices({ config: { maxConcurrency: 4 }, mockScript: script });
+    const capped = await makeAgent(services, 'capped');
+    const other = await makeAgent(services, 'other');
 
-    services.budgets.set({ scope: 'agent', scopeId: capped.id, maxConcurrent: 1 });
-    for (let i = 0; i < 3; i += 1) submit(services, capped);
-    const free = submit(services, other);
+    await services.budgets.set({ scope: 'agent', scopeId: capped.id, maxConcurrent: 1 });
+    for (let i = 0; i < 3; i += 1) await submit(services, capped);
+    const free = await submit(services, other);
 
     await flush();
     await flush();
 
     // The capped agent's backlog sits ahead of `free` in the queue; skipping
     // past it is the whole point.
-    expect(services.jobs.getOrThrow(free.id).state).toBe('running');
+    expect((await services.jobs.getOrThrow(free.id)).state).toBe('running');
 
     gate.resolve();
     await services.scheduler.drain();
@@ -379,16 +379,18 @@ describe('per-scope concurrency budgets', () => {
   });
 
   it("frees an agent's slot again once its job finishes", async () => {
-    const services = testServices({ mockScript: () => ({}) });
-    const agent = makeAgent(services);
+    const services = await testServices({ mockScript: () => ({}) });
+    const agent = await makeAgent(services);
 
-    services.budgets.set({ scope: 'agent', scopeId: agent.id, maxConcurrent: 1 });
-    const jobs = [submit(services, agent), submit(services, agent), submit(services, agent)];
+    await services.budgets.set({ scope: 'agent', scopeId: agent.id, maxConcurrent: 1 });
+    const jobs = [await submit(services, agent), await submit(services, agent), await submit(services, agent)];
 
     await services.scheduler.drain();
 
     // A leaked counter would strand the queue instead of draining it.
-    expect(jobs.map(j => services.jobs.getOrThrow(j.id).state)).toEqual([
+    expect(
+      await Promise.all(jobs.map(async j => (await services.jobs.getOrThrow(j.id)).state))
+    ).toEqual([
       'succeeded',
       'succeeded',
       'succeeded'
@@ -402,23 +404,23 @@ describe('a job whose dependency failed', () => {
   // dependency can release it, but it used to say nothing at all — the caller
   // saw a job that never started and never explained itself.
   it('reports itself as blocked, once, naming the dependency', async () => {
-    const services = testServices({
+    const services = await testServices({
       mockScript: job =>
         job.instruction === 'boom' ? { fail: { code: 'RUNNER_FAILED', message: 'no' } } : {}
     });
-    const agent = makeAgent(services);
+    const agent = await makeAgent(services);
 
-    const dep = submit(services, agent, { instruction: 'boom' });
-    const child = submit(services, agent, { dependsOn: [dep.id] });
+    const dep = await submit(services, agent, { instruction: 'boom' });
+    const child = await submit(services, agent, { dependsOn: [dep.id] });
 
     await services.scheduler.drain();
     // Extra pumps: the warning must not repeat on every state change.
-    submit(services, agent);
+    await submit(services, agent);
     await services.scheduler.drain();
 
-    const blocked = services.events.query({ jobId: child.id }).filter(e => e.type === 'job.blocked');
+    const blocked = (await services.events.query({ jobId: child.id })).filter(e => e.type === 'job.blocked');
 
-    expect(services.jobs.getOrThrow(child.id).state).toBe('blocked');
+    expect((await services.jobs.getOrThrow(child.id)).state).toBe('blocked');
     expect(blocked).toHaveLength(1);
     expect(blocked[0]?.payload).toMatchObject({ code: 'DEPENDENCY_FAILED' });
     expect(JSON.stringify(blocked[0]?.payload)).toContain(dep.id);
@@ -427,7 +429,7 @@ describe('a job whose dependency failed', () => {
 
   it('runs after the dependency is retried and succeeds', async () => {
     let failNext = true;
-    const services = testServices({
+    const services = await testServices({
       mockScript: job => {
         if (job.instruction !== 'flaky') return {};
         if (!failNext) return {};
@@ -435,17 +437,17 @@ describe('a job whose dependency failed', () => {
         return { fail: { code: 'RUNNER_FAILED' as const, message: 'transient' } };
       }
     });
-    const agent = makeAgent(services);
+    const agent = await makeAgent(services);
 
-    const dep = submit(services, agent, { instruction: 'flaky' });
-    const child = submit(services, agent, { dependsOn: [dep.id] });
+    const dep = await submit(services, agent, { instruction: 'flaky' });
+    const child = await submit(services, agent, { dependsOn: [dep.id] });
     await services.scheduler.drain();
 
-    services.scheduler.retry(dep.id);
+    await services.scheduler.retry(dep.id);
     await services.scheduler.drain();
 
-    expect(services.jobs.getOrThrow(dep.id).state).toBe('succeeded');
-    expect(services.jobs.getOrThrow(child.id).state).toBe('succeeded');
+    expect((await services.jobs.getOrThrow(dep.id)).state).toBe('succeeded');
+    expect((await services.jobs.getOrThrow(child.id)).state).toBe('succeeded');
     await closeServices(services);
   });
 });
@@ -456,10 +458,10 @@ describe('runner readiness', () => {
   // unauthenticated call to a vendor and surfaced the network's answer
   // instead of "OPENAI_API_KEY is not set".
   it('fails a job with the runner own reason instead of calling out unconfigured', async () => {
-    const services = testServices({ config: { defaultRunner: 'openai-compatible' } });
-    const agent = services.agents.create({ name: 'w', instructions: 'x', runner: 'openai-compatible' });
+    const services = await testServices({ config: { defaultRunner: 'openai-compatible' } });
+    const agent = await services.agents.create({ name: 'w', instructions: 'x', runner: 'openai-compatible' });
 
-    const job = services.scheduler.submit({
+    const job = await services.scheduler.submit({
       backend: 'local',
       agentId: agent.id,
       agentSnapshot: toSnapshot(agent),
@@ -468,7 +470,7 @@ describe('runner readiness', () => {
 
     await services.scheduler.drain();
 
-    const done = services.jobs.getOrThrow(job.id);
+    const done = await services.jobs.getOrThrow(job.id);
     expect(done.state).toBe('failed');
     expect(done.error?.message).toContain('OPENAI_API_KEY');
     expect(done.error?.hint).toContain('runner_list');
@@ -476,12 +478,12 @@ describe('runner readiness', () => {
   });
 
   it('still runs a job whose runner is ready', async () => {
-    const services = testServices();
-    const job = submit(services, makeAgent(services));
+    const services = await testServices();
+    const job = await submit(services, await makeAgent(services));
 
     await services.scheduler.drain();
 
-    expect(services.jobs.getOrThrow(job.id).state).toBe('succeeded');
+    expect((await services.jobs.getOrThrow(job.id)).state).toBe('succeeded');
     await closeServices(services);
   });
 });

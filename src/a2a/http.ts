@@ -127,7 +127,13 @@ export async function startA2AServer({
     if (req.method === 'GET' && path === AGENT_CARD_PATH) {
       // Rebuilt per request: a skill withdrawn a moment ago must stop being
       // advertised a moment later, not at the next restart.
-      sendJson(res, 200, a2a().card());
+      void a2a()
+        .card()
+        .then(card => sendJson(res, 200, card))
+        .catch(error => {
+          logger.error({ err: error }, 'failed to build the Agent Card');
+          sendJson(res, 500, { error: 'internal' });
+        });
       return;
     }
 

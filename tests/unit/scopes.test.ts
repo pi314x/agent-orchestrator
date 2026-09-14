@@ -46,7 +46,7 @@ const unauthenticated = {};
 
 describe('admin scope', () => {
   it('refuses toolserver_register and budget_set without the scope', async () => {
-    const services = testServices();
+    const services = await testServices();
     const deps = depsFor(services);
 
     const registered = await handlerFor(
@@ -71,7 +71,7 @@ describe('admin scope', () => {
   // credential-name reference — were not. A non-admin could read out that
   // connection detail even though nothing they can do lets them act on it.
   it('refuses toolserver_list and toolserver_tools without the scope', async () => {
-    const services = testServices();
+    const services = await testServices();
     const deps = depsFor(services);
 
     await handlerFor(
@@ -97,7 +97,7 @@ describe('admin scope', () => {
   // caller who could not add a server could still hand an agent every tool on
   // one that was already registered.
   it('refuses agent_create with toolGrants without the scope', async () => {
-    const services = testServices();
+    const services = await testServices();
     const created = await handlerFor(
       agentCreateTool,
       depsFor(services),
@@ -106,13 +106,13 @@ describe('admin scope', () => {
 
     expect(created).toMatchObject({ isError: true });
     expect(JSON.stringify(created)).toContain('orch:admin');
-    expect(services.agents.list({}).agents.find(a => a.name === 'sneaky')).toBeUndefined();
+    expect((await services.agents.list({})).agents.find(a => a.name === 'sneaky')).toBeUndefined();
     await closeServices(services);
   });
 
   it('refuses agent_update that adds toolGrants without the scope', async () => {
-    const services = testServices();
-    const agent = services.agents.create({ name: 'plain', instructions: 'x' });
+    const services = await testServices();
+    const agent = await services.agents.create({ name: 'plain', instructions: 'x' });
 
     const updated = await handlerFor(
       agentUpdateTool,
@@ -121,14 +121,14 @@ describe('admin scope', () => {
     )({ agentId: agent.id, patch: { toolGrants: ['files'] } } as never, nonAdmin);
 
     expect(updated).toMatchObject({ isError: true });
-    expect(services.agents.getOrThrow(agent.id).toolGrants ?? []).toEqual([]);
+    expect((await services.agents.getOrThrow(agent.id)).toolGrants ?? []).toEqual([]);
     await closeServices(services);
   });
 
   // The guard is on the grant, not the tool: making an agent stays an
   // everyday, unprivileged operation.
   it('allows agent_create without toolGrants', async () => {
-    const services = testServices();
+    const services = await testServices();
     const created = await handlerFor(
       agentCreateTool,
       depsFor(services),
@@ -140,7 +140,7 @@ describe('admin scope', () => {
   });
 
   it('allows agent_create with toolGrants for an admin', async () => {
-    const services = testServices();
+    const services = await testServices();
     const created = await handlerFor(
       agentCreateTool,
       depsFor(services),
@@ -152,7 +152,7 @@ describe('admin scope', () => {
   });
 
   it('allows everything when OAuth is not configured', async () => {
-    const services = testServices();
+    const services = await testServices();
     const created = await handlerFor(
       agentCreateTool,
       depsFor(services),

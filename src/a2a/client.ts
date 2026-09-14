@@ -49,11 +49,12 @@ export class A2AGateway {
   }
 
   private async clientFor(job: JobRecord): Promise<Client> {
-    const { card, cardId } = this.cardFor(job);
+    const { card, cardId } = await this.cardFor(job);
 
     // Trust is checked on every call, not just at registration, so a card that
     // was re-fetched and lost its signature stops working immediately.
-    assertTrusted(this.deps.cards.getOrThrow(cardId).trustLevel, this.deps.trustMode, job.agentSnapshot.name);
+    const cached = await this.deps.cards.getOrThrow(cardId);
+    assertTrusted(cached.trustLevel, this.deps.trustMode, job.agentSnapshot.name);
 
     if (this.deps.clientProvider !== undefined) {
       return this.deps.clientProvider(card, job.agentSnapshot.credentialsRef);
@@ -62,7 +63,7 @@ export class A2AGateway {
     return new ClientFactory().createFromAgentCard(card);
   }
 
-  private cardFor(job: JobRecord): { card: AgentCard; cardId: string } {
+  private async cardFor(job: JobRecord): Promise<{ card: AgentCard; cardId: string }> {
     const cardId = job.agentSnapshot.cardId;
     if (cardId === undefined) {
       throw new OrchestratorError(
@@ -71,7 +72,8 @@ export class A2AGateway {
         'Re-register it with agent_register.'
       );
     }
-    return { card: this.deps.cards.getOrThrow(cardId).card, cardId };
+    const cached = await this.deps.cards.getOrThrow(cardId);
+    return { card: cached.card, cardId };
   }
 
   async *run({ job }: { job: JobRecord }, signal: AbortSignal): AsyncIterable<RunnerEvent> {
@@ -112,7 +114,7 @@ export class A2AGateway {
       throw asRemoteError(error, job.agentSnapshot.name);
     }
 
-    this.recordRemoteIds(job.id, task);
+    await this.recordRemoteIds(job.id, task);
     yield { type: 'progress', message: `Remote task ${task.id} created.` };
 
     // A job's own timeoutSec bounds this when it has one; this deadline is what
@@ -214,8 +216,8 @@ export class A2AGateway {
     return url.toString();
   }
 
-  private recordRemoteIds(jobId: string, task: Task): void {
-    this.deps.db
+  private async recordRemoteIds(jobId: string, task: Task): Promise<void> {
+    await this.deps.db
       .prepare('UPDATE jobs SET remote_task_id = ?, remote_context_id = ? WHERE id = ?')
       .run(task.id, task.contextId, jobId);
   }

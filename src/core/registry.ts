@@ -158,12 +158,12 @@ export interface TargetDefaults {
  * match registered remote A2A cards in M4, which is why callers never need to
  * know which backend they landed on.
  */
-export function resolveAgentTarget(
+export async function resolveAgentTarget(
   registry: AgentRegistry,
   target: AgentTarget,
   defaults: TargetDefaults,
   principal: TargetPrincipal
-): AgentRecord {
+): Promise<AgentRecord> {
   // Every path a caller can use to name an EXISTING agent must check
   // visibility. Only createFromTemplate (below) makes a fresh one, which
   // needs no check because nothing pre-existing is being reached into.
@@ -177,7 +177,7 @@ export function resolveAgentTarget(
   }
 
   if (target.skillQuery !== undefined) {
-    const found = registry.findBySkill(target.skillQuery, principal);
+    const found = await registry.findBySkill(target.skillQuery, principal);
     if (found === undefined) {
       throw new OrchestratorError(
         'NOT_FOUND',
@@ -197,17 +197,18 @@ export function resolveAgentTarget(
 
 export class AgentRegistry {
   /** Resolves custom templates first, then built-ins. Set by createServices. */
-  resolveTemplate: (name: string) => AgentTemplateLike | undefined = getTemplate;
+  resolveTemplate: (name: string) => Promise<AgentTemplateLike | undefined> | AgentTemplateLike | undefined =
+    getTemplate;
 
   constructor(
     private readonly db: Db,
     private readonly grants: GrantStore = new GrantStore(db)
   ) {}
 
-  create(input: CreateAgentInput): AgentRecord {
+  async create(input: CreateAgentInput): Promise<AgentRecord> {
     const ephemeral = input.ephemeral ?? false;
 
-    if (!ephemeral && this.findByName(input.name, input.ownerId ?? '') !== undefined) {
+    if (!ephemeral && (await this.findByName(input.name, input.ownerId ?? '')) !== undefined) {
       throw new OrchestratorError(
         'CONFLICT',
         `An agent named "${input.name}" already exists.`,
@@ -218,7 +219,7 @@ export class AgentRegistry {
     const now = new Date().toISOString();
     const id = newId('agent');
 
-    this.db
+    await this.db
       .prepare(
         `INSERT INTO agents (
            id, owner_id, kind, name, role, instructions, runner, model, tool_grants, limits, status, ephemeral, created_at, updated_at
@@ -255,28 +256,25 @@ export class AgentRegistry {
    * the source of truth, so edits land and removals disappear. Agents created
    * through the API are never touched.
    */
-  syncFromFiles(definitions: readonly AgentFileDefinition[]): {
+  async syncFromFiles(definitions: readonly AgentFileDefinition[]): Promise<{
     created: string[];
     updated: string[];
     removed: string[];
-  } {
+  }> {
     const now = new Date().toISOString();
     const created: string[] = [];
     const updated: string[] = [];
 
-    const existing = new Map(
-      (
-        this.db
-          .prepare(`SELECT * FROM agents WHERE source = 'file' AND status = 'active'`)
-          .all() as AgentRow[]
-      ).map(row => [row.name, toRecord(row)])
-    );
+    const rows = (await this.db
+      .prepare(`SELECT * FROM agents WHERE source = 'file' AND status = 'active'`)
+      .all()) as AgentRow[];
+    const existing = new Map(rows.map(row => [row.name, toRecord(row)]));
 
     for (const definition of definitions) {
       const current = existing.get(definition.name);
 
       if (current === undefined) {
-        this.create({
+        await this.create({
           name: definition.name,
           instructions: definition.instructions,
           toolGrants: definition.toolGrants,
@@ -290,7 +288,7 @@ export class AgentRegistry {
         continue;
       }
 
-      this.db
+      await this.db
         .prepare(
           `UPDATE agents SET role = ?, instructions = ?, runner = ?, model = ?, tool_grants = ?,
              source_path = ?, updated_at = ?
@@ -314,7 +312,7 @@ export class AgentRegistry {
     // Whatever is left had its file deleted. Soft-delete so job history keeps resolving.
     const removed = [...existing.keys()];
     for (const record of existing.values()) {
-      this.db
+      await this.db
         .prepare(`UPDATE agents SET status = 'deleted', updated_at = ? WHERE id = ?`)
         .run(now, record.id);
     }
@@ -323,7 +321,7 @@ export class AgentRegistry {
   }
 
   /** Patch a local agent. Running jobs keep their submit-time snapshot. */
-  update(
+  async update(
     agentId: string,
     patch: {
       role?: string;
@@ -332,8 +330,8 @@ export class AgentRegistry {
       model?: string;
       toolGrants?: readonly string[];
     }
-  ): AgentRecord {
-    const agent = this.getOrThrow(agentId);
+  ): Promise<AgentRecord> {
+    const agent = await this.getOrThrow(agentId);
 
     if (agent.kind === 'remote') {
       throw new OrchestratorError(
@@ -343,7 +341,7 @@ export class AgentRegistry {
       );
     }
 
-    this.db
+    await this.db
       .prepare(
         `UPDATE agents SET role = ?, instructions = ?, runner = ?, model = ?, tool_grants = ?, updated_at = ?
          WHERE id = ?`
@@ -362,17 +360,19 @@ export class AgentRegistry {
   }
 
   /** Soft-delete, so job history keeps resolving the agent it ran on. */
-  delete(agentId: string): boolean {
-    return (
-      this.db
-        .prepare(`UPDATE agents SET status = 'deleted', updated_at = ? WHERE id = ? AND status = 'active'`)
-        .run(new Date().toISOString(), agentId).changes > 0
-    );
+  async delete(agentId: string): Promise<boolean> {
+    const result = await this.db
+      .prepare(`UPDATE agents SET status = 'deleted', updated_at = ? WHERE id = ? AND status = 'active'`)
+      .run(new Date().toISOString(), agentId);
+    return result.changes > 0;
   }
 
   /** Materialize a built-in template as a throwaway agent for a one-shot job. */
-  createFromTemplate(templateName: string, overrides: Partial<CreateAgentInput> = {}): AgentRecord {
-    const template = this.resolveTemplate(templateName);
+  async createFromTemplate(
+    templateName: string,
+    overrides: Partial<CreateAgentInput> = {}
+  ): Promise<AgentRecord> {
+    const template = await this.resolveTemplate(templateName);
     if (template === undefined) {
       throw new OrchestratorError(
         'NOT_FOUND',
@@ -391,14 +391,15 @@ export class AgentRegistry {
     });
   }
 
-  get(id: string): AgentRecord | undefined {
-    const row = this.db.prepare(`SELECT * FROM agents WHERE id = ? AND status = 'active'`).get(id) as
-      AgentRow | undefined;
+  async get(id: string): Promise<AgentRecord | undefined> {
+    const row = (await this.db
+      .prepare(`SELECT * FROM agents WHERE id = ? AND status = 'active'`)
+      .get(id)) as AgentRow | undefined;
     return row === undefined ? undefined : toRecord(row);
   }
 
-  getOrThrow(id: string): AgentRecord {
-    const agent = this.get(id);
+  async getOrThrow(id: string): Promise<AgentRecord> {
+    const agent = await this.get(id);
     if (agent === undefined) {
       throw new OrchestratorError(
         'NOT_FOUND',
@@ -419,13 +420,13 @@ export class AgentRegistry {
    * by default, a grant row must exist. Not-found rather than denied for
    * anyone else — existence is information.
    */
-  getVisible(agentId: string, principal: { ownerId: string; isAdmin: boolean }): AgentRecord {
-    const agent = this.getOrThrow(agentId);
+  async getVisible(agentId: string, principal: { ownerId: string; isAdmin: boolean }): Promise<AgentRecord> {
+    const agent = await this.getOrThrow(agentId);
     if (
       principal.isAdmin ||
       agent.ownerId === principal.ownerId ||
       agent.ownerId === SINGLE_OWNER ||
-      this.grants.hasGrant('agent', agentId, agent.ownerId, principal.ownerId)
+      (await this.grants.hasGrant('agent', agentId, agent.ownerId, principal.ownerId))
     ) {
       return agent;
     }
@@ -434,21 +435,30 @@ export class AgentRegistry {
   }
 
   /** Share a private agent with one named user. Caller must already manage it (owner or admin). */
-  share(agentId: string, principal: { ownerId: string; isAdmin: boolean }, granteeId: string): void {
-    const agent = this.getManaged(agentId, principal);
-    this.grants.grant('agent', agentId, agent.ownerId, granteeId);
+  async share(
+    agentId: string,
+    principal: { ownerId: string; isAdmin: boolean },
+    granteeId: string
+  ): Promise<void> {
+    const agent = await this.getManaged(agentId, principal);
+    await this.grants.grant('agent', agentId, agent.ownerId, granteeId);
   }
 
   /** Revoke a peer share. Caller must already manage the agent (owner or admin). */
-  unshare(agentId: string, principal: { ownerId: string; isAdmin: boolean }, granteeId: string): boolean {
-    const agent = this.getManaged(agentId, principal);
+  async unshare(
+    agentId: string,
+    principal: { ownerId: string; isAdmin: boolean },
+    granteeId: string
+  ): Promise<boolean> {
+    const agent = await this.getManaged(agentId, principal);
     return this.grants.revoke('agent', agentId, agent.ownerId, granteeId);
   }
 
   /** Who a private agent has been shared with. Caller must already manage it (owner or admin). */
-  listShares(agentId: string, principal: { ownerId: string; isAdmin: boolean }): string[] {
-    const agent = this.getManaged(agentId, principal);
-    return this.grants.listGrantees('agent', agentId, agent.ownerId).map(g => g.granteeId);
+  async listShares(agentId: string, principal: { ownerId: string; isAdmin: boolean }): Promise<string[]> {
+    const agent = await this.getManaged(agentId, principal);
+    const grants = await this.grants.listGrantees('agent', agentId, agent.ownerId);
+    return grants.map(g => g.granteeId);
   }
 
   /**
@@ -460,8 +470,8 @@ export class AgentRegistry {
    * agent_get/agent_list/delegate, so pretending otherwise would just be a
    * worse answer, not a safer one.
    */
-  getManaged(agentId: string, principal: { ownerId: string; isAdmin: boolean }): AgentRecord {
-    const agent = this.getOrThrow(agentId);
+  async getManaged(agentId: string, principal: { ownerId: string; isAdmin: boolean }): Promise<AgentRecord> {
+    const agent = await this.getOrThrow(agentId);
     if (principal.isAdmin || agent.ownerId === principal.ownerId) return agent;
 
     if (agent.ownerId === SINGLE_OWNER) {
@@ -471,7 +481,7 @@ export class AgentRegistry {
         'Ask an operator with the orch:admin scope, or create your own agent instead.'
       );
     }
-    if (this.grants.hasGrant('agent', agentId, agent.ownerId, principal.ownerId)) {
+    if (await this.grants.hasGrant('agent', agentId, agent.ownerId, principal.ownerId)) {
       throw new OrchestratorError(
         'POLICY_DENIED',
         `Agent ${agentId} was shared with you for use, not for modifying or deleting; only its owner or an admin may do that.`,
@@ -482,16 +492,22 @@ export class AgentRegistry {
   }
 
   /** Matches idx_agents_name: unique per owner, not across the deployment. */
-  findByName(name: string, ownerId: string): AgentRecord | undefined {
-    const row = this.db
+  async findByName(name: string, ownerId: string): Promise<AgentRecord | undefined> {
+    const row = (await this.db
       .prepare(`SELECT * FROM agents WHERE name = ? AND owner_id = ? AND status = 'active' AND ephemeral = 0`)
-      .get(name, ownerId) as AgentRow | undefined;
+      .get(name, ownerId)) as AgentRow | undefined;
     return row === undefined ? undefined : toRecord(row);
   }
 
-  /** Match a free-text skill query against local agent role, name and instructions. */
-  /** Owner-filtered the same way `list` is: own agents plus shared ones (admin-wide or peer-granted), or everything for an admin. */
-  findBySkill(query: string, principal: { ownerId: string; isAdmin: boolean }): AgentRecord | undefined {
+  /**
+   * Match a free-text skill query against local agent role, name and
+   * instructions. Owner-filtered the same way `list` is: own agents plus
+   * shared ones (admin-wide or peer-granted), or everything for an admin.
+   */
+  async findBySkill(
+    query: string,
+    principal: { ownerId: string; isAdmin: boolean }
+  ): Promise<AgentRecord | undefined> {
     const needle = `%${query.toLowerCase()}%`;
     const where = [
       `status = 'active'`,
@@ -501,19 +517,19 @@ export class AgentRegistry {
     const params: unknown[] = [needle, needle, needle];
 
     if (!principal.isAdmin) {
-      const granted = this.grants.listGrantedResourceIds('agent', principal.ownerId);
+      const granted = await this.grants.listGrantedResourceIds('agent', principal.ownerId);
       const placeholders = granted.map(() => '?').join(', ');
       where.push(`(owner_id = ? OR owner_id = ?${granted.length > 0 ? ` OR id IN (${placeholders})` : ''})`);
       params.push(principal.ownerId, SINGLE_OWNER, ...granted);
     }
 
-    const row = this.db
+    const row = (await this.db
       .prepare(`SELECT * FROM agents WHERE ${where.join(' AND ')} ORDER BY id ASC LIMIT 1`)
-      .get(...params) as AgentRow | undefined;
+      .get(...params)) as AgentRow | undefined;
     return row === undefined ? undefined : toRecord(row);
   }
 
-  list(filter: AgentListFilter = {}): { agents: AgentRecord[]; nextCursor?: string } {
+  async list(filter: AgentListFilter = {}): Promise<{ agents: AgentRecord[]; nextCursor?: string }> {
     const where = [`status = 'active'`];
     const params: unknown[] = [];
 
@@ -523,7 +539,7 @@ export class AgentRegistry {
     // admin passes no ownerId at all (see ownerFilter) and gets everything,
     // so this branch never runs for them.
     if (filter.ownerId !== undefined) {
-      const granted = this.grants.listGrantedResourceIds('agent', filter.ownerId);
+      const granted = await this.grants.listGrantedResourceIds('agent', filter.ownerId);
       const placeholders = granted.map(() => '?').join(', ');
       where.push(`(owner_id = ? OR owner_id = ?${granted.length > 0 ? ` OR id IN (${placeholders})` : ''})`);
       params.push(filter.ownerId, SINGLE_OWNER, ...granted);
@@ -539,9 +555,9 @@ export class AgentRegistry {
 
     const limit = Math.min(Math.max(filter.limit ?? 20, 1), 100);
 
-    const rows = this.db
+    const rows = (await this.db
       .prepare(`SELECT * FROM agents WHERE ${where.join(' AND ')} ORDER BY id DESC LIMIT ?`)
-      .all(...params, limit + 1) as AgentRow[];
+      .all(...params, limit + 1)) as AgentRow[];
 
     const page = rows.slice(0, limit).map(toRecord);
     const last = page.at(-1);

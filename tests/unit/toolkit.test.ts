@@ -12,21 +12,21 @@ import { closeServices, testServices } from '../helpers.js';
 // layer further in, inside the tool a job's own agent gets to call.
 describe('agent toolkit ownership', () => {
   it("artifact_get cannot read another owner's artifact", async () => {
-    const services = testServices();
+    const services = await testServices();
 
-    const bobsArtifact = services.artifacts.put({
+    const bobsArtifact = await services.artifacts.put({
       ownerId: 'user_bob',
       name: 'secret.txt',
       content: 'bob only'
     });
 
-    const agent = services.agents.create({
+    const agent = await services.agents.create({
       ownerId: 'user_alice',
       name: 'a',
       instructions: 'x',
       runner: 'mock'
     });
-    const job = services.jobs.create({
+    const job = await services.jobs.create({
       ownerId: 'user_alice',
       backend: 'local',
       agentId: agent.id,
@@ -40,7 +40,7 @@ describe('agent toolkit ownership', () => {
         artifacts: services.artifacts,
         bus: services.bus,
         events: services.events,
-        spawnJob: () => ({ jobId: 'job_stub' })
+        spawnJob: () => Promise.resolve({ jobId: 'job_stub' })
       },
       job
     );
@@ -53,15 +53,15 @@ describe('agent toolkit ownership', () => {
   });
 
   it('artifact_get still reads back the calling job own artifact', async () => {
-    const services = testServices();
+    const services = await testServices();
 
-    const agent = services.agents.create({
+    const agent = await services.agents.create({
       ownerId: 'user_alice',
       name: 'a',
       instructions: 'x',
       runner: 'mock'
     });
-    const job = services.jobs.create({
+    const job = await services.jobs.create({
       ownerId: 'user_alice',
       backend: 'local',
       agentId: agent.id,
@@ -75,7 +75,7 @@ describe('agent toolkit ownership', () => {
         artifacts: services.artifacts,
         bus: services.bus,
         events: services.events,
-        spawnJob: () => ({ jobId: 'job_stub' })
+        spawnJob: () => Promise.resolve({ jobId: 'job_stub' })
       },
       job
     );
@@ -98,22 +98,22 @@ describe('agent toolkit ownership', () => {
   // could reach, bypassing the exact protection message_send/message_list
   // (the MCP tools) were just given.
   it("message_send cannot target an agent invisible to the job's owner", async () => {
-    const services = testServices();
+    const services = await testServices();
 
-    const bobsAgent = services.agents.create({
+    const bobsAgent = await services.agents.create({
       ownerId: 'user_bob',
       name: 'bobs-agent',
       instructions: 'x',
       runner: 'mock'
     });
 
-    const agent = services.agents.create({
+    const agent = await services.agents.create({
       ownerId: 'user_alice',
       name: 'a',
       instructions: 'x',
       runner: 'mock'
     });
-    const job = services.jobs.create({
+    const job = await services.jobs.create({
       ownerId: 'user_alice',
       backend: 'local',
       agentId: agent.id,
@@ -127,10 +127,10 @@ describe('agent toolkit ownership', () => {
         artifacts: services.artifacts,
         bus: services.bus,
         events: services.events,
-        spawnJob: () => ({ jobId: 'job_stub' }),
-        isAgentVisible: agentId => {
+        spawnJob: () => Promise.resolve({ jobId: 'job_stub' }),
+        isAgentVisible: async agentId => {
           try {
-            services.agents.getVisible(agentId, { ownerId: job.ownerId, isAdmin: false });
+            await services.agents.getVisible(agentId, { ownerId: job.ownerId, isAdmin: false });
             return true;
           } catch {
             return false;
@@ -144,26 +144,26 @@ describe('agent toolkit ownership', () => {
 
     expect(result.isError).toBe(true);
     expect(result.content).toContain(`No agent with id ${bobsAgent.id}`);
-    expect(services.bus.list({ agentId: bobsAgent.id })).toEqual([]);
+    expect(await services.bus.list({ agentId: bobsAgent.id })).toEqual([]);
     await closeServices(services);
   });
 
   it('message_send still reaches an agent visible to the same owner', async () => {
-    const services = testServices();
+    const services = await testServices();
 
-    const teammate = services.agents.create({
+    const teammate = await services.agents.create({
       ownerId: 'user_alice',
       name: 'teammate',
       instructions: 'x',
       runner: 'mock'
     });
-    const agent = services.agents.create({
+    const agent = await services.agents.create({
       ownerId: 'user_alice',
       name: 'a',
       instructions: 'x',
       runner: 'mock'
     });
-    const job = services.jobs.create({
+    const job = await services.jobs.create({
       ownerId: 'user_alice',
       backend: 'local',
       agentId: agent.id,
@@ -177,10 +177,10 @@ describe('agent toolkit ownership', () => {
         artifacts: services.artifacts,
         bus: services.bus,
         events: services.events,
-        spawnJob: () => ({ jobId: 'job_stub' }),
-        isAgentVisible: agentId => {
+        spawnJob: () => Promise.resolve({ jobId: 'job_stub' }),
+        isAgentVisible: async agentId => {
           try {
-            services.agents.getVisible(agentId, { ownerId: job.ownerId, isAdmin: false });
+            await services.agents.getVisible(agentId, { ownerId: job.ownerId, isAdmin: false });
             return true;
           } catch {
             return false;
@@ -193,7 +193,7 @@ describe('agent toolkit ownership', () => {
     const result = await toolkit.invoke('message_send', { toAgentId: teammate.id, body: 'hello' });
 
     expect(result.isError).toBeUndefined();
-    expect(services.bus.list({ agentId: teammate.id })).toHaveLength(1);
+    expect(await services.bus.list({ agentId: teammate.id })).toHaveLength(1);
     await closeServices(services);
   });
 });

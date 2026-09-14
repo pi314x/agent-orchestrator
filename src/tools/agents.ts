@@ -49,14 +49,14 @@ export const agentCreateTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      (args, ctx) => {
+      async (args, ctx) => {
         const deniedGrants = denyUngrantedToolGrants(ctx, 'agent_create', args.toolGrants);
         if (deniedGrants !== undefined) return deniedGrants;
         const deniedShared = denySharedWithoutAdmin(ctx, 'agent_create', args.shared);
         if (deniedShared !== undefined) return deniedShared;
 
         try {
-          const agent = deps.services.agents.create({
+          const agent = await deps.services.agents.create({
             ownerId: args.shared === true ? SINGLE_OWNER : deps.principal.ownerId,
             name: args.name,
             instructions: args.instructions,
@@ -67,7 +67,7 @@ export const agentCreateTool: ToolRegistration = {
             ...(args.limits !== undefined && { limits: args.limits })
           });
 
-          deps.services.events.append({
+          await deps.services.events.append({
             type: 'agent.created',
             agentId: agent.id,
             payload: { name: agent.name }
@@ -107,9 +107,9 @@ export const agentListTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
-          const result = deps.services.agents.list({
+          const result = await deps.services.agents.list({
             ...ownerFilter(deps.principal),
             ...(args.kind !== undefined && { kind: args.kind }),
             ...(args.includeEphemeral !== undefined && { includeEphemeral: args.includeEphemeral }),
@@ -155,10 +155,10 @@ export const agentGetTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
-          const agent = deps.services.agents.getVisible(args.agentId, deps.principal);
-          const { jobs } = deps.services.jobs.list({ agentId: agent.id, limit: 10 });
+          const agent = await deps.services.agents.getVisible(args.agentId, deps.principal);
+          const { jobs } = await deps.services.jobs.list({ agentId: agent.id, limit: 10 });
 
           return toolOk(
             {
@@ -204,8 +204,8 @@ export const agentTemplateListTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      () => {
-        const all = deps.services.templates.all();
+      async () => {
+        const all = await deps.services.templates.all();
         return toolOk(
           {
             templates: all.map(t => ({
@@ -251,13 +251,13 @@ export const agentUpdateTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      (args, ctx) => {
+      async (args, ctx) => {
         const denied = denyUngrantedToolGrants(ctx, 'agent_update', args.patch.toolGrants);
         if (denied !== undefined) return denied;
 
         try {
-          deps.services.agents.getManaged(args.agentId, deps.principal);
-          const agent = deps.services.agents.update(args.agentId, args.patch);
+          await deps.services.agents.getManaged(args.agentId, deps.principal);
+          const agent = await deps.services.agents.update(args.agentId, args.patch);
           return toolOk(
             { agent: toAgentView(agent) },
             `Updated ${agent.name}; future jobs use the new config.`
@@ -293,12 +293,11 @@ export const agentDeleteTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      (args, ctx) => {
+      async (args, ctx) => {
         try {
-          const agent = deps.services.agents.getManaged(args.agentId, deps.principal);
-          const live = deps.services.jobs
-            .list({ agentId: agent.id, limit: 100 })
-            .jobs.filter(job => job.finishedAt === undefined);
+          const agent = await deps.services.agents.getManaged(args.agentId, deps.principal);
+          const { jobs: agentJobs } = await deps.services.jobs.list({ agentId: agent.id, limit: 100 });
+          const live = agentJobs.filter(job => job.finishedAt === undefined);
 
           // Destructive and irreversible for live work, so confirm through MRTR.
           const confirmed = acceptedContent<{ confirm: boolean }>(ctx.mcpReq.inputResponses, 'confirm');
@@ -329,11 +328,11 @@ export const agentDeleteTool: ToolRegistration = {
 
           const cancelledJobs: string[] = [];
           for (const job of live) {
-            deps.services.scheduler.cancel(job.id, 'Agent deleted.');
+            await deps.services.scheduler.cancel(job.id, 'Agent deleted.');
             cancelledJobs.push(job.id);
           }
 
-          const deleted = deps.services.agents.delete(agent.id);
+          const deleted = await deps.services.agents.delete(agent.id);
           return toolOk(
             { deleted, cancelledJobs },
             `Deleted ${agent.name}${cancelledJobs.length > 0 ? `, cancelling ${cancelledJobs.length} job(s)` : ''}.`
@@ -369,9 +368,9 @@ export const agentShareTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
-          deps.services.agents.share(args.agentId, deps.principal, args.granteeId);
+          await deps.services.agents.share(args.agentId, deps.principal, args.granteeId);
           return toolOk({ shared: true }, `Shared ${args.agentId} with ${args.granteeId}.`);
         } catch (error) {
           return toolError(error);
@@ -403,9 +402,9 @@ export const agentUnshareTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
-          const revoked = deps.services.agents.unshare(args.agentId, deps.principal, args.granteeId);
+          const revoked = await deps.services.agents.unshare(args.agentId, deps.principal, args.granteeId);
           return toolOk({ revoked }, revoked ? 'Revoked.' : 'Nothing to revoke.');
         } catch (error) {
           return toolError(error);
@@ -434,9 +433,9 @@ export const agentShareListTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
-          const granteeIds = deps.services.agents.listShares(args.agentId, deps.principal);
+          const granteeIds = await deps.services.agents.listShares(args.agentId, deps.principal);
           return toolOk({ granteeIds }, `Shared with ${granteeIds.length} user(s).`);
         } catch (error) {
           return toolError(error);
@@ -480,7 +479,7 @@ export const agentTemplateSaveTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      (args, ctx) => {
+      async (args, ctx) => {
         // Templates are shared by every caller unconditionally (README's
         // Ownership section documents this) — saving one shadows a built-in
         // for everyone, so it needs the same admin gate as toolserver_register.
@@ -488,7 +487,7 @@ export const agentTemplateSaveTool: ToolRegistration = {
         if (denied !== undefined) return denied;
 
         try {
-          const saved = deps.services.templates.save(args.name, {
+          const saved = await deps.services.templates.save(args.name, {
             role: args.role,
             description: args.description,
             instructions: args.instructions,

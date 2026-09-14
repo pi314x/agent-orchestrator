@@ -46,7 +46,7 @@ export interface ToolkitDeps {
   bus: MessageBus;
   events: EventLog;
   /** Supplied by the scheduler, which owns depth and budget enforcement. */
-  spawnJob: (job: JobRecord, input: SpawnJobInput) => { jobId: string };
+  spawnJob: (job: JobRecord, input: SpawnJobInput) => Promise<{ jobId: string }>;
   /** Downstream MCP tools granted to this agent, already allow/deny filtered. */
   downstream?: readonly DownstreamGrant[];
   callDownstream?: (server: string, tool: string, args: Record<string, unknown>) => Promise<string>;
@@ -57,7 +57,7 @@ export interface ToolkitDeps {
    * agentId system-wide, not just one its own owner can reach, the same way
    * an MCP caller could before message_send/message_list were scoped.
    */
-  isAgentVisible?: (agentId: string) => boolean;
+  isAgentVisible?: (agentId: string) => Promise<boolean>;
 }
 
 export interface AgentToolkit {
@@ -195,11 +195,11 @@ export function createAgentToolkit(deps: ToolkitDeps, job: JobRecord): AgentTool
     return value;
   };
 
-  const handlers: Record<string, (input: Record<string, unknown>) => ToolkitResult> = {
-    report_progress: input => {
+  const handlers: Record<string, (input: Record<string, unknown>) => Promise<ToolkitResult>> = {
+    report_progress: async input => {
       const message = asString(input['message'], 'message');
       progressMessages.push(message);
-      deps.events.append({ type: 'job.progress', jobId: job.id, payload: { message } });
+      await deps.events.append({ type: 'job.progress', jobId: job.id, payload: { message } });
       return { content: 'noted' };
     },
 
@@ -208,11 +208,11 @@ export function createAgentToolkit(deps: ToolkitDeps, job: JobRecord): AgentTool
         ...(typeof input['text'] === 'string' && { text: input['text'] }),
         ...(input['structured'] !== undefined && { structured: input['structured'] })
       };
-      return { content: 'done' };
+      return Promise.resolve({ content: 'done' });
     },
 
-    memory_write: input => {
-      const entry = deps.memory.write({
+    memory_write: async input => {
+      const entry = await deps.memory.write({
         ownerId: job.ownerId,
         namespace: namespaceFor(input['namespace'] as string | undefined),
         key: asString(input['key'], 'key'),
@@ -222,8 +222,8 @@ export function createAgentToolkit(deps: ToolkitDeps, job: JobRecord): AgentTool
       return { content: `stored ${entry.namespace}/${entry.key}` };
     },
 
-    memory_read: input => {
-      const entry = deps.memory.read(
+    memory_read: async input => {
+      const entry = await deps.memory.read(
         job.ownerId,
         namespaceFor(input['namespace'] as string | undefined),
         asString(input['key'], 'key')
@@ -231,8 +231,8 @@ export function createAgentToolkit(deps: ToolkitDeps, job: JobRecord): AgentTool
       return { content: entry === undefined ? 'not found' : JSON.stringify(entry.value) };
     },
 
-    memory_search: input => {
-      const entries = deps.memory.search({
+    memory_search: async input => {
+      const entries = await deps.memory.search({
         ownerId: job.ownerId,
         query: asString(input['query'], 'query'),
         ...(typeof input['namespace'] === 'string' && { namespace: input['namespace'] })
@@ -240,8 +240,8 @@ export function createAgentToolkit(deps: ToolkitDeps, job: JobRecord): AgentTool
       return { content: JSON.stringify(entries.map(e => ({ key: e.key, value: e.value }))) };
     },
 
-    artifact_put: input => {
-      const record = deps.artifacts.put({
+    artifact_put: async input => {
+      const record = await deps.artifacts.put({
         ownerId: job.ownerId,
         name: asString(input['name'], 'name'),
         content: asString(input['content'], 'content'),
@@ -251,25 +251,27 @@ export function createAgentToolkit(deps: ToolkitDeps, job: JobRecord): AgentTool
       return { content: `stored artifact ${record.artifactId} (${record.sizeBytes} bytes)` };
     },
 
-    artifact_get: input => {
+    artifact_get: async input => {
       // Not the raw read(): a running agent constructs this call itself, so
       // an artifactId the model picks up from anywhere (shared context, a
       // message, its own guess) must not reach another owner's content just
       // because this agent happens to be the one asking.
-      const { content } = deps.artifacts.readVisible(asString(input['artifactId'], 'artifactId'), {
+      const { content } = await deps.artifacts.readVisible(asString(input['artifactId'], 'artifactId'), {
         ownerId: job.ownerId,
         isAdmin: false
       });
       return { content };
     },
 
-    message_send: input => {
+    message_send: async input => {
       const toAgentId = typeof input['toAgentId'] === 'string' ? input['toAgentId'] : undefined;
-      if (toAgentId !== undefined && deps.isAgentVisible?.(toAgentId) === false) {
-        throw new OrchestratorError('NOT_FOUND', `No agent with id ${toAgentId}.`);
+      if (toAgentId !== undefined && deps.isAgentVisible !== undefined) {
+        if (!(await deps.isAgentVisible(toAgentId))) {
+          throw new OrchestratorError('NOT_FOUND', `No agent with id ${toAgentId}.`);
+        }
       }
 
-      const message = deps.bus.send({
+      const message = await deps.bus.send({
         body: asString(input['body'], 'body'),
         fromAgentId: job.agentId,
         ...(toAgentId !== undefined && { toAgentId }),
@@ -278,17 +280,17 @@ export function createAgentToolkit(deps: ToolkitDeps, job: JobRecord): AgentTool
       return { content: `sent ${message.messageId}` };
     },
 
-    message_list: input => {
-      const messages = deps.bus.list({
+    message_list: async input => {
+      const messages = await deps.bus.list({
         agentId: job.agentId,
         ...(input['unreadOnly'] === true && { unreadOnly: true })
       });
-      deps.bus.markRead(messages.map(m => m.messageId));
+      await deps.bus.markRead(messages.map(m => m.messageId));
       return { content: JSON.stringify(messages.map(m => ({ from: m.fromAgentId, body: m.body }))) };
     },
 
-    spawn_job: input => {
-      const spawned = deps.spawnJob(job, {
+    spawn_job: async input => {
+      const spawned = await deps.spawnJob(job, {
         instruction: asString(input['instruction'], 'instruction'),
         ...(typeof input['template'] === 'string' && { template: input['template'] })
       });

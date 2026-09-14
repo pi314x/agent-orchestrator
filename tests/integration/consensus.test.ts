@@ -10,7 +10,7 @@ let client: Client;
 let services: Services;
 
 beforeAll(async () => {
-  services = testServices({
+  services = await testServices({
     profile: 'full',
     // Every participant fails except one, unless named "cased-*", which
     // answers with mixed-case text to exercise the verdict-casing regression.

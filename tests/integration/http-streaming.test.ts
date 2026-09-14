@@ -12,7 +12,7 @@ let client: Client;
 let db: Db;
 
 beforeAll(async () => {
-  const services = testServices({ profile: 'standard' });
+  const services = await testServices({ profile: 'standard' });
   db = services.db;
 
   server = await startHttpServer({

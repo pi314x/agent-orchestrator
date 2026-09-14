@@ -42,9 +42,9 @@ export const artifactPutTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
-          const artifact = deps.services.artifacts.put({
+          const artifact = await deps.services.artifacts.put({
             ownerId: deps.principal.ownerId,
             name: args.name,
             content: args.content,
@@ -90,9 +90,9 @@ export const artifactGetTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
-          const { record, content, eof } = deps.services.artifacts.readVisible(
+          const { record, content, eof } = await deps.services.artifacts.readVisible(
             args.artifactId,
             deps.principal,
             args.offset,
@@ -132,9 +132,9 @@ export const artifactListTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
-          const artifacts = deps.services.artifacts.list({
+          const artifacts = await deps.services.artifacts.list({
             ...ownerFilter(deps.principal),
             ...(args.jobId !== undefined && { jobId: args.jobId }),
             ...(args.workflowRunId !== undefined && { workflowRunId: args.workflowRunId }),
@@ -170,9 +170,9 @@ export const artifactDeleteTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
-          const deleted = deps.services.artifacts.deleteVisible(args.artifactId, deps.principal);
+          const deleted = await deps.services.artifacts.deleteVisible(args.artifactId, deps.principal);
           return toolOk({ deleted }, deleted ? `Deleted ${args.artifactId}.` : 'Nothing to delete.');
         } catch (error) {
           return toolError(error);

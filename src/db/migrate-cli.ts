@@ -8,8 +8,8 @@ const logger = createLogger(config);
 const db = openDatabase({ url: config.dbUrl });
 
 try {
-  const result = migrate(db);
+  const result = await migrate(db);
   logger.info({ ...result, dbUrl: config.dbUrl }, 'migrations applied');
 } finally {
-  db.close();
+  await db.close();
 }

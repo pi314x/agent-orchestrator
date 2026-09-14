@@ -72,12 +72,12 @@ function toRecord(row: ArtifactRow): ArtifactRecord {
 export class ArtifactStore {
   constructor(private readonly db: Db) {}
 
-  put(input: PutArtifactInput): ArtifactRecord {
+  async put(input: PutArtifactInput): Promise<ArtifactRecord> {
     const contentHash = createHash('sha256').update(input.content).digest('hex');
     const sizeBytes = Buffer.byteLength(input.content, 'utf8');
     const id = newId('artifact');
 
-    this.db
+    await this.db
       .prepare(
         `INSERT INTO artifacts (id, owner_id, name, mime_type, content_hash, size_bytes, content, job_id, workflow_run_id, tags, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -99,8 +99,8 @@ export class ArtifactStore {
     return this.getOrThrow(id);
   }
 
-  getOrThrow(artifactId: string): ArtifactRecord {
-    const row = this.db.prepare('SELECT * FROM artifacts WHERE id = ?').get(artifactId) as
+  async getOrThrow(artifactId: string): Promise<ArtifactRecord> {
+    const row = (await this.db.prepare('SELECT * FROM artifacts WHERE id = ?').get(artifactId)) as
       ArtifactRow | undefined;
     if (row === undefined) {
       throw new OrchestratorError(
@@ -113,13 +113,13 @@ export class ArtifactStore {
   }
 
   /** Slice the stored content, so a huge artifact never has to come back whole. */
-  read(
+  async read(
     artifactId: string,
     offset = 0,
     length?: number
-  ): { record: ArtifactRecord; content: string; eof: boolean } {
-    const record = this.getOrThrow(artifactId);
-    const row = this.db.prepare('SELECT content FROM artifacts WHERE id = ?').get(artifactId) as {
+  ): Promise<{ record: ArtifactRecord; content: string; eof: boolean }> {
+    const record = await this.getOrThrow(artifactId);
+    const row = (await this.db.prepare('SELECT content FROM artifacts WHERE id = ?').get(artifactId)) as {
       content: string | null;
     };
 
@@ -131,20 +131,20 @@ export class ArtifactStore {
   }
 
   /** Fetch an artifact the caller may see; not-found rather than denied. */
-  readVisible(
+  async readVisible(
     artifactId: string,
     principal: { ownerId: string; isAdmin: boolean },
     offset = 0,
     length?: number
-  ): { record: ArtifactRecord; content: string; eof: boolean } {
-    const record = this.getOrThrow(artifactId);
+  ): Promise<{ record: ArtifactRecord; content: string; eof: boolean }> {
+    const record = await this.getOrThrow(artifactId);
     if (!principal.isAdmin && record.ownerId !== principal.ownerId) {
       throw new OrchestratorError('NOT_FOUND', `No artifact with id ${artifactId}.`);
     }
     return this.read(artifactId, offset, length);
   }
 
-  list(filter: ArtifactListFilter = {}): ArtifactRecord[] {
+  async list(filter: ArtifactListFilter = {}): Promise<ArtifactRecord[]> {
     const where: string[] = [];
     const params: unknown[] = [];
 
@@ -165,9 +165,9 @@ export class ArtifactStore {
     const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
     const limit = Math.min(Math.max(filter.limit ?? 20, 1), 100);
 
-    const rows = this.db
+    const rows = (await this.db
       .prepare(`SELECT * FROM artifacts ${clause} ORDER BY id DESC LIMIT ?`)
-      .all(...params, limit) as ArtifactRow[];
+      .all(...params, limit)) as ArtifactRow[];
 
     const records = rows.map(toRecord);
     if (filter.tags === undefined || filter.tags.length === 0) return records;
@@ -175,13 +175,14 @@ export class ArtifactStore {
   }
 
   /** Unchecked — for internal use only where the caller already has authority. */
-  delete(artifactId: string): boolean {
-    return this.db.prepare('DELETE FROM artifacts WHERE id = ?').run(artifactId).changes > 0;
+  async delete(artifactId: string): Promise<boolean> {
+    const result = await this.db.prepare('DELETE FROM artifacts WHERE id = ?').run(artifactId);
+    return result.changes > 0;
   }
 
   /** Delete an artifact the caller may see; not-found rather than denied for someone else's. */
-  deleteVisible(artifactId: string, principal: { ownerId: string; isAdmin: boolean }): boolean {
-    const record = this.getOrThrow(artifactId);
+  async deleteVisible(artifactId: string, principal: { ownerId: string; isAdmin: boolean }): Promise<boolean> {
+    const record = await this.getOrThrow(artifactId);
     if (!principal.isAdmin && record.ownerId !== principal.ownerId) {
       throw new OrchestratorError('NOT_FOUND', `No artifact with id ${artifactId}.`);
     }

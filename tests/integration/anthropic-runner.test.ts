@@ -20,15 +20,17 @@ afterEach(async () => {
 });
 
 /** A real job row, so the runner sees exactly what the scheduler would hand it. */
-function makeJob(overrides: Partial<JobRecord> = {}): { job: JobRecord; toolkit: AgentToolkit } {
+async function makeJob(
+  overrides: Partial<JobRecord> = {}
+): Promise<{ job: JobRecord; toolkit: AgentToolkit }> {
   const svc = services as Services;
-  const agent = svc.agents.create({
+  const agent = await svc.agents.create({
     name: `a-${Date.now()}`,
     instructions: 'Be useful.',
     runner: 'anthropic'
   });
 
-  const job = svc.jobs.create({
+  const job = await svc.jobs.create({
     backend: 'local',
     agentId: agent.id,
     agentSnapshot: toSnapshot(agent),
@@ -42,7 +44,7 @@ function makeJob(overrides: Partial<JobRecord> = {}): { job: JobRecord; toolkit:
       artifacts: svc.artifacts,
       bus: svc.bus,
       events: svc.events,
-      spawnJob: () => ({ jobId: 'job_stub' })
+      spawnJob: () => Promise.resolve({ jobId: 'job_stub' })
     },
     job
   );
@@ -76,8 +78,8 @@ async function runToCompletion(
 
 describe('anthropic runner against a real wire protocol', () => {
   it('streams a plain answer when the agent has no toolkit', async () => {
-    services = testServices();
-    const { job } = makeJob();
+    services = await testServices();
+    const { job } = await makeJob();
 
     const { text } = await runToCompletion([{ kind: 'text', text: 'the answer' }], { job });
 
@@ -85,8 +87,8 @@ describe('anthropic runner against a real wire protocol', () => {
   });
 
   it('reports usage from the stream', async () => {
-    services = testServices();
-    const { job } = makeJob();
+    services = await testServices();
+    const { job } = await makeJob();
 
     const { events } = await runToCompletion([{ kind: 'text', text: 'hi' }], { job });
     const usage = events.find(e => e.type === 'usage');
@@ -95,8 +97,8 @@ describe('anthropic runner against a real wire protocol', () => {
   });
 
   it('turns a refusal into a RUNNER_FAILED error rather than empty output', async () => {
-    services = testServices();
-    const { job } = makeJob();
+    services = await testServices();
+    const { job } = await makeJob();
 
     await expect(runToCompletion([{ kind: 'refusal', category: 'cyber' }], { job })).rejects.toThrow(
       /declined this request \(cyber\)/
@@ -104,8 +106,8 @@ describe('anthropic runner against a real wire protocol', () => {
   });
 
   it('reports a truncated answer instead of passing it off as complete', async () => {
-    services = testServices();
-    const { job } = makeJob();
+    services = await testServices();
+    const { job } = await makeJob();
 
     await expect(runToCompletion([{ kind: 'truncated', text: 'half an ans' }], { job })).rejects.toThrow(
       /truncat/i
@@ -113,8 +115,8 @@ describe('anthropic runner against a real wire protocol', () => {
   });
 
   it('drives the toolkit loop and finishes on the finish tool', async () => {
-    services = testServices();
-    const { job, toolkit } = makeJob();
+    services = await testServices();
+    const { job, toolkit } = await makeJob();
 
     const { text } = await runToCompletion(
       [
@@ -125,12 +127,12 @@ describe('anthropic runner against a real wire protocol', () => {
     );
 
     expect(text).toBe('all done');
-    expect((services as Services).memory.read('', `job:${job.id}`, 'k')?.value).toBe('v');
+    expect((await (services as Services).memory.read('', `job:${job.id}`, 'k'))?.value).toBe('v');
   });
 
   it('sends tool results back in one user message per turn', async () => {
-    services = testServices();
-    const { job, toolkit } = makeJob();
+    services = await testServices();
+    const { job, toolkit } = await makeJob();
 
     await runToCompletion(
       [
@@ -159,8 +161,8 @@ describe('anthropic runner against a real wire protocol', () => {
   });
 
   it('does not duplicate prose that the model streamed before calling finish', async () => {
-    services = testServices();
-    const { job, toolkit } = makeJob();
+    services = await testServices();
+    const { job, toolkit } = await makeJob();
 
     const { text } = await runToCompletion(
       [
@@ -179,8 +181,8 @@ describe('anthropic runner against a real wire protocol', () => {
   });
 
   it('asks the model for the requested output schema', async () => {
-    services = testServices();
-    const { job, toolkit } = makeJob({
+    services = await testServices();
+    const { job, toolkit } = await makeJob({
       outputSchema: {
         type: 'object',
         properties: { verdict: { type: 'string' } },
@@ -209,8 +211,8 @@ describe('anthropic runner against a real wire protocol', () => {
   // not hand a workflow's next step an empty resultText to treat as the
   // real answer.
   it('fails instead of silently succeeding when maxSteps runs out before finish is called', async () => {
-    services = testServices();
-    const { job, toolkit } = makeJob();
+    services = await testServices();
+    const { job, toolkit } = await makeJob();
 
     const turns: FakeTurn[] = Array.from({ length: 10 }, (_, i) => ({
       kind: 'tools' as const,

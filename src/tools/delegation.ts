@@ -54,7 +54,7 @@ export const delegateTool: ToolRegistration = {
           };
 
           // A bare instruction is the common case; fall back to a generalist.
-          const agent = resolveAgentTarget(
+          const agent = await resolveAgentTarget(
             deps.services.agents,
             Object.keys(target).length > 0 ? target : { template: 'writer' },
             {
@@ -64,7 +64,7 @@ export const delegateTool: ToolRegistration = {
             deps.principal
           );
 
-          const submitted = deps.services.scheduler.submit({
+          const submitted = await deps.services.scheduler.submit({
             ownerId: deps.principal.ownerId,
             backend: 'local',
             agentId: agent.id,
@@ -161,17 +161,17 @@ export const fanOutTool: ToolRegistration = {
             ...(args.model !== undefined && { model: args.model })
           };
 
-          const submitItem = (item: unknown) => {
+          const submitItem = async (item: unknown) => {
             // One agent per item: ephemeral template agents must not be shared,
             // since each carries its own job history.
-            const agent = resolveAgentTarget(
+            const agent = await resolveAgentTarget(
               deps.services.agents,
               Object.keys(target).length > 0 ? target : { template: 'writer' },
               defaults,
               deps.principal
             );
 
-            return deps.services.scheduler.submit({
+            return await deps.services.scheduler.submit({
               ownerId: deps.principal.ownerId,
               backend: 'local',
               agentId: agent.id,
@@ -191,10 +191,10 @@ export const fanOutTool: ToolRegistration = {
           // With a per-call concurrency cap, submit in waves and let each wave
           // finish first; otherwise the global scheduler cap governs.
           const waveSize = args.concurrency ?? args.items.length;
-          const submitted: ReturnType<typeof submitItem>[] = [];
+          const submitted: Awaited<ReturnType<typeof submitItem>>[] = [];
 
           for (let offset = 0; offset < args.items.length; offset += waveSize) {
-            const wave = args.items.slice(offset, offset + waveSize).map(submitItem);
+            const wave = await Promise.all(args.items.slice(offset, offset + waveSize).map(submitItem));
             submitted.push(...wave);
 
             const moreToCome = offset + waveSize < args.items.length;
@@ -241,14 +241,14 @@ export const fanOutTool: ToolRegistration = {
             );
           }
 
-          const reduceAgent = resolveAgentTarget(
+          const reduceAgent = await resolveAgentTarget(
             deps.services.agents,
             { template: args.reduce.template ?? 'summarizer' },
             defaults,
             deps.principal
           );
 
-          const reduceJob = deps.services.scheduler.submit({
+          const reduceJob = await deps.services.scheduler.submit({
             ownerId: deps.principal.ownerId,
             backend: 'local',
             agentId: reduceAgent.id,
@@ -313,7 +313,7 @@ export const planCreateTool: ToolRegistration = {
       },
       async args => {
         try {
-          const agent = resolveAgentTarget(
+          const agent = await resolveAgentTarget(
             deps.services.agents,
             { template: 'planner' },
             { runner: deps.services.config.defaultRunner },
@@ -331,7 +331,7 @@ export const planCreateTool: ToolRegistration = {
             .filter(line => line !== '')
             .join('\n');
 
-          const submitted = deps.services.scheduler.submit({
+          const submitted = await deps.services.scheduler.submit({
             ownerId: deps.principal.ownerId,
             backend: 'local',
             agentId: agent.id,
@@ -443,20 +443,27 @@ export const consensusTool: ToolRegistration = {
         try {
           const defaults = { runner: deps.services.config.defaultRunner };
 
-          const submitted = args.participants.map(participant => {
-            const agent = resolveAgentTarget(deps.services.agents, participant, defaults, deps.principal);
-            return {
-              agentName: agent.name,
-              job: deps.services.scheduler.submit({
-                ownerId: deps.principal.ownerId,
-                backend: agent.kind === 'remote' ? 'a2a_remote' : 'local',
-                agentId: agent.id,
-                agentSnapshot: toSnapshot(agent),
-                instruction: args.question,
-                timeoutSec: args.timeoutSec
-              })
-            };
-          });
+          const submitted = await Promise.all(
+            args.participants.map(async participant => {
+              const agent = await resolveAgentTarget(
+                deps.services.agents,
+                participant,
+                defaults,
+                deps.principal
+              );
+              return {
+                agentName: agent.name,
+                job: await deps.services.scheduler.submit({
+                  ownerId: deps.principal.ownerId,
+                  backend: agent.kind === 'remote' ? 'a2a_remote' : 'local',
+                  agentId: agent.id,
+                  agentSnapshot: toSnapshot(agent),
+                  instruction: args.question,
+                  timeoutSec: args.timeoutSec
+                })
+              };
+            })
+          );
 
           const finished = await deps.services.scheduler.wait(
             submitted.map(s => s.job.id),
@@ -515,14 +522,14 @@ export const consensusTool: ToolRegistration = {
             );
           }
 
-          const judge = resolveAgentTarget(
+          const judge = await resolveAgentTarget(
             deps.services.agents,
             { template: args.judgeTemplate ?? 'critic' },
             defaults,
             deps.principal
           );
 
-          const judgeJob = deps.services.scheduler.submit({
+          const judgeJob = await deps.services.scheduler.submit({
             ownerId: deps.principal.ownerId,
             backend: 'local',
             agentId: judge.id,

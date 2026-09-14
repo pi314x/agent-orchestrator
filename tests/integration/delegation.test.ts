@@ -17,7 +17,7 @@ const call = async (name: string, args: Record<string, unknown> = {}): Promise<S
 };
 
 beforeAll(async () => {
-  services = testServices({ profile: 'standard' });
+  services = await testServices({ profile: 'standard' });
 
   server = await startHttpServer({
     factory: createServerFactory({ services, startedAt: Date.now() }),

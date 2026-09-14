@@ -91,16 +91,15 @@ export class CardStore {
     return this.cache(cardUrl, card);
   }
 
-  cache(url: string, card: AgentCard): Promise<CachedCard>;
   async cache(url: string, card: AgentCard): Promise<CachedCard> {
     const { trustLevel } = await verifyCard(card);
     const now = new Date().toISOString();
 
-    const existing = this.db.prepare('SELECT id FROM agent_cards WHERE url = ?').get(url) as
+    const existing = (await this.db.prepare('SELECT id FROM agent_cards WHERE url = ?').get(url)) as
       { id: string } | undefined;
     const id = existing?.id ?? newId('card');
 
-    this.db
+    await this.db
       .prepare(
         `INSERT INTO agent_cards (id, url, card, trust_level, verified_at, fetched_at)
          VALUES (?, ?, ?, ?, ?, ?)
@@ -115,26 +114,28 @@ export class CardStore {
     return this.getByUrlOrThrow(url);
   }
 
-  get(cardId: string): CachedCard | undefined {
-    const row = this.db.prepare('SELECT * FROM agent_cards WHERE id = ?').get(cardId) as CardRow | undefined;
+  async get(cardId: string): Promise<CachedCard | undefined> {
+    const row = (await this.db.prepare('SELECT * FROM agent_cards WHERE id = ?').get(cardId)) as
+      CardRow | undefined;
     return row === undefined ? undefined : toCached(row);
   }
 
-  getByUrl(url: string): CachedCard | undefined {
-    const row = this.db.prepare('SELECT * FROM agent_cards WHERE url = ?').get(url) as CardRow | undefined;
+  async getByUrl(url: string): Promise<CachedCard | undefined> {
+    const row = (await this.db.prepare('SELECT * FROM agent_cards WHERE url = ?').get(url)) as
+      CardRow | undefined;
     return row === undefined ? undefined : toCached(row);
   }
 
-  getByUrlOrThrow(url: string): CachedCard {
-    const found = this.getByUrl(url);
+  async getByUrlOrThrow(url: string): Promise<CachedCard> {
+    const found = await this.getByUrl(url);
     if (found === undefined) {
       throw new OrchestratorError('NOT_FOUND', `No cached Agent Card for ${url}.`);
     }
     return found;
   }
 
-  getOrThrow(cardId: string): CachedCard {
-    const found = this.get(cardId);
+  async getOrThrow(cardId: string): Promise<CachedCard> {
+    const found = await this.get(cardId);
     if (found === undefined) {
       throw new OrchestratorError(
         'NOT_FOUND',
@@ -145,18 +146,20 @@ export class CardStore {
     return found;
   }
 
-  list(): CachedCard[] {
-    const rows = this.db.prepare('SELECT * FROM agent_cards ORDER BY fetched_at DESC').all() as CardRow[];
+  async list(): Promise<CachedCard[]> {
+    const rows = (await this.db
+      .prepare('SELECT * FROM agent_cards ORDER BY fetched_at DESC')
+      .all()) as CardRow[];
     return rows.map(toCached);
   }
 
   /** Re-verify a cached card without re-fetching it. */
   async reverify(cardId: string): Promise<CachedCard> {
-    const cached = this.getOrThrow(cardId);
+    const cached = await this.getOrThrow(cardId);
     const { trustLevel } = await verifyCard(cached.card);
     const now = new Date().toISOString();
 
-    this.db
+    await this.db
       .prepare('UPDATE agent_cards SET trust_level = ?, verified_at = ? WHERE id = ?')
       .run(trustLevel, trustLevel === 'verified' ? now : null, cardId);
 

@@ -11,8 +11,8 @@ import type { Services } from '../../src/services.js';
 let services: Services;
 let workspace: string;
 
-beforeEach(() => {
-  services = testServices();
+beforeEach(async () => {
+  services = await testServices();
   workspace = mkdtempSync(join(tmpdir(), 'cli-runner-'));
 });
 
@@ -21,14 +21,14 @@ afterEach(async () => {
   rmSync(workspace, { recursive: true, force: true });
 });
 
-function makeJob(overrides: Partial<JobRecord> = {}): JobRecord {
-  const agent = services.agents.create({
+async function makeJob(overrides: Partial<JobRecord> = {}): Promise<JobRecord> {
+  const agent = await services.agents.create({
     name: `cli-${Date.now()}`,
     instructions: 'Be useful.',
     runner: 'cli'
   });
 
-  return services.jobs.create({
+  return await services.jobs.create({
     backend: 'local',
     agentId: agent.id,
     agentSnapshot: toSnapshot(agent),
@@ -53,12 +53,12 @@ describe('cli runner', () => {
   it('returns the child process stdout', async () => {
     const runner = shRunner('cat > /dev/null; echo done', [workspace]);
 
-    await expect(collect(runner, makeJob())).resolves.toBe('done\n');
+    await expect(collect(runner, await makeJob())).resolves.toBe('done\n');
   });
 
   it('refuses a workspace outside the allow-list', async () => {
     const runner = shRunner('echo hi', [workspace]);
-    const job = makeJob({ context: { workspace: '/etc' } });
+    const job = await makeJob({ context: { workspace: '/etc' } });
 
     await expect(collect(runner, job)).rejects.toThrow(/outside the configured directories/);
   });
@@ -66,7 +66,7 @@ describe('cli runner', () => {
   it('reports a non-zero exit with the child stderr', async () => {
     const runner = shRunner('echo "it broke" >&2; exit 3', [workspace]);
 
-    await expect(collect(runner, makeJob())).rejects.toThrow(/exited with code 3.*it broke/s);
+    await expect(collect(runner, await makeJob())).rejects.toThrow(/exited with code 3.*it broke/s);
   });
 
   // Regression: `close` waits for every holder of the stdio pipes, so a child
@@ -75,14 +75,14 @@ describe('cli runner', () => {
   it('returns as soon as the child exits, even if a grandchild holds the pipes', async () => {
     const runner = shRunner('sleep 30 & echo done', [workspace]);
 
-    await expect(collect(runner, makeJob())).resolves.toContain('done');
+    await expect(collect(runner, await makeJob())).resolves.toContain('done');
   }, 10_000);
 
   // Regression: a killed child closes with a null exit code, which was read as
   // 0 — so a timed-out job succeeded, carrying whatever partial stdout existed.
   it('fails a timed-out run instead of returning its partial output', async () => {
     const runner = shRunner('echo partial; sleep 30', [workspace]);
-    const job = makeJob({ timeoutSec: 1 });
+    const job = await makeJob({ timeoutSec: 1 });
 
     await expect(collect(runner, job)).rejects.toThrow(/did not finish within 1s/);
   });
@@ -93,7 +93,7 @@ describe('cli runner', () => {
     setTimeout(() => controller.abort(), 100);
 
     const run = async (): Promise<void> => {
-      for await (const event of runner.run({ job: makeJob() }, controller.signal)) {
+      for await (const event of runner.run({ job: await makeJob() }, controller.signal)) {
         void event;
       }
     };
@@ -106,10 +106,10 @@ describe('cli runner', () => {
   it('survives a child that exits before reading its instruction', async () => {
     const runner = shRunner('exit 0', [workspace]);
 
-    await expect(collect(runner, makeJob({ instruction: 'x'.repeat(100_000) }))).resolves.toBe('');
+    await expect(collect(runner, await makeJob({ instruction: 'x'.repeat(100_000) }))).resolves.toBe('');
   });
 
-  it('is unavailable until both a command and a workspace are configured', () => {
+  it('is unavailable until both a command and a workspace are configured', async () => {
     expect(new CliRunner({ workspaceDirs: [workspace] }).health()).toMatchObject({
       available: false,
       reason: /ORCH_CLI_COMMAND/

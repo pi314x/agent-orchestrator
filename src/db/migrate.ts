@@ -9,9 +9,9 @@ const CREATE_MIGRATIONS_TABLE = `
   );
 `;
 
-export function getSchemaVersion(db: Db): number {
-  db.exec(CREATE_MIGRATIONS_TABLE);
-  const row = db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get() as {
+export async function getSchemaVersion(db: Db): Promise<number> {
+  await db.exec(CREATE_MIGRATIONS_TABLE);
+  const row = (await db.prepare('SELECT MAX(version) AS version FROM schema_migrations').get()) as {
     version: number | null;
   };
   return row.version ?? 0;
@@ -23,20 +23,21 @@ export interface MigrationResult {
   applied: readonly number[];
 }
 
-export function migrate(db: Db, migrations: readonly Migration[] = MIGRATIONS): MigrationResult {
-  const from = getSchemaVersion(db);
+export async function migrate(
+  db: Db,
+  migrations: readonly Migration[] = MIGRATIONS
+): Promise<MigrationResult> {
+  const from = await getSchemaVersion(db);
   const pending = migrations.filter(m => m.version > from).sort((a, b) => a.version - b.version);
 
-  const insert = db.prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)');
-
-  const run = db.transaction((batch: readonly Migration[]) => {
-    for (const migration of batch) {
-      db.exec(migration.up);
-      insert.run(migration.version, migration.name, new Date().toISOString());
+  await db.transaction(async tx => {
+    for (const migration of pending) {
+      await tx.exec(migration.up);
+      await tx
+        .prepare('INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)')
+        .run(migration.version, migration.name, new Date().toISOString());
     }
   });
 
-  run(pending);
-
-  return { from, to: getSchemaVersion(db), applied: pending.map(m => m.version) };
+  return { from, to: await getSchemaVersion(db), applied: pending.map(m => m.version) };
 }

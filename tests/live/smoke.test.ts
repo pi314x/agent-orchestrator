@@ -61,7 +61,7 @@ const delegate = async (args: Record<string, unknown>): Promise<Structured> => {
 beforeAll(async () => {
   if (!live) return;
 
-  services = testServices({
+  services = await testServices({
     profile: 'standard',
     config: { defaultRunner: 'anthropic', anthropicApiKey: apiKey, anthropicModel: model }
   });
@@ -127,7 +127,7 @@ describe.skipIf(!live)(`live smoke against ${model}`, () => {
 
       // The side effect is the proof: a real model drove a real tool round-trip
       // through our loop, and the result came back through `finish`.
-      const stored = services.memory.read('', `job:${String(job['jobId'])}`, 'live-smoke');
+      const stored = await services.memory.read('', `job:${String(job['jobId'])}`, 'live-smoke');
       expect(stored?.value).toBe('ok');
       expect(String(job['resultText'])).toMatch(/stored/i);
     },

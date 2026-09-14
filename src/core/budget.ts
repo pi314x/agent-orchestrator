@@ -62,11 +62,11 @@ function toRecord(row: BudgetRow): BudgetRecord {
 export class BudgetTracker {
   constructor(private readonly db: Db) {}
 
-  set(input: SetBudgetInput): BudgetRecord {
+  async set(input: SetBudgetInput): Promise<BudgetRecord> {
     const scopeId = input.scopeId ?? '';
     const now = new Date().toISOString();
 
-    this.db
+    await this.db
       .prepare(
         `INSERT INTO budgets (id, scope, scope_id, max_cost_usd, max_tokens, max_calls, max_concurrent, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -89,20 +89,20 @@ export class BudgetTracker {
         now
       );
 
-    const found = this.get(input.scope, input.scopeId);
+    const found = await this.get(input.scope, input.scopeId);
     if (found === undefined) throw new Error('budget write did not persist');
     return found;
   }
 
-  get(scope: BudgetScope, scopeId?: string): BudgetRecord | undefined {
-    const row = this.db
+  async get(scope: BudgetScope, scopeId?: string): Promise<BudgetRecord | undefined> {
+    const row = (await this.db
       .prepare('SELECT * FROM budgets WHERE scope = ? AND scope_id = ?')
-      .get(scope, scopeId ?? '') as BudgetRow | undefined;
+      .get(scope, scopeId ?? '')) as BudgetRow | undefined;
     return row === undefined ? undefined : toRecord(row);
   }
 
-  list(): BudgetRecord[] {
-    const rows = this.db.prepare('SELECT * FROM budgets ORDER BY scope, scope_id').all() as BudgetRow[];
+  async list(): Promise<BudgetRecord[]> {
+    const rows = (await this.db.prepare('SELECT * FROM budgets ORDER BY scope, scope_id').all()) as BudgetRow[];
     return rows.map(toRecord);
   }
 
@@ -115,11 +115,11 @@ export class BudgetTracker {
    * table reached a few hundred thousand rows. An aggregate reads the same
    * data without materialising it.
    */
-  spend(scope: BudgetScope, scopeId?: string): BudgetSpend {
+  async spend(scope: BudgetScope, scopeId?: string): Promise<BudgetSpend> {
     const where = scope === 'global' ? '1 = 1' : scope === 'agent' ? 'agent_id = ?' : 'id = ?';
     const params = scope === 'global' ? [] : [scopeId ?? ''];
 
-    const row = this.db
+    const row = (await this.db
       .prepare(
         `SELECT
            COUNT(*) AS calls,
@@ -131,7 +131,7 @@ export class BudgetTracker {
          FROM jobs
          WHERE ${where} AND usage IS NOT NULL`
       )
-      .get(...params) as { calls: number; cost_usd: number; tokens: number };
+      .get(...params)) as { calls: number; cost_usd: number; tokens: number };
 
     return { costUsd: row.cost_usd, tokens: row.tokens, calls: row.calls };
   }
@@ -140,11 +140,11 @@ export class BudgetTracker {
    * Throws when starting one more unit of work would break a cap. Called from
    * the scheduler before every run, for each scope that applies.
    */
-  assertWithinBudget(scope: BudgetScope, scopeId?: string): void {
-    const budget = this.get(scope, scopeId);
+  async assertWithinBudget(scope: BudgetScope, scopeId?: string): Promise<void> {
+    const budget = await this.get(scope, scopeId);
     if (budget === undefined) return;
 
-    const spent = this.spend(scope, scopeId);
+    const spent = await this.spend(scope, scopeId);
     const label = scope === 'global' ? 'global' : `${scope} ${scopeId ?? ''}`;
 
     if (budget.maxCostUsd !== undefined && spent.costUsd >= budget.maxCostUsd) {
@@ -171,7 +171,7 @@ export class BudgetTracker {
   }
 
   /** Per-scope concurrency cap, checked against jobs currently running. */
-  maxConcurrentFor(scope: BudgetScope, scopeId?: string): number | undefined {
-    return this.get(scope, scopeId)?.maxConcurrent;
+  async maxConcurrentFor(scope: BudgetScope, scopeId?: string): Promise<number | undefined> {
+    return (await this.get(scope, scopeId))?.maxConcurrent;
   }
 }

@@ -16,7 +16,7 @@ const inputs: StatusInputs = {
 };
 
 describe('buildStatus', () => {
-  it('reports ok when the schema is current', () => {
+  it('reports ok when the schema is current', async () => {
     const status = buildStatus(inputs);
 
     expect(status.status).toBe('ok');
@@ -24,14 +24,14 @@ describe('buildStatus', () => {
     expect(status.uptimeSec).toBe(12);
   });
 
-  it('reports degraded when migrations are pending', () => {
+  it('reports degraded when migrations are pending', async () => {
     const status = buildStatus({ ...inputs, schemaVersion: 0, latestSchemaVersion: 1 });
 
     expect(status.status).toBe('degraded');
     expect(status.database.migrationsPending).toBe(true);
   });
 
-  it('surfaces the A2A gateway switch', () => {
+  it('surfaces the A2A gateway switch', async () => {
     expect(buildStatus({ ...inputs, a2aEnabled: true }).a2a.enabled).toBe(true);
   });
 });

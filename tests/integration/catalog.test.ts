@@ -10,7 +10,7 @@ async function withClient<T>(
   a2aEnabled: boolean,
   fn: (client: Client) => Promise<T>
 ): Promise<T> {
-  const services = testServices({ profile, config: { a2aEnabled } });
+  const services = await testServices({ profile, config: { a2aEnabled } });
   const server = await createServerFactory({ services, startedAt: Date.now() })({ era: 'modern' });
 
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

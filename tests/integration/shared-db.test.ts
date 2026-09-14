@@ -16,7 +16,7 @@ let dbUrl: string;
 const opened: Db[] = [];
 const started: Services[] = [];
 
-beforeEach(() => {
+beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'orch-shared-'));
   dbUrl = join(dir, 'orchestrator.sqlite');
 });
@@ -29,7 +29,7 @@ afterEach(async () => {
   started.length = 0;
   for (const db of opened) {
     try {
-      db.close();
+      await db.close();
     } catch {
       // already closed with its services
     }
@@ -39,9 +39,9 @@ afterEach(async () => {
 });
 
 /** A separate connection to the same file — what a second process really is. */
-function connect(): Db {
+async function connect(): Promise<Db> {
   const db = openDatabase({ url: dbUrl });
-  migrate(db);
+  await migrate(db);
   opened.push(db);
   return db;
 }
@@ -51,8 +51,8 @@ function connect(): Db {
  * same database. This is what "two instances behind round-robin" means for
  * job state.
  */
-function instance(ran: string[]): Services {
-  const db = connect();
+async function instance(ran: string[]): Promise<Services> {
+  const db = await connect();
   const services = createServices({
     config: testConfig({ dbUrl, maxConcurrency: 4, defaultRunner: 'mock' }),
     db,
@@ -78,15 +78,15 @@ describe('two instances sharing one database', () => {
   // Two processes could both pass the check, and the loser's failed transition
   // was caught by the scheduler as a job failure — marking the *winner's*
   // running job failed.
-  it('only one connection can claim a queued job', () => {
-    const dbA = connect();
-    const dbB = connect();
+  it('only one connection can claim a queued job', async () => {
+    const dbA = await connect();
+    const dbB = await connect();
 
-    const agent = new AgentRegistry(dbA).create({ name: 'w', instructions: 'x', runner: 'mock' });
+    const agent = await new AgentRegistry(dbA).create({ name: 'w', instructions: 'x', runner: 'mock' });
     const jobsA = new JobStore(dbA);
     const jobsB = new JobStore(dbB);
 
-    const job = jobsA.create({
+    const job = await jobsA.create({
       backend: 'local',
       agentId: agent.id,
       agentSnapshot: toSnapshot(agent),
@@ -94,11 +94,11 @@ describe('two instances sharing one database', () => {
     });
 
     // Both see it as available — the interleaving two real processes hit.
-    expect(jobsA.nextQueued(4).map(j => j.id)).toEqual([job.id]);
-    expect(jobsB.nextQueued(4).map(j => j.id)).toEqual([job.id]);
+    expect((await jobsA.nextQueued(4)).map(j => j.id)).toEqual([job.id]);
+    expect((await jobsB.nextQueued(4)).map(j => j.id)).toEqual([job.id]);
 
-    const wonByA = jobsA.claim(job.id);
-    const wonByB = jobsB.claim(job.id);
+    const wonByA = await jobsA.claim(job.id);
+    const wonByB = await jobsB.claim(job.id);
 
     expect(wonByA?.state).toBe('running');
     expect(wonByB).toBeUndefined();
@@ -107,52 +107,52 @@ describe('two instances sharing one database', () => {
   // The sharp edge of the old design: the loser's rejected transition was
   // caught by the scheduler as an ordinary job failure, so instance B marked
   // the job instance A was actively running as `failed`.
-  it('losing the race leaves the winner job alone', () => {
-    const dbA = connect();
-    const dbB = connect();
+  it('losing the race leaves the winner job alone', async () => {
+    const dbA = await connect();
+    const dbB = await connect();
 
-    const agent = new AgentRegistry(dbA).create({ name: 'w', instructions: 'x', runner: 'mock' });
+    const agent = await new AgentRegistry(dbA).create({ name: 'w', instructions: 'x', runner: 'mock' });
     const jobsA = new JobStore(dbA);
     const jobsB = new JobStore(dbB);
 
-    const job = jobsA.create({
+    const job = await jobsA.create({
       backend: 'local',
       agentId: agent.id,
       agentSnapshot: toSnapshot(agent),
       instruction: 'go'
     });
 
-    jobsA.claim(job.id);
-    const lost = jobsB.claim(job.id);
+    await jobsA.claim(job.id);
+    const lost = await jobsB.claim(job.id);
 
     // B gets a plain "not yours" rather than an exception it would mistake for
     // a failure of the job itself.
     expect(lost).toBeUndefined();
-    expect(jobsB.getOrThrow(job.id).state).toBe('running');
-    expect(jobsB.getOrThrow(job.id).error).toBeUndefined();
+    expect((await jobsB.getOrThrow(job.id)).state).toBe('running');
+    expect((await jobsB.getOrThrow(job.id)).error).toBeUndefined();
   });
 
-  it('a claim marks the job running and stamps startedAt exactly once', () => {
-    const db = connect();
-    const agent = new AgentRegistry(db).create({ name: 'w', instructions: 'x', runner: 'mock' });
+  it('a claim marks the job running and stamps startedAt exactly once', async () => {
+    const db = await connect();
+    const agent = await new AgentRegistry(db).create({ name: 'w', instructions: 'x', runner: 'mock' });
     const jobs = new JobStore(db);
-    const job = jobs.create({
+    const job = await jobs.create({
       backend: 'local',
       agentId: agent.id,
       agentSnapshot: toSnapshot(agent),
       instruction: 'go'
     });
 
-    const claimed = jobs.claim(job.id);
+    const claimed = await jobs.claim(job.id);
 
     expect(claimed?.state).toBe('running');
     expect(claimed?.startedAt).toBeDefined();
-    expect(jobs.claim(job.id)).toBeUndefined();
+    expect(await jobs.claim(job.id)).toBeUndefined();
   });
 
-  it('cannot claim a job that is blocked, running or already finished', () => {
-    const db = connect();
-    const agent = new AgentRegistry(db).create({ name: 'w', instructions: 'x', runner: 'mock' });
+  it('cannot claim a job that is blocked, running or already finished', async () => {
+    const db = await connect();
+    const agent = await new AgentRegistry(db).create({ name: 'w', instructions: 'x', runner: 'mock' });
     const jobs = new JobStore(db);
 
     const make = () =>
@@ -163,34 +163,34 @@ describe('two instances sharing one database', () => {
         instruction: 'go'
       });
 
-    const finished = make();
-    jobs.claim(finished.id);
-    jobs.transition(finished.id, 'succeeded', { resultText: 'ok' });
+    const finished = await make();
+    await jobs.claim(finished.id);
+    await jobs.transition(finished.id, 'succeeded', { resultText: 'ok' });
 
-    expect(jobs.claim(finished.id)).toBeUndefined();
+    expect(await jobs.claim(finished.id)).toBeUndefined();
   });
 
   // Same class as the job claim, and it matters for the same reason: two
   // instances can both read `pending` before either writes, and an approve
   // landing on top of a reject is the worst possible direction for that race
   // to resolve in a human-in-the-loop gate.
-  it('an approval can only be resolved once, across connections', () => {
-    const dbA = connect();
-    const dbB = connect();
+  it('an approval can only be resolved once, across connections', async () => {
+    const dbA = await connect();
+    const dbB = await connect();
     const a = new ApprovalStore(dbA);
     const b = new ApprovalStore(dbB);
 
-    const approval = a.create({ scope: 'job', summary: 'Delete production data?', payload: {} });
+    const approval = await a.create({ scope: 'job', summary: 'Delete production data?', payload: {} });
 
-    expect(a.getOrThrow(approval.approvalId).status).toBe('pending');
-    expect(b.getOrThrow(approval.approvalId).status).toBe('pending');
+    expect((await a.getOrThrow(approval.approvalId)).status).toBe('pending');
+    expect((await b.getOrThrow(approval.approvalId)).status).toBe('pending');
 
-    a.resolve(approval.approvalId, 'reject', { comment: 'absolutely not' });
+    await a.resolve(approval.approvalId, 'reject', { comment: 'absolutely not' });
 
-    expect(() => b.resolve(approval.approvalId, 'approve', { comment: 'looks fine' })).toThrow(
+    await expect(b.resolve(approval.approvalId, 'approve', { comment: 'looks fine' })).rejects.toThrow(
       /already rejected/
     );
-    expect(a.getOrThrow(approval.approvalId)).toMatchObject({
+    expect(await a.getOrThrow(approval.approvalId)).toMatchObject({
       status: 'rejected',
       comment: 'absolutely not'
     });
@@ -201,19 +201,23 @@ describe('two instances sharing one database', () => {
   it('serves one run correctly across two instances', async () => {
     const ranByA: string[] = [];
     const ranByB: string[] = [];
-    const a = instance(ranByA);
-    const b = instance(ranByB);
+    const a = await instance(ranByA);
+    const b = await instance(ranByB);
 
-    const agent = a.agents.create({ name: 'worker', instructions: 'x', runner: 'mock' });
-    const submitted = Array.from(
-      { length: 12 },
-      (_, i) =>
-        a.jobs.create({
-          backend: 'local',
-          agentId: agent.id,
-          agentSnapshot: toSnapshot(agent),
-          instruction: `job ${i}`
-        }).id
+    const agent = await a.agents.create({ name: 'worker', instructions: 'x', runner: 'mock' });
+    const submitted = await Promise.all(
+      Array.from(
+        { length: 12 },
+        async (_, i) =>
+          (
+            await a.jobs.create({
+              backend: 'local',
+              agentId: agent.id,
+              agentSnapshot: toSnapshot(agent),
+              instruction: `job ${i}`
+            })
+          ).id
+      )
     );
 
     // Both wake and go looking for work, as a round-robin front end would.
@@ -224,7 +228,7 @@ describe('two instances sharing one database', () => {
 
     const executions = [...ranByA, ...ranByB];
     const duplicated = executions.filter((id, i) => executions.indexOf(id) !== i);
-    const states = submitted.map(id => a.jobs.getOrThrow(id).state);
+    const states = await Promise.all(submitted.map(async id => (await a.jobs.getOrThrow(id)).state));
 
     expect(duplicated).toEqual([]);
     expect(new Set(executions).size).toBe(submitted.length);

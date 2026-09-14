@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { BUDGET_SCOPES } from '../core/budget.js';
 import { EVENT_TYPES } from '../core/events.js';
+import type { JobRecord } from '../core/jobs.js';
 import { ownerFilter } from '../core/principal.js';
 import { OrchestratorError } from '../errors.js';
 import { toolError, toolOk } from './result.js';
@@ -46,7 +47,7 @@ export const eventsQueryTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
           // events carries no owner column of its own — it is keyed by
           // jobId/agentId/runId, whose ownership already lives on those
@@ -55,11 +56,11 @@ export const eventsQueryTool: ToolRegistration = {
           // one of the three ids, and check it the same way trace_get does.
           if (!deps.principal.isAdmin) {
             if (args.jobId !== undefined) {
-              deps.services.jobs.getVisible(args.jobId, deps.principal);
+              await deps.services.jobs.getVisible(args.jobId, deps.principal);
             } else if (args.agentId !== undefined) {
-              deps.services.agents.getVisible(args.agentId, deps.principal);
+              await deps.services.agents.getVisible(args.agentId, deps.principal);
             } else if (args.runId !== undefined) {
-              deps.services.workflows.getVisibleRun(args.runId, deps.principal);
+              await deps.services.workflows.getVisibleRun(args.runId, deps.principal);
             } else {
               throw new OrchestratorError(
                 'POLICY_DENIED',
@@ -74,7 +75,7 @@ export const eventsQueryTool: ToolRegistration = {
           // being visible does not clear every job-tied event for it — restrict
           // those to jobs this caller actually owns. jobId/runId are already
           // pinned to one caller-checked job/run, so this is a no-op there.
-          const events = deps.services.events.query({ ...args, ...ownerFilter(deps.principal) });
+          const events = await deps.services.events.query({ ...args, ...ownerFilter(deps.principal) });
           return toolOk({ events }, `${events.length} event(s).`);
         } catch (error) {
           return toolError(error);
@@ -122,12 +123,12 @@ export const budgetSetTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      (args, ctx) => {
+      async (args, ctx) => {
         const denied = denyWithoutAdminScope(ctx, 'budget_set');
         if (denied !== undefined) return denied;
 
         try {
-          const budget = deps.services.budgets.set({
+          const budget = await deps.services.budgets.set({
             scope: args.scope,
             ...(args.id !== undefined && { scopeId: args.id }),
             ...(args.maxCostUsd !== undefined && { maxCostUsd: args.maxCostUsd }),
@@ -136,7 +137,7 @@ export const budgetSetTool: ToolRegistration = {
             ...(args.maxConcurrent !== undefined && { maxConcurrent: args.maxConcurrent })
           });
 
-          const spent = deps.services.budgets.spend(args.scope, args.id);
+          const spent = await deps.services.budgets.spend(args.scope, args.id);
 
           return toolOk(
             { budget, spent },
@@ -191,35 +192,38 @@ export const traceGetTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
           if (args.jobId === undefined && args.runId === undefined) {
             return toolError(new Error('Provide either jobId or runId.'));
           }
 
           // A job span plus every job it spawned, so the tree mirrors delegation.
-          const roots =
-            args.jobId !== undefined
-              ? [deps.services.jobs.getVisible(args.jobId, deps.principal)]
-              : deps.services.workflows
-                  .getVisibleRun(args.runId as string, deps.principal)
-                  .steps.flatMap(step =>
-                    step.jobId === undefined
-                      ? []
-                      : [deps.services.jobs.getVisible(step.jobId, deps.principal)]
-                  );
+          let roots: JobRecord[];
+          if (args.jobId !== undefined) {
+            roots = [await deps.services.jobs.getVisible(args.jobId, deps.principal)];
+          } else {
+            const run = await deps.services.workflows.getVisibleRun(
+              args.runId as string,
+              deps.principal
+            );
+            roots = [];
+            for (const step of run.steps) {
+              if (step.jobId === undefined) continue;
+              roots.push(await deps.services.jobs.getVisible(step.jobId, deps.principal));
+            }
+          }
 
           const collected = [...roots];
           for (let index = 0; index < collected.length; index += 1) {
             const parent = collected[index];
             if (parent === undefined) continue;
-            collected.push(
-              ...deps.services.jobs.list({
-                ...ownerFilter(deps.principal),
-                parentJobId: parent.id,
-                limit: 100
-              }).jobs
-            );
+            const { jobs: children } = await deps.services.jobs.list({
+              ...ownerFilter(deps.principal),
+              parentJobId: parent.id,
+              limit: 100
+            });
+            collected.push(...children);
           }
 
           const spans = collected.map(job => ({
@@ -289,9 +293,9 @@ export const usageReportTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
-          const { jobs } = deps.services.jobs.list({ ...ownerFilter(deps.principal), limit: args.limit });
+          const { jobs } = await deps.services.jobs.list({ ...ownerFilter(deps.principal), limit: args.limit });
           const since = args.since;
           const scoped = since === undefined ? jobs : jobs.filter(job => job.createdAt >= since);
 

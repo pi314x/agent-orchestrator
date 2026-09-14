@@ -48,11 +48,11 @@ describe('createJwtVerifier', () => {
 });
 
 describe('principalFor', () => {
-  it('is the single-owner sentinel when there is no auth info at all', () => {
+  it('is the single-owner sentinel when there is no auth info at all', async () => {
     expect(principalFor(undefined)).toEqual(SINGLE_USER_PRINCIPAL);
   });
 
-  it('derives ownerId from clientId and isAdmin from the admin scope', () => {
+  it('derives ownerId from clientId and isAdmin from the admin scope', async () => {
     const principal = principalFor({
       token: 't',
       clientId: 'user_bob',
@@ -63,18 +63,18 @@ describe('principalFor', () => {
     expect(principal).toEqual({ ownerId: 'user_bob', isAdmin: true });
   });
 
-  it('is not admin without the admin scope', () => {
+  it('is not admin without the admin scope', async () => {
     const principal = principalFor({ token: 't', clientId: 'user_bob', scopes: [], expiresAt: 0 });
     expect(principal.isAdmin).toBe(false);
   });
 });
 
 describe('hasScope', () => {
-  it('is true for anyone when there is no auth info (OAuth not configured)', () => {
+  it('is true for anyone when there is no auth info (OAuth not configured)', async () => {
     expect(hasScope(undefined, 'orch:admin')).toBe(true);
   });
 
-  it('checks the scope list when auth info is present', () => {
+  it('checks the scope list when auth info is present', async () => {
     const authInfo = { token: 't', clientId: 'user_bob', scopes: ['orch:admin'], expiresAt: 0 };
     expect(hasScope(authInfo, 'orch:admin')).toBe(true);
     expect(hasScope(authInfo, 'other:scope')).toBe(false);

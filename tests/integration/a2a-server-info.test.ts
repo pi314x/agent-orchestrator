@@ -10,7 +10,7 @@ let client: Client;
 let services: Services;
 
 beforeAll(async () => {
-  services = testServices({ profile: 'full', config: { a2aEnabled: true } });
+  services = await testServices({ profile: 'full', config: { a2aEnabled: true } });
 
   server = await startHttpServer({
     factory: createServerFactory({ services, startedAt: Date.now() }),

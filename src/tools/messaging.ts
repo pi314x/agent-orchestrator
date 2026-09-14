@@ -48,7 +48,7 @@ export const messageSendTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
           // The bus itself carries no owner column — an agent's inbox or a
           // job's steering channel is only as private as whoever can name its
@@ -58,13 +58,13 @@ export const messageSendTool: ToolRegistration = {
           // message_list below. A channel is deliberately shared team space,
           // so it is left unchecked.
           if (args.toAgentId !== undefined) {
-            deps.services.agents.getVisible(args.toAgentId, deps.principal);
+            await deps.services.agents.getVisible(args.toAgentId, deps.principal);
           }
           if (args.toJobId !== undefined) {
-            deps.services.jobs.getVisible(args.toJobId, deps.principal);
+            await deps.services.jobs.getVisible(args.toJobId, deps.principal);
           }
 
-          const message = deps.services.bus.send(args);
+          const message = await deps.services.bus.send(args);
           return toolOk({ message }, `Sent ${message.messageId}.`);
         } catch (error) {
           return toolError(error);
@@ -101,19 +101,19 @@ export const messageListTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
           // Same reasoning as message_send: agentId/jobId name a private
           // inbox, not a shared one, so reading it requires seeing the
           // agent/job itself. A channel stays open by design.
           if (args.agentId !== undefined) {
-            deps.services.agents.getVisible(args.agentId, deps.principal);
+            await deps.services.agents.getVisible(args.agentId, deps.principal);
           }
           if (args.jobId !== undefined) {
-            deps.services.jobs.getVisible(args.jobId, deps.principal);
+            await deps.services.jobs.getVisible(args.jobId, deps.principal);
           }
 
-          const messages = deps.services.bus.list(args);
+          const messages = await deps.services.bus.list(args);
           return toolOk({ messages }, `${messages.length} message(s).`);
         } catch (error) {
           return toolError(error);
@@ -143,9 +143,9 @@ export const channelCreateTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
-          const channel = deps.services.bus.createChannel(args.name, args.members ?? []);
+          const channel = await deps.services.bus.createChannel(args.name, args.members ?? []);
           return toolOk({ channel }, `Channel ${channel.name} ready.`);
         } catch (error) {
           return toolError(error);
@@ -174,8 +174,8 @@ export const channelListTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      () => {
-        const channels = deps.services.bus.listChannels();
+      async () => {
+        const channels = await deps.services.bus.listChannels();
         return toolOk({ channels }, `${channels.length} channel(s).`);
       }
     );

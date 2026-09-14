@@ -6,7 +6,7 @@ import { closeServices, testServices } from '../helpers.js';
 type PromptCallback = (args: Record<string, string>) => { messages: { content: { text: string } }[] };
 
 /** Captures every prompt `registerPrompts` registers, keyed by name. */
-function capturePrompts(services: ReturnType<typeof testServices>, principal: Principal) {
+function capturePrompts(services: Awaited<ReturnType<typeof testServices>>, principal: Principal) {
   const handlers = new Map<string, PromptCallback>();
   const fakeServer = {
     registerPrompt: (name: string, _config: unknown, callback: PromptCallback) => {
@@ -28,8 +28,8 @@ describe('cross_vendor_review prompt', () => {
   // "resources need the same scoping as tools" gap already found once for
   // orch:// resources, recurring on prompts, the third registration surface.
   it("does not list another user's registered remote agent", async () => {
-    const services = testServices();
-    services.agents.create({
+    const services = await testServices();
+    await services.agents.create({
       ownerId: alice.ownerId,
       kind: 'remote',
       name: 'alice-only-remote',
@@ -37,7 +37,7 @@ describe('cross_vendor_review prompt', () => {
     });
 
     const bobHandlers = capturePrompts(services, bob);
-    const rendered = bobHandlers.get('cross_vendor_review')?.({ brief: 'x' });
+    const rendered = await bobHandlers.get('cross_vendor_review')?.({ brief: 'x' });
     const text = rendered?.messages[0]?.content.text ?? '';
 
     expect(text).not.toContain('alice-only-remote');
@@ -46,8 +46,8 @@ describe('cross_vendor_review prompt', () => {
   });
 
   it("lists the caller's own registered remote agent", async () => {
-    const services = testServices();
-    services.agents.create({
+    const services = await testServices();
+    await services.agents.create({
       ownerId: alice.ownerId,
       kind: 'remote',
       name: 'alice-own-remote',
@@ -55,7 +55,7 @@ describe('cross_vendor_review prompt', () => {
     });
 
     const aliceHandlers = capturePrompts(services, alice);
-    const rendered = aliceHandlers.get('cross_vendor_review')?.({ brief: 'x' });
+    const rendered = await aliceHandlers.get('cross_vendor_review')?.({ brief: 'x' });
     const text = rendered?.messages[0]?.content.text ?? '';
 
     expect(text).toContain('alice-own-remote');
@@ -63,8 +63,8 @@ describe('cross_vendor_review prompt', () => {
   });
 
   it('lets an admin see every registered remote agent', async () => {
-    const services = testServices();
-    services.agents.create({
+    const services = await testServices();
+    await services.agents.create({
       ownerId: alice.ownerId,
       kind: 'remote',
       name: 'alice-remote-for-admin',
@@ -72,7 +72,7 @@ describe('cross_vendor_review prompt', () => {
     });
 
     const adminHandlers = capturePrompts(services, admin);
-    const rendered = adminHandlers.get('cross_vendor_review')?.({ brief: 'x' });
+    const rendered = await adminHandlers.get('cross_vendor_review')?.({ brief: 'x' });
     const text = rendered?.messages[0]?.content.text ?? '';
 
     expect(text).toContain('alice-remote-for-admin');

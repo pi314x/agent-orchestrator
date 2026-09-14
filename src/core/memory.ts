@@ -68,12 +68,12 @@ export class MemoryStore {
     private readonly grants: GrantStore = new GrantStore(db)
   ) {}
 
-  write(input: WriteMemoryInput): MemoryEntry {
+  async write(input: WriteMemoryInput): Promise<MemoryEntry> {
     const now = new Date().toISOString();
     const expiresAt =
       input.ttlSec === undefined ? null : new Date(Date.now() + input.ttlSec * 1000).toISOString();
 
-    this.db
+    await this.db
       .prepare(
         `INSERT INTO memory (owner_id, namespace, key, value, tags, expires_at, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -94,16 +94,16 @@ export class MemoryStore {
         now
       );
 
-    const entry = this.read(input.ownerId, input.namespace, input.key);
+    const entry = await this.read(input.ownerId, input.namespace, input.key);
     if (entry === undefined) throw new Error('memory write did not persist');
     return entry;
   }
 
-  read(ownerId: string, namespace: string, key: string): MemoryEntry | undefined {
-    this.purgeExpired();
-    const row = this.db
+  async read(ownerId: string, namespace: string, key: string): Promise<MemoryEntry | undefined> {
+    await this.purgeExpired();
+    const row = (await this.db
       .prepare('SELECT * FROM memory WHERE owner_id = ? AND namespace = ? AND key = ?')
-      .get(ownerId, namespace, key) as MemoryRow | undefined;
+      .get(ownerId, namespace, key)) as MemoryRow | undefined;
     return row === undefined ? undefined : toEntry(row);
   }
 
@@ -115,24 +115,24 @@ export class MemoryStore {
    * "not found" a missing key gets, so a caller cannot distinguish "no such
    * entry" from "not shared with you".
    */
-  readVisible(
+  async readVisible(
     targetOwnerId: string,
     namespace: string,
     key: string,
     principal: { ownerId: string; isAdmin: boolean }
-  ): MemoryEntry | undefined {
+  ): Promise<MemoryEntry | undefined> {
     if (
       !principal.isAdmin &&
       targetOwnerId !== principal.ownerId &&
-      !this.grants.hasGrant('memory_namespace', namespace, targetOwnerId, principal.ownerId)
+      !(await this.grants.hasGrant('memory_namespace', namespace, targetOwnerId, principal.ownerId))
     ) {
       return undefined;
     }
     return this.read(targetOwnerId, namespace, key);
   }
 
-  search(input: SearchMemoryInput): MemoryEntry[] {
-    this.purgeExpired();
+  async search(input: SearchMemoryInput): Promise<MemoryEntry[]> {
+    await this.purgeExpired();
 
     const limit = Math.min(Math.max(input.limit ?? 20, 1), 100);
     const where: string[] = ['memory_fts MATCH ?'];
@@ -147,7 +147,7 @@ export class MemoryStore {
       params.push(input.namespace);
     }
 
-    const rows = this.db
+    const rows = (await this.db
       .prepare(
         `SELECT m.* FROM memory_fts f
          JOIN memory m ON m.id = f.rowid
@@ -155,7 +155,7 @@ export class MemoryStore {
          ORDER BY rank
          LIMIT ?`
       )
-      .all(...params, limit) as MemoryRow[];
+      .all(...params, limit)) as MemoryRow[];
 
     const entries = rows.map(toEntry);
 
@@ -170,17 +170,17 @@ export class MemoryStore {
    * every owner and namespace is not supported — a grant is per namespace,
    * not global) and a grant on that exact pair, unless the caller is admin.
    */
-  searchVisible(
+  async searchVisible(
     input: SearchMemoryInput,
     principal: { ownerId: string; isAdmin: boolean }
-  ): MemoryEntry[] {
+  ): Promise<MemoryEntry[]> {
     if (principal.isAdmin) return this.search(input);
     if (input.ownerId === undefined || input.ownerId === principal.ownerId) {
       return this.search({ ...input, ownerId: principal.ownerId });
     }
     if (
       input.namespace === undefined ||
-      !this.grants.hasGrant('memory_namespace', input.namespace, input.ownerId, principal.ownerId)
+      !(await this.grants.hasGrant('memory_namespace', input.namespace, input.ownerId, principal.ownerId))
     ) {
       return [];
     }
@@ -188,38 +188,43 @@ export class MemoryStore {
   }
 
   /** Share a namespace with one named user. Only its owner (or an admin, via principal) may call this. */
-  share(ownerId: string, namespace: string, granteeId: string): void {
-    this.grants.grant('memory_namespace', namespace, ownerId, granteeId);
+  async share(ownerId: string, namespace: string, granteeId: string): Promise<void> {
+    await this.grants.grant('memory_namespace', namespace, ownerId, granteeId);
   }
 
   /** Revoke a peer share on a namespace. */
-  unshare(ownerId: string, namespace: string, granteeId: string): boolean {
+  async unshare(ownerId: string, namespace: string, granteeId: string): Promise<boolean> {
     return this.grants.revoke('memory_namespace', namespace, ownerId, granteeId);
   }
 
   /** Who a namespace has been shared with. */
-  listShares(ownerId: string, namespace: string): string[] {
-    return this.grants.listGrantees('memory_namespace', namespace, ownerId).map(g => g.granteeId);
+  async listShares(ownerId: string, namespace: string): Promise<string[]> {
+    const grants = await this.grants.listGrantees('memory_namespace', namespace, ownerId);
+    return grants.map(g => g.granteeId);
   }
 
   /** Delete one key, or every key under a prefix, within one owner's namespace. */
-  delete(ownerId: string, namespace: string, target: { key?: string; prefix?: string }): number {
+  async delete(ownerId: string, namespace: string, target: { key?: string; prefix?: string }): Promise<number> {
     if (target.key !== undefined) {
-      return this.db
+      const result = await this.db
         .prepare('DELETE FROM memory WHERE owner_id = ? AND namespace = ? AND key = ?')
-        .run(ownerId, namespace, target.key).changes;
+        .run(ownerId, namespace, target.key);
+      return result.changes;
     }
     if (target.prefix !== undefined) {
-      return this.db
+      const result = await this.db
         .prepare('DELETE FROM memory WHERE owner_id = ? AND namespace = ? AND key LIKE ?')
-        .run(ownerId, namespace, `${target.prefix}%`).changes;
+        .run(ownerId, namespace, `${target.prefix}%`);
+      return result.changes;
     }
-    return this.db.prepare('DELETE FROM memory WHERE owner_id = ? AND namespace = ?').run(ownerId, namespace)
-      .changes;
+    const result = await this.db
+      .prepare('DELETE FROM memory WHERE owner_id = ? AND namespace = ?')
+      .run(ownerId, namespace);
+    return result.changes;
   }
 
-  private purgeExpired(): void {
-    this.db
+  private async purgeExpired(): Promise<void> {
+    await this.db
       .prepare('DELETE FROM memory WHERE expires_at IS NOT NULL AND expires_at <= ?')
       .run(new Date().toISOString());
   }

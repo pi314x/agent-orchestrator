@@ -95,9 +95,9 @@ type TemplateRow = { name: string; spec: string; created_at: string; updated_at:
 export class TemplateStore {
   constructor(private readonly db: Db) {}
 
-  save(name: string, spec: CustomTemplateSpec): AgentTemplate {
+  async save(name: string, spec: CustomTemplateSpec): Promise<AgentTemplate> {
     const now = new Date().toISOString();
-    this.db
+    await this.db
       .prepare(
         `INSERT INTO agent_templates (name, spec, created_at, updated_at) VALUES (?, ?, ?, ?)
          ON CONFLICT (name) DO UPDATE SET spec = excluded.spec, updated_at = excluded.updated_at`
@@ -107,16 +107,16 @@ export class TemplateStore {
     return { name, runner: DEFAULT_RUNNER, ...spec };
   }
 
-  get(name: string): AgentTemplate | undefined {
-    const row = this.db.prepare('SELECT * FROM agent_templates WHERE name = ?').get(name) as
+  async get(name: string): Promise<AgentTemplate | undefined> {
+    const row = (await this.db.prepare('SELECT * FROM agent_templates WHERE name = ?').get(name)) as
       TemplateRow | undefined;
     if (row === undefined) return undefined;
     const spec = JSON.parse(row.spec) as CustomTemplateSpec;
     return { name: row.name, runner: DEFAULT_RUNNER, ...spec };
   }
 
-  list(): AgentTemplate[] {
-    const rows = this.db.prepare('SELECT * FROM agent_templates ORDER BY name').all() as TemplateRow[];
+  async list(): Promise<AgentTemplate[]> {
+    const rows = (await this.db.prepare('SELECT * FROM agent_templates ORDER BY name').all()) as TemplateRow[];
     return rows.map(row => {
       const spec = JSON.parse(row.spec) as CustomTemplateSpec;
       return { name: row.name, runner: DEFAULT_RUNNER, ...spec };
@@ -124,12 +124,12 @@ export class TemplateStore {
   }
 
   /** Custom first, so a saved template can replace a built-in by name. */
-  resolve(name: string): AgentTemplate | undefined {
-    return this.get(name) ?? getTemplate(name);
+  async resolve(name: string): Promise<AgentTemplate | undefined> {
+    return (await this.get(name)) ?? getTemplate(name);
   }
 
-  all(): AgentTemplate[] {
-    const custom = this.list();
+  async all(): Promise<AgentTemplate[]> {
+    const custom = await this.list();
     const names = new Set(custom.map(t => t.name));
     return [...custom, ...BUILTIN_TEMPLATES.filter(t => !names.has(t.name))];
   }

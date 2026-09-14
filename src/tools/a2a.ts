@@ -74,7 +74,7 @@ export const agentRegisterTool: ToolRegistration = {
           const cached = await deps.services.cards.fetchAndCache(args.cardUrl);
           const name = args.alias ?? cached.card.name;
 
-          const agent = deps.services.agents.create({
+          const agent = await deps.services.agents.create({
             ownerId: deps.principal.ownerId,
             kind: 'remote',
             name,
@@ -179,11 +179,10 @@ export const a2aDiscoverTool: ToolRegistration = {
         outputSchema: z.object({ cards: z.array(CardSummarySchema), registryConfigured: z.boolean() }),
         annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true }
       },
-      args => {
+      async args => {
         try {
-          const matches = deps.services.cards
-            .list()
-            .filter(cached => cardMatchesSkill(cached.card, args.query));
+          const cards = await deps.services.cards.list();
+          const matches = cards.filter(cached => cardMatchesSkill(cached.card, args.query));
 
           return toolOk(
             {
@@ -223,7 +222,7 @@ export const a2aTaskGetTool: ToolRegistration = {
       },
       async args => {
         try {
-          const job = deps.services.jobs.getVisible(args.jobId, deps.principal);
+          const job = await deps.services.jobs.getVisible(args.jobId, deps.principal);
           const task = await deps.services.a2aGateway.getRawTask(job);
 
           return toolOk(
@@ -261,7 +260,7 @@ export const a2aTaskCancelTool: ToolRegistration = {
       },
       async args => {
         try {
-          const job = deps.services.jobs.getVisible(args.jobId, deps.principal);
+          const job = await deps.services.jobs.getVisible(args.jobId, deps.principal);
           const task = await deps.services.a2aGateway.cancelRemoteTask(job);
           return toolOk(
             { taskId: task.id, state: String(task.status?.state ?? 'unknown') },
@@ -298,7 +297,7 @@ export const a2aPushConfigSetTool: ToolRegistration = {
       },
       async args => {
         try {
-          const job = deps.services.jobs.getVisible(args.jobId, deps.principal);
+          const job = await deps.services.jobs.getVisible(args.jobId, deps.principal);
           const url = await deps.services.a2aGateway.setPushConfig(job, args.callbackUrl);
           return toolOk({ callbackUrl: url }, `Remote agent will push updates to ${url}.`);
         } catch (error) {
@@ -336,12 +335,12 @@ export const a2aServerInfoTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      () => {
+      async () => {
         const { config, publishedSkills } = deps.services;
-        const exposed = publishedSkills.listExposed();
+        const exposed = await publishedSkills.listExposed();
         const serving = deps.services.a2aServing === true;
 
-        const card = buildAgentCard({
+        const card = await buildAgentCard({
           skills: publishedSkills,
           scheduler: deps.services.scheduler,
           agents: deps.services.agents,
@@ -411,7 +410,7 @@ export const agentPublishTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      (args, ctx) => {
+      async (args, ctx) => {
         const denied = denyWithoutAdminScope(ctx, 'agent_publish');
         if (denied !== undefined) return denied;
 
@@ -422,7 +421,7 @@ export const agentPublishTool: ToolRegistration = {
             );
           }
 
-          const skill = deps.services.publishedSkills.upsert({
+          const skill = await deps.services.publishedSkills.upsert({
             skillId: args.skillId,
             description: args.description,
             exposed: args.exposed,
@@ -430,7 +429,7 @@ export const agentPublishTool: ToolRegistration = {
             ...(args.templateName !== undefined && { templateName: args.templateName })
           });
 
-          const exposedCount = deps.services.publishedSkills.listExposed().length;
+          const exposedCount = (await deps.services.publishedSkills.listExposed()).length;
 
           return toolOk(
             { skill, exposedCount },

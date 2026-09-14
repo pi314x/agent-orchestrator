@@ -11,13 +11,13 @@ import { migratedDb, silentLogger } from '../helpers.js';
 
 let db: Db;
 
-beforeEach(() => {
-  db = migratedDb();
+beforeEach(async () => {
+  db = await migratedDb();
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers();
-  db.close();
+  await db.close();
 });
 
 const workingTask = (id: string): Task =>
@@ -52,14 +52,14 @@ async function remoteJob(cards: CardStore, jobs: JobStore, agents: AgentRegistry
     skills: []
   } as never);
 
-  const agent = agents.create({
+  const agent = await agents.create({
     name: 'remote-agent',
     kind: 'remote',
     instructions: '',
     cardId: cached.cardId
   });
 
-  return jobs.create({
+  return await jobs.create({
     backend: 'a2a_remote',
     agentId: agent.id,
     agentSnapshot: toSnapshot(agent),

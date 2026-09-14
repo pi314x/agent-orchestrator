@@ -15,8 +15,8 @@ const config = loadConfig();
 const logger = createLogger(config);
 
 const db = openDatabase({ url: config.dbUrl });
-assertFts5(db);
-const migration = migrate(db);
+await assertFts5(db);
+const migration = await migrate(db);
 if (migration.applied.length > 0) {
   logger.info({ ...migration }, 'applied migrations');
 }
@@ -27,12 +27,12 @@ const services = createServices({ config, db, logger });
 // restart and deletions withdraw the agent.
 const agentFiles = loadAgentFiles(config.agentsDir);
 if (agentFiles.length > 0) {
-  const sync = services.agents.syncFromFiles(agentFiles);
+  const sync = await services.agents.syncFromFiles(agentFiles);
   logger.info({ ...sync, dir: config.agentsDir }, 'synced agents from files');
 }
 
 // A previous process may have died mid-run; those rows own no scheduler.
-const interrupted = services.jobs.recoverInterrupted();
+const interrupted = await services.jobs.recoverInterrupted();
 if (interrupted.length > 0) {
   logger.warn({ jobIds: interrupted }, 'jobs interrupted by a previous shutdown');
 }
@@ -64,7 +64,7 @@ if (config.a2aEnabled) {
 
   services.a2aServing = true;
   logger.info(
-    { url: a2a.url, cardUrl: a2a.cardUrl, skills: services.publishedSkills.listExposed().length },
+    { url: a2a.url, cardUrl: a2a.cardUrl, skills: (await services.publishedSkills.listExposed()).length },
     'A2A inbound server ready'
   );
 }
@@ -80,8 +80,7 @@ const shutdown = (close: () => Promise<void>) => {
     void Promise.all([close(), a2a?.close() ?? Promise.resolve(), services.scheduler.shutdown()])
       .catch(error => logger.error({ err: error }, 'shutdown failed'))
       .finally(() => {
-        db.close();
-        process.exit(0);
+        void db.close().finally(() => process.exit(0));
       });
   };
   process.on('SIGINT', handle);

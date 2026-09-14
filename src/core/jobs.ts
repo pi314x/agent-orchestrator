@@ -214,12 +214,12 @@ function toRecord(row: JobRow): JobRecord {
 export class JobStore {
   constructor(private readonly db: Db) {}
 
-  create(input: CreateJobInput): JobRecord {
+  async create(input: CreateJobInput): Promise<JobRecord> {
     const now = new Date().toISOString();
     const dependsOn = [...(input.dependsOn ?? [])];
     const id = newId('job');
 
-    this.db
+    await this.db
       .prepare(
         `INSERT INTO jobs (
            id, owner_id, backend, state, agent_id, agent_snapshot, instruction, context, output_schema,
@@ -250,13 +250,13 @@ export class JobStore {
     return this.getOrThrow(id);
   }
 
-  get(id: string): JobRecord | undefined {
-    const row = this.db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) as JobRow | undefined;
+  async get(id: string): Promise<JobRecord | undefined> {
+    const row = (await this.db.prepare('SELECT * FROM jobs WHERE id = ?').get(id)) as JobRow | undefined;
     return row === undefined ? undefined : toRecord(row);
   }
 
-  getOrThrow(id: string): JobRecord {
-    const job = this.get(id);
+  async getOrThrow(id: string): Promise<JobRecord> {
+    const job = await this.get(id);
     if (job === undefined) {
       throw new OrchestratorError(
         'NOT_FOUND',
@@ -267,13 +267,13 @@ export class JobStore {
     return job;
   }
 
-  findByIdempotencyKey(key: string): JobRecord | undefined {
-    const row = this.db.prepare('SELECT * FROM jobs WHERE idempotency_key = ?').get(key) as
+  async findByIdempotencyKey(key: string): Promise<JobRecord | undefined> {
+    const row = (await this.db.prepare('SELECT * FROM jobs WHERE idempotency_key = ?').get(key)) as
       JobRow | undefined;
     return row === undefined ? undefined : toRecord(row);
   }
 
-  list(filter: JobListFilter = {}): { jobs: JobRecord[]; nextCursor?: string } {
+  async list(filter: JobListFilter = {}): Promise<{ jobs: JobRecord[]; nextCursor?: string }> {
     const where: string[] = [];
     const params: unknown[] = [];
 
@@ -306,9 +306,9 @@ export class JobStore {
     const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
     const limit = Math.min(Math.max(filter.limit ?? 20, 1), 100);
 
-    const rows = this.db
+    const rows = (await this.db
       .prepare(`SELECT * FROM jobs ${clause} ORDER BY id DESC LIMIT ?`)
-      .all(...params, limit + 1) as JobRow[];
+      .all(...params, limit + 1)) as JobRow[];
 
     const page = rows.slice(0, limit).map(toRecord);
     const last = page.at(-1);
@@ -321,15 +321,17 @@ export class JobStore {
    * NOT_FOUND rather than POLICY_DENIED — a job's existence is itself
    * information, and confirming it would leak the id space.
    */
-  getVisible(id: string, principal: { ownerId: string; isAdmin: boolean }): JobRecord {
-    const job = this.getOrThrow(id);
+  async getVisible(id: string, principal: { ownerId: string; isAdmin: boolean }): Promise<JobRecord> {
+    const job = await this.getOrThrow(id);
     if (principal.isAdmin || job.ownerId === principal.ownerId) return job;
 
     throw new OrchestratorError('NOT_FOUND', `No job with id ${id}.`);
   }
 
-  countByState(state: JobState): number {
-    const row = this.db.prepare('SELECT COUNT(*) AS n FROM jobs WHERE state = ?').get(state) as { n: number };
+  async countByState(state: JobState): Promise<number> {
+    const row = (await this.db.prepare('SELECT COUNT(*) AS n FROM jobs WHERE state = ?').get(state)) as {
+      n: number;
+    };
     return row.n;
   }
 
@@ -337,8 +339,8 @@ export class JobStore {
    * Move a job to `to`, rejecting any edge the state machine does not allow.
    * The guard lives here rather than in callers so every path is covered.
    */
-  transition(id: string, to: JobState, patch: JobPatch = {}): JobRecord {
-    const job = this.getOrThrow(id);
+  async transition(id: string, to: JobState, patch: JobPatch = {}): Promise<JobRecord> {
+    const job = await this.getOrThrow(id);
 
     if (!canTransition(job.state, to)) {
       throw new OrchestratorError(
@@ -354,7 +356,7 @@ export class JobStore {
     // A retry re-opens the job, so clear the previous attempt's outcome.
     const retrying = to === 'queued' && isTerminal(job.state);
 
-    this.db
+    await this.db
       .prepare(
         `UPDATE jobs SET
            state = ?, updated_at = ?, started_at = ?, finished_at = ?,
@@ -397,12 +399,12 @@ export class JobStore {
   }
 
   /** Oldest-first within a priority band, so equal-priority work stays FIFO. */
-  nextQueued(limit: number): JobRecord[] {
-    const rows = this.db
+  async nextQueued(limit: number): Promise<JobRecord[]> {
+    const rows = (await this.db
       .prepare(
         `SELECT * FROM jobs WHERE state = 'queued' ORDER BY priority DESC, created_at ASC, id ASC LIMIT ?`
       )
-      .all(limit) as JobRow[];
+      .all(limit)) as JobRow[];
     return rows.map(toRecord);
   }
 
@@ -415,10 +417,10 @@ export class JobStore {
    * `nextQueued` still chooses *which* job to go for, carrying the priority,
    * capacity and starvation rules; this decides whether we actually got it.
    */
-  claim(id: string): JobRecord | undefined {
+  async claim(id: string): Promise<JobRecord | undefined> {
     const now = new Date().toISOString();
 
-    const rows = this.db
+    const rows = (await this.db
       .prepare(
         `UPDATE jobs
             SET state = 'running',
@@ -427,7 +429,7 @@ export class JobStore {
           WHERE id = ? AND state = 'queued'
         RETURNING *`
       )
-      .all(now, now, id) as JobRow[];
+      .all(now, now, id)) as JobRow[];
 
     const row = rows[0];
     return row === undefined ? undefined : toRecord(row);
@@ -440,14 +442,16 @@ export class JobStore {
    * dependent is then released normally. What it must not do is sit there
    * silently — the caller sees a job that never starts and never explains why.
    */
-  releaseBlocked(): { released: JobRecord[]; unblockable: UnblockableJob[] } {
-    const blocked = this.db.prepare(`SELECT * FROM jobs WHERE state = 'blocked'`).all() as JobRow[];
+  async releaseBlocked(): Promise<{ released: JobRecord[]; unblockable: UnblockableJob[] }> {
+    const blocked = (await this.db.prepare(`SELECT * FROM jobs WHERE state = 'blocked'`).all()) as JobRow[];
     const released: JobRecord[] = [];
     const unblockable: UnblockableJob[] = [];
 
     for (const row of blocked) {
       const job = toRecord(row);
-      const deps = job.dependsOn.map(depId => ({ id: depId, job: this.get(depId) }));
+      const deps = await Promise.all(
+        job.dependsOn.map(async depId => ({ id: depId, job: await this.get(depId) }))
+      );
 
       // A dependency that ended any way but `succeeded` cannot change state on
       // its own again. A missing one was deleted, which is the same dead end.
@@ -465,7 +469,7 @@ export class JobStore {
       }
 
       if (deps.every(dep => dep.job?.state === 'succeeded')) {
-        released.push(this.transition(job.id, 'queued'));
+        released.push(await this.transition(job.id, 'queued'));
       }
     }
 
@@ -480,8 +484,8 @@ export class JobStore {
    * else we cannot safely re-run unattended, so it fails explicitly instead of
    * silently looking live again.
    */
-  recoverInterrupted(): string[] {
-    const rows = this.db.prepare(`SELECT * FROM jobs WHERE state = 'running'`).all() as JobRow[];
+  async recoverInterrupted(): Promise<string[]> {
+    const rows = (await this.db.prepare(`SELECT * FROM jobs WHERE state = 'running'`).all()) as JobRow[];
     const affected: string[] = [];
 
     for (const row of rows) {
@@ -497,11 +501,11 @@ export class JobStore {
         // once at startup, before the scheduler could have claimed anything
         // into memory in this process — every 'running' row at that moment
         // is necessarily orphaned by definition.
-        this.db
+        await this.db
           .prepare(`UPDATE jobs SET state = 'queued', updated_at = ? WHERE id = ? AND state = 'running'`)
           .run(new Date().toISOString(), job.id);
       } else {
-        this.transition(job.id, 'failed', {
+        await this.transition(job.id, 'failed', {
           error: { code: 'INTERRUPTED', message: 'The orchestrator restarted while this job was running.' }
         });
       }

@@ -63,7 +63,7 @@ export const toolserverRegisterTool: ToolRegistration = {
         if (denied !== undefined) return denied;
 
         try {
-          const record = deps.services.proxy.register({
+          const record = await deps.services.proxy.register({
             name: args.name,
             transport: args.transport,
             ...(args.authRef !== undefined && { authRef: args.authRef }),
@@ -128,7 +128,7 @@ export const toolserverListTool: ToolRegistration = {
         if (denied !== undefined) return denied;
 
         try {
-          const records = deps.services.proxy.list();
+          const records = await deps.services.proxy.list();
           const servers = await Promise.all(
             records.map(async record => {
               const health = await deps.services.proxy.health(record.name);

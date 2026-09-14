@@ -22,6 +22,9 @@ import { assertDepthWithinLimit } from './policy.js';
 
 export type WaitMode = 'any' | 'all';
 
+/** A reaction to a job state change. May be async; `drain` waits for it. */
+export type ChangeListener = () => void | Promise<void>;
+
 /** How a run ended when it ended by abort rather than by finishing. */
 type AbortReason = 'cancelled' | 'timed_out';
 
@@ -59,21 +62,39 @@ export class JobScheduler {
   /** Jobs already reported as unblockable, so `pump` warns once, not per tick. */
   private readonly reportedUnblockable = new Set<string>();
   private readonly abortReasons = new Map<string, AbortReason>();
-  private readonly listeners = new Set<() => void>();
+  private readonly listeners = new Set<ChangeListener>();
+  /**
+   * Reactions to a state change that are still running. A listener used to be
+   * synchronous, so by the time `notify` returned every reaction had already
+   * finished and `drain` could treat "nothing active, nothing queued" as
+   * "everything settled". An async listener (the workflow engine's `advance`)
+   * is still in flight at that point, so `drain` has to wait for these too or
+   * it reports a run finished while its next step has not even been submitted.
+   */
+  private readonly reactions = new Set<Promise<void>>();
   private stopped = false;
+  /**
+   * `pump` used to run start to finish synchronously, so two calls could never
+   * interleave. Now that every store read is awaited they can, and two passes
+   * reading the same `nextQueued` batch would each fill the concurrency
+   * ceiling — overshooting it together. One pass at a time, with a re-run
+   * flag for whatever arrived while it was busy, restores that guarantee.
+   */
+  private pumping = false;
+  private pumpAgain = false;
 
   constructor(private readonly deps: SchedulerDeps) {}
 
-  submit(input: CreateJobInput): JobRecord {
+  async submit(input: CreateJobInput): Promise<JobRecord> {
     assertDepthWithinLimit(input.depth ?? 0, this.deps.maxDepth);
 
     if (input.idempotencyKey !== undefined) {
-      const existing = this.deps.jobs.findByIdempotencyKey(input.idempotencyKey);
+      const existing = await this.deps.jobs.findByIdempotencyKey(input.idempotencyKey);
       if (existing !== undefined) return existing;
     }
 
-    const job = this.deps.jobs.create(input);
-    this.deps.events.append({
+    const job = await this.deps.jobs.create(input);
+    await this.deps.events.append({
       type: 'job.submitted',
       jobId: job.id,
       agentId: job.agentId,
@@ -81,12 +102,12 @@ export class JobScheduler {
     });
 
     this.notify();
-    this.pump();
+    this.track(this.pump(), 'scheduler pump failed');
     return job;
   }
 
-  cancel(jobId: string, reason?: string): JobRecord {
-    const job = this.deps.jobs.getOrThrow(jobId);
+  async cancel(jobId: string, reason?: string): Promise<JobRecord> {
+    const job = await this.deps.jobs.getOrThrow(jobId);
     if (isTerminal(job.state)) return job;
 
     const controller = this.active.get(jobId);
@@ -96,19 +117,19 @@ export class JobScheduler {
       return this.deps.jobs.getOrThrow(jobId);
     }
 
-    const cancelled = this.deps.jobs.transition(jobId, 'cancelled', {
+    const cancelled = await this.deps.jobs.transition(jobId, 'cancelled', {
       error: { code: 'POLICY_DENIED', message: reason ?? 'Cancelled by request.' }
     });
-    this.deps.events.append({ type: 'job.cancelled', jobId, payload: { reason: reason ?? null } });
+    await this.deps.events.append({ type: 'job.cancelled', jobId, payload: { reason: reason ?? null } });
     this.notify();
     return cancelled;
   }
 
-  retry(jobId: string): JobRecord {
-    const job = this.deps.jobs.transition(jobId, 'queued');
-    this.deps.events.append({ type: 'job.retried', jobId, payload: { attempt: job.attempt } });
+  async retry(jobId: string): Promise<JobRecord> {
+    const job = await this.deps.jobs.transition(jobId, 'queued');
+    await this.deps.events.append({ type: 'job.retried', jobId, payload: { attempt: job.attempt } });
     this.notify();
-    this.pump();
+    this.track(this.pump(), 'scheduler pump failed');
     return job;
   }
 
@@ -119,10 +140,10 @@ export class JobScheduler {
    * own; this is the one public entry for "nothing changed, but check anyway".
    */
   start(): void {
-    this.pump();
+    this.track(this.pump(), 'scheduler pump failed');
   }
 
-  onChange(listener: () => void): () => void {
+  onChange(listener: ChangeListener): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
@@ -133,41 +154,71 @@ export class JobScheduler {
    * polling, so tests need no real sleeps.
    */
   async wait(jobIds: readonly string[], mode: WaitMode, timeoutMs: number): Promise<JobRecord[]> {
-    const snapshot = (): JobRecord[] => jobIds.map(id => this.deps.jobs.getOrThrow(id));
+    const snapshot = (): Promise<JobRecord[]> =>
+      Promise.all(jobIds.map(id => this.deps.jobs.getOrThrow(id)));
 
-    const settled = (): JobRecord[] | undefined => {
-      const records = snapshot();
+    const settled = async (): Promise<JobRecord[] | undefined> => {
+      const records = await snapshot();
       const done =
         mode === 'all' ? records.every(j => isTerminal(j.state)) : records.some(j => isTerminal(j.state));
       return done ? records : undefined;
     };
 
-    const immediate = settled();
+    const immediate = await settled();
     if (immediate !== undefined) return immediate;
 
-    return new Promise<JobRecord[]>(resolve => {
+    return new Promise<JobRecord[]>((resolve, reject) => {
       const cleanups: (() => void)[] = [];
+      let finished = false;
 
       const finish = (records: JobRecord[]): void => {
+        // A notification and the deadline can land in the same tick now that
+        // the settled() check is async; only the first one counts.
+        if (finished) return;
+        finished = true;
         for (const cleanup of cleanups) cleanup();
         resolve(records);
       };
 
       cleanups.push(
         this.onChange(() => {
-          const records = settled();
-          if (records !== undefined) finish(records);
+          void settled().then(
+            records => {
+              if (records !== undefined) finish(records);
+            },
+            error => {
+              if (finished) return;
+              finished = true;
+              for (const cleanup of cleanups) cleanup();
+              reject(error instanceof Error ? error : new Error(String(error)));
+            }
+          );
         })
       );
 
-      const timer = setTimeout(() => finish(snapshot()), timeoutMs);
+      const timer = setTimeout(() => {
+        void snapshot().then(finish, () => finish([]));
+      }, timeoutMs);
       cleanups.push(() => clearTimeout(timer));
     });
   }
 
-  /** Resolves once nothing is running and nothing is waiting to run. */
+  /**
+   * Resolves once nothing is running, nothing is waiting to run, and every
+   * reaction to the last state change has settled — the workflow engine's
+   * `advance` among them, which is what submits the next step.
+   */
   async drain(): Promise<void> {
-    while (this.active.size > 0 || this.deps.jobs.countByState('queued') > 0) {
+    for (;;) {
+      // Let every in-flight reaction finish first: one of them may be about
+      // to submit the next job, which would make "nothing queued" a lie.
+      while (this.reactions.size > 0) await Promise.all([...this.reactions]);
+
+      if (this.active.size === 0 && (await this.deps.jobs.countByState('queued')) === 0) {
+        if (this.reactions.size === 0) return;
+        continue;
+      }
+
       await new Promise<void>(resolve => {
         const unsubscribe = this.onChange(() => {
           unsubscribe();
@@ -204,13 +255,57 @@ export class JobScheduler {
   }
 
   private notify(): void {
-    for (const listener of [...this.listeners]) listener();
+    for (const listener of [...this.listeners]) {
+      let result: void | Promise<void>;
+      try {
+        result = listener();
+      } catch (error) {
+        this.deps.logger.error({ err: error }, 'scheduler change listener failed');
+        continue;
+      }
+      if (result !== undefined) this.track(result, 'scheduler change listener failed');
+    }
   }
 
-  private pump(): void {
+  /**
+   * Register background work `drain` must wait for. A failure here is the
+   * work's own business, not the scheduler's, so it is logged and dropped —
+   * but the promise still has to settle or `drain` would hang on it.
+   */
+  private track(work: Promise<void>, message: string): void {
+    const settled = work
+      .catch((error: unknown) => {
+        this.deps.logger.error({ err: error }, message);
+      })
+      .finally(() => this.reactions.delete(settled));
+    this.reactions.add(settled);
+  }
+
+  /** One pass at a time; see the `pumping` field for why. */
+  private async pump(): Promise<void> {
+    if (this.stopped) return;
+    if (this.pumping) {
+      this.pumpAgain = true;
+      return;
+    }
+
+    this.pumping = true;
+    try {
+      do {
+        this.pumpAgain = false;
+        await this.pumpOnce();
+      } while (this.pumpAgain && !this.stopped);
+    } catch (error) {
+      this.deps.logger.error({ err: error }, 'scheduler pump failed');
+    } finally {
+      this.pumping = false;
+    }
+  }
+
+  private async pumpOnce(): Promise<void> {
     if (this.stopped) return;
 
-    const { unblockable } = this.deps.jobs.releaseBlocked();
+    const { unblockable } = await this.deps.jobs.releaseBlocked();
     for (const stuck of unblockable) {
       // Once per job: `pump` runs on every state change, and a job stays
       // unblockable until someone acts on it.
@@ -219,7 +314,7 @@ export class JobScheduler {
 
       const message = `Dependency ${stuck.dependencyId} ${stuck.dependencyState}, so this job cannot start.`;
       this.deps.logger.warn({ jobId: stuck.job.id, dependencyId: stuck.dependencyId }, message);
-      this.deps.events.append({
+      await this.deps.events.append({
         type: 'job.blocked',
         jobId: stuck.job.id,
         agentId: stuck.job.agentId,
@@ -232,37 +327,40 @@ export class JobScheduler {
     }
     if (unblockable.length > 0) this.notify();
 
-    const globalCap = this.deps.budgets.maxConcurrentFor('global');
+    const globalCap = await this.deps.budgets.maxConcurrentFor('global');
     const ceiling =
       globalCap === undefined ? this.deps.maxConcurrency : Math.min(globalCap, this.deps.maxConcurrency);
 
     while (this.active.size < ceiling) {
       // Look past the jobs we cannot start: one agent sitting at its own cap
       // must not starve every other agent's queue behind it.
-      const candidates = this.deps.jobs
-        .nextQueued(Math.max(this.deps.maxConcurrency * 2, 20))
-        .filter(job => !this.active.has(job.id) && this.hasAgentCapacity(job.agentId));
+      const queued = await this.deps.jobs.nextQueued(Math.max(this.deps.maxConcurrency * 2, 20));
+      const candidates: JobRecord[] = [];
+      for (const job of queued) {
+        if (this.active.has(job.id)) continue;
+        if (await this.hasAgentCapacity(job.agentId)) candidates.push(job);
+      }
 
       // Taking the job is a separate, atomic step: another instance sharing
       // this database may have claimed it between our read and now, and the
       // loser of that race must simply move on to the next candidate.
       let claimed: JobRecord | undefined;
       for (const candidate of candidates) {
-        claimed = this.deps.jobs.claim(candidate.id);
+        claimed = await this.deps.jobs.claim(candidate.id);
         if (claimed !== undefined) break;
       }
 
       if (claimed === undefined) break;
 
-      // Runs until its first await, which is past the claim — so the next
-      // iteration never picks the same job twice.
+      // `execute` registers the job in `active` before its first await, so the
+      // next iteration of this loop never picks the same job twice.
       void this.execute(claimed);
     }
   }
 
   /** Per-agent `maxConcurrent`, which is a budget rather than a config limit. */
-  private hasAgentCapacity(agentId: string): boolean {
-    const cap = this.deps.budgets.maxConcurrentFor('agent', agentId);
+  private async hasAgentCapacity(agentId: string): Promise<boolean> {
+    const cap = await this.deps.budgets.maxConcurrentFor('agent', agentId);
     return cap === undefined || (this.activeByAgent.get(agentId) ?? 0) < cap;
   }
 
@@ -279,7 +377,7 @@ export class JobScheduler {
     let timer: NodeJS.Timeout | undefined;
 
     try {
-      this.deps.events.append({ type: 'job.started', jobId: job.id, agentId: job.agentId });
+      await this.deps.events.append({ type: 'job.started', jobId: job.id, agentId: job.agentId });
       this.notify();
 
       if (job.timeoutSec !== undefined) {
@@ -291,9 +389,9 @@ export class JobScheduler {
 
       // Caps are checked here, immediately before work starts, so a long
       // fan-out cannot overshoot between its first and last job.
-      this.deps.budgets.assertWithinBudget('global');
-      this.deps.budgets.assertWithinBudget('agent', job.agentId);
-      this.deps.budgets.assertWithinBudget('job', job.id);
+      await this.deps.budgets.assertWithinBudget('global');
+      await this.deps.budgets.assertWithinBudget('agent', job.agentId);
+      await this.deps.budgets.assertWithinBudget('job', job.id);
 
       const runnerName = job.agentSnapshot.runner ?? this.deps.defaultRunner;
       const runner = job.backend === 'a2a_remote' ? undefined : this.deps.runners.get(runnerName);
@@ -343,9 +441,9 @@ export class JobScheduler {
                 events: this.deps.events,
                 spawnJob: (parent, input) => this.spawnChild(parent, input),
                 downstream,
-                isAgentVisible: agentId => {
+                isAgentVisible: async agentId => {
                   try {
-                    this.deps.agents.getVisible(agentId, { ownerId: job.ownerId, isAdmin: false });
+                    await this.deps.agents.getVisible(agentId, { ownerId: job.ownerId, isAdmin: false });
                     return true;
                   } catch {
                     return false;
@@ -379,7 +477,7 @@ export class JobScheduler {
             usage = event.usage;
             break;
           case 'progress':
-            this.deps.events.append({
+            await this.deps.events.append({
               type: 'job.progress',
               jobId: job.id,
               payload: { message: event.message }
@@ -390,7 +488,7 @@ export class JobScheduler {
             // The only channel a runner with no toolkit (the A2A gateway) has
             // to store one — a local agent's own artifact_put writes to the
             // store directly and never goes through a RunnerEvent at all.
-            this.deps.artifacts.put({
+            await this.deps.artifacts.put({
               ownerId: job.ownerId,
               name: event.name,
               content: event.content,
@@ -401,14 +499,14 @@ export class JobScheduler {
         }
       }
 
-      this.deps.jobs.transition(job.id, 'succeeded', {
+      await this.deps.jobs.transition(job.id, 'succeeded', {
         resultText: text,
         ...(structured !== undefined && { resultStructured: structured }),
         usage: { ...usage, durationMs: Date.now() - startedAtMs }
       });
-      this.deps.events.append({ type: 'job.succeeded', jobId: job.id, agentId: job.agentId });
+      await this.deps.events.append({ type: 'job.succeeded', jobId: job.id, agentId: job.agentId });
     } catch (error) {
-      this.finishFailed(job.id, error, Date.now() - startedAtMs);
+      await this.finishFailed(job.id, error, Date.now() - startedAtMs);
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       this.active.delete(job.id);
@@ -417,7 +515,7 @@ export class JobScheduler {
       else this.activeByAgent.delete(job.agentId);
       this.abortReasons.delete(job.id);
       this.notify();
-      this.pump();
+      this.track(this.pump(), 'scheduler pump failed');
     }
   }
 
@@ -437,7 +535,7 @@ export class JobScheduler {
       const [serverName, toolName] = grant.split('/', 2);
       if (serverName === undefined || serverName === '') continue;
 
-      const server = pool.get(serverName);
+      const server = await pool.get(serverName);
       if (server === undefined) {
         this.deps.logger.warn({ grant, jobId: job.id }, 'tool grant names an unknown server');
         continue;
@@ -461,11 +559,11 @@ export class JobScheduler {
   }
 
   /** Backs the toolkit's `spawn_job`; depth and budget rules apply as normal. */
-  private spawnChild(parent: JobRecord, input: SpawnJobInput): { jobId: string } {
+  private async spawnChild(parent: JobRecord, input: SpawnJobInput): Promise<{ jobId: string }> {
     // Never admin here: a sub-agent must only ever reach what its own parent's
     // owner could reach — its own agents, or shared ones — never another
     // owner's private agent, no matter which agent is doing the spawning.
-    const agent = resolveAgentTarget(
+    const agent = await resolveAgentTarget(
       this.deps.agents,
       {
         ...(input.agentId !== undefined && { agentId: input.agentId }),
@@ -475,7 +573,7 @@ export class JobScheduler {
       { ownerId: parent.ownerId, isAdmin: false }
     );
 
-    const child = this.submit({
+    const child = await this.submit({
       // A child belongs to whoever owns the parent, not to nobody.
       ownerId: parent.ownerId,
       backend: 'local',
@@ -489,7 +587,7 @@ export class JobScheduler {
     return { jobId: child.id };
   }
 
-  private finishFailed(jobId: string, error: unknown, durationMs: number): void {
+  private async finishFailed(jobId: string, error: unknown, durationMs: number): Promise<void> {
     const reason = this.abortReasons.get(jobId);
     const state: JobState =
       reason === 'timed_out' ? 'timed_out' : reason === 'cancelled' ? 'cancelled' : 'failed';
@@ -502,8 +600,8 @@ export class JobScheduler {
           : toErrorPayload(error);
 
     try {
-      this.deps.jobs.transition(jobId, state, { error: payload, usage: { durationMs } });
-      this.deps.events.append({
+      await this.deps.jobs.transition(jobId, state, { error: payload, usage: { durationMs } });
+      await this.deps.events.append({
         type:
           state === 'timed_out' ? 'job.timed_out' : state === 'cancelled' ? 'job.cancelled' : 'job.failed',
         jobId,

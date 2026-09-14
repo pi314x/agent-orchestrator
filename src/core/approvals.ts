@@ -74,10 +74,10 @@ function toRecord(row: ApprovalRow): ApprovalRecord {
 export class ApprovalStore {
   constructor(private readonly db: Db) {}
 
-  create(input: CreateApprovalInput): ApprovalRecord {
+  async create(input: CreateApprovalInput): Promise<ApprovalRecord> {
     const id = newId('approval');
 
-    this.db
+    await this.db
       .prepare(
         `INSERT INTO approvals (id, status, scope, summary, job_id, run_id, step_id, payload, created_at)
          VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?)`
@@ -96,8 +96,8 @@ export class ApprovalStore {
     return this.getOrThrow(id);
   }
 
-  getOrThrow(approvalId: string): ApprovalRecord {
-    const row = this.db.prepare('SELECT * FROM approvals WHERE id = ?').get(approvalId) as
+  async getOrThrow(approvalId: string): Promise<ApprovalRecord> {
+    const row = (await this.db.prepare('SELECT * FROM approvals WHERE id = ?').get(approvalId)) as
       ApprovalRow | undefined;
     if (row === undefined) {
       throw new OrchestratorError(
@@ -109,7 +109,9 @@ export class ApprovalStore {
     return toRecord(row);
   }
 
-  list(filter: { status?: ApprovalStatus; scope?: ApprovalScope; limit?: number } = {}): ApprovalRecord[] {
+  async list(filter: { status?: ApprovalStatus; scope?: ApprovalScope; limit?: number } = {}): Promise<
+    ApprovalRecord[]
+  > {
     const where: string[] = [];
     const params: unknown[] = [];
 
@@ -125,17 +127,17 @@ export class ApprovalStore {
     const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
     const limit = Math.min(Math.max(filter.limit ?? 50, 1), 100);
 
-    const rows = this.db
+    const rows = (await this.db
       .prepare(`SELECT * FROM approvals ${clause} ORDER BY created_at ASC LIMIT ?`)
-      .all(...params, limit) as ApprovalRow[];
+      .all(...params, limit)) as ApprovalRow[];
 
     return rows.map(toRecord);
   }
 
-  findPendingForStep(runId: string, stepId: string): ApprovalRecord | undefined {
-    const row = this.db
+  async findPendingForStep(runId: string, stepId: string): Promise<ApprovalRecord | undefined> {
+    const row = (await this.db
       .prepare(`SELECT * FROM approvals WHERE run_id = ? AND step_id = ? AND status = 'pending'`)
-      .get(runId, stepId) as ApprovalRow | undefined;
+      .get(runId, stepId)) as ApprovalRow | undefined;
     return row === undefined ? undefined : toRecord(row);
   }
 
@@ -143,29 +145,31 @@ export class ApprovalStore {
    * The most recent decision for a step, whatever its status. The engine needs
    * this so an approved step is not gated a second time when the run resumes.
    */
-  findForStep(runId: string, stepId: string): ApprovalRecord | undefined {
-    const row = this.db
+  async findForStep(runId: string, stepId: string): Promise<ApprovalRecord | undefined> {
+    const row = (await this.db
       .prepare(`SELECT * FROM approvals WHERE run_id = ? AND step_id = ? ORDER BY created_at DESC LIMIT 1`)
-      .get(runId, stepId) as ApprovalRow | undefined;
+      .get(runId, stepId)) as ApprovalRow | undefined;
     return row === undefined ? undefined : toRecord(row);
   }
 
   /** Clears a step's past decision so it is gated fresh next time it runs. Used by retry_step. */
-  deleteForStep(runId: string, stepId: string): number {
-    return this.db.prepare('DELETE FROM approvals WHERE run_id = ? AND step_id = ?').run(runId, stepId)
-      .changes;
+  async deleteForStep(runId: string, stepId: string): Promise<number> {
+    const result = await this.db
+      .prepare('DELETE FROM approvals WHERE run_id = ? AND step_id = ?')
+      .run(runId, stepId);
+    return result.changes;
   }
 
-  resolve(
+  async resolve(
     approvalId: string,
     decision: 'approve' | 'reject',
     options: { comment?: string; editedInput?: Record<string, unknown> } = {}
-  ): ApprovalRecord {
+  ): Promise<ApprovalRecord> {
     // One statement, so the check and the write cannot be separated. A
     // read-then-write let two instances both see `pending` and both resolve:
     // the second decision silently overwrote the first, which for a
     // human-in-the-loop gate means an approve could land on top of a reject.
-    const rows = this.db
+    const rows = (await this.db
       .prepare(
         `UPDATE approvals
             SET status = ?, comment = ?, edited_input = ?, resolved_at = ?
@@ -178,13 +182,13 @@ export class ApprovalStore {
         options.editedInput === undefined ? null : JSON.stringify(options.editedInput),
         new Date().toISOString(),
         approvalId
-      ) as ApprovalRow[];
+      )) as ApprovalRow[];
 
     const row = rows[0];
     if (row !== undefined) return toRecord(row);
 
     // Nothing updated: either it does not exist, or someone else resolved it.
-    const existing = this.getOrThrow(approvalId);
+    const existing = await this.getOrThrow(approvalId);
     throw new OrchestratorError(
       'CONFLICT',
       `Approval ${approvalId} was already ${existing.status}.`,

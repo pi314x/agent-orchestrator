@@ -38,9 +38,9 @@ export const memoryWriteTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
-          const entry = deps.services.memory.write({
+          const entry = await deps.services.memory.write({
             ownerId: deps.principal.ownerId,
             namespace: args.namespace,
             key: args.key,
@@ -81,10 +81,10 @@ export const memoryReadTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
           const ownerId = args.ownerId ?? deps.principal.ownerId;
-          const entry = deps.services.memory.readVisible(ownerId, args.namespace, args.key, deps.principal);
+          const entry = await deps.services.memory.readVisible(ownerId, args.namespace, args.key, deps.principal);
           return entry === undefined
             ? toolOk({ found: false }, `No entry at ${args.namespace}/${args.key}.`)
             : toolOk({ found: true, entry }, `Read ${entry.namespace}/${entry.key}.`);
@@ -122,9 +122,9 @@ export const memorySearchTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
-          const entries = deps.services.memory.searchVisible(
+          const entries = await deps.services.memory.searchVisible(
             {
               query: args.query,
               ...(args.ownerId !== undefined
@@ -168,9 +168,9 @@ export const memoryShareTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
-          deps.services.memory.share(deps.principal.ownerId, args.namespace, args.granteeId);
+          await deps.services.memory.share(deps.principal.ownerId, args.namespace, args.granteeId);
           return toolOk({ shared: true }, `Shared ${args.namespace} with ${args.granteeId}.`);
         } catch (error) {
           return toolError(error);
@@ -202,9 +202,9 @@ export const memoryUnshareTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
-          const revoked = deps.services.memory.unshare(deps.principal.ownerId, args.namespace, args.granteeId);
+          const revoked = await deps.services.memory.unshare(deps.principal.ownerId, args.namespace, args.granteeId);
           return toolOk({ revoked }, revoked ? 'Revoked.' : 'Nothing to revoke.');
         } catch (error) {
           return toolError(error);
@@ -233,9 +233,9 @@ export const memoryShareListTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
-          const granteeIds = deps.services.memory.listShares(deps.principal.ownerId, args.namespace);
+          const granteeIds = await deps.services.memory.listShares(deps.principal.ownerId, args.namespace);
           return toolOk({ granteeIds }, `Shared with ${granteeIds.length} user(s).`);
         } catch (error) {
           return toolError(error);
@@ -269,9 +269,9 @@ export const memoryDeleteTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
-          const deleted = deps.services.memory.delete(deps.principal.ownerId, args.namespace, {
+          const deleted = await deps.services.memory.delete(deps.principal.ownerId, args.namespace, {
             ...(args.key !== undefined && { key: args.key }),
             ...(args.prefix !== undefined && { prefix: args.prefix })
           });

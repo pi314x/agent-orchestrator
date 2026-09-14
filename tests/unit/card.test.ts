@@ -5,12 +5,12 @@ import { migratedDb } from '../helpers.js';
 
 let db: Db;
 
-beforeEach(() => {
-  db = migratedDb();
+beforeEach(async () => {
+  db = await migratedDb();
 });
 
-afterEach(() => {
-  db.close();
+afterEach(async () => {
+  await db.close();
 });
 
 // Regression: fetchAndCache's cardUrl is caller-supplied (agent_register's

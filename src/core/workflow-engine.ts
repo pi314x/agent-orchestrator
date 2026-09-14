@@ -227,26 +227,31 @@ export interface WorkflowEngineDeps {
 
 export class WorkflowEngine {
   private readonly advancing = new Set<string>();
+  /** Runs notified while their own pass was mid-flight; see `advance`. */
+  private readonly advanceAgain = new Set<string>();
 
   constructor(private readonly deps: WorkflowEngineDeps) {
     // Every job state change may unblock a step, so re-evaluate live runs.
+    // The promise is handed back rather than voided: the scheduler tracks it
+    // so `drain` waits for the pass that submits the next step, which used to
+    // be guaranteed for free by this listener running synchronously.
     this.deps.scheduler.onChange(() => this.advanceAll());
   }
 
-  define(spec: WorkflowSpec, ownerId = ''): WorkflowRecord {
+  async define(spec: WorkflowSpec, ownerId = ''): Promise<WorkflowRecord> {
     validateWorkflow(spec);
 
     const now = new Date().toISOString();
     // A name is only unique within one owner (idx would reject otherwise),
     // so redefining an existing name must look within that same owner too —
     // never overwrite (or fail on) a different owner's workflow of that name.
-    const existing = this.deps.db
+    const existing = (await this.deps.db
       .prepare('SELECT id FROM workflows WHERE name = ? AND owner_id = ?')
-      .get(spec.name, ownerId) as { id: string } | undefined;
+      .get(spec.name, ownerId)) as { id: string } | undefined;
 
     const id = existing?.id ?? newId('workflow');
 
-    this.deps.db
+    await this.deps.db
       .prepare(
         `INSERT INTO workflows (id, owner_id, name, spec, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT (owner_id, name) DO UPDATE SET spec = excluded.spec, updated_at = excluded.updated_at`
@@ -268,8 +273,8 @@ export class WorkflowEngine {
   }
 
   /** Unchecked — for internal use only where the caller already has authority (e.g. a run's own spec). */
-  getWorkflowOrThrow(workflowId: string): WorkflowRecord {
-    const row = this.deps.db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId) as
+  async getWorkflowOrThrow(workflowId: string): Promise<WorkflowRecord> {
+    const row = (await this.deps.db.prepare('SELECT * FROM workflows WHERE id = ?').get(workflowId)) as
       WorkflowRow | undefined;
     if (row === undefined) {
       throw new OrchestratorError('NOT_FOUND', `No workflow with id ${workflowId}.`, 'Call workflow_list.');
@@ -278,32 +283,36 @@ export class WorkflowEngine {
   }
 
   /** The tool-facing fetch: NOT_FOUND for a workflow belonging to someone else, existence undisclosed. */
-  getVisibleWorkflow(workflowId: string, principal: { ownerId: string; isAdmin: boolean }): WorkflowRecord {
-    const workflow = this.getWorkflowOrThrow(workflowId);
+  async getVisibleWorkflow(
+    workflowId: string,
+    principal: { ownerId: string; isAdmin: boolean }
+  ): Promise<WorkflowRecord> {
+    const workflow = await this.getWorkflowOrThrow(workflowId);
     if (principal.isAdmin || workflow.ownerId === principal.ownerId) return workflow;
     throw new OrchestratorError('NOT_FOUND', `No workflow with id ${workflowId}.`, 'Call workflow_list.');
   }
 
-  listWorkflows(limit = 20, ownerId?: string): WorkflowRecord[] {
+  async listWorkflows(limit = 20, ownerId?: string): Promise<WorkflowRecord[]> {
     const where = ownerId === undefined ? '' : 'WHERE owner_id = ?';
     const params = ownerId === undefined ? [] : [ownerId];
 
-    const rows = this.deps.db
+    const rows = (await this.deps.db
       .prepare(`SELECT * FROM workflows ${where} ORDER BY name ASC LIMIT ?`)
-      .all(...params, Math.min(Math.max(limit, 1), 100)) as WorkflowRow[];
+      .all(...params, Math.min(Math.max(limit, 1), 100))) as WorkflowRow[];
 
     return rows.map(row => this.toWorkflowRecord(row));
   }
 
-  deleteWorkflow(workflowId: string, principal: { ownerId: string; isAdmin: boolean }): boolean {
+  async deleteWorkflow(workflowId: string, principal: { ownerId: string; isAdmin: boolean }): Promise<boolean> {
     // Visibility first: deleting something you cannot even see must read as
     // "there was nothing to delete", not silently succeed on someone else's row.
-    this.getVisibleWorkflow(workflowId, principal);
+    await this.getVisibleWorkflow(workflowId, principal);
     // Runs stay in history; only the definition goes.
-    return this.deps.db.prepare('DELETE FROM workflows WHERE id = ?').run(workflowId).changes > 0;
+    const result = await this.deps.db.prepare('DELETE FROM workflows WHERE id = ?').run(workflowId);
+    return result.changes > 0;
   }
 
-  start(input: {
+  async start(input: {
     /** Owner of the new run and everything it spawns. Omitted means '' (single-owner). */
     ownerId?: string;
     /** Whether the starting caller is an admin — governs visibility of an existing workflowId. */
@@ -312,16 +321,16 @@ export class WorkflowEngine {
     spec?: WorkflowSpec;
     inputs?: Record<string, unknown>;
     idempotencyKey?: string;
-  }): WorkflowRunRecord {
+  }): Promise<WorkflowRunRecord> {
     const principal = { ownerId: input.ownerId ?? '', isAdmin: input.isAdmin ?? false };
 
     if (input.idempotencyKey !== undefined) {
       // Scoped to the same owner, matching the (owner_id, idempotency_key)
       // index — two different owners choosing the same key string must never
       // hand one of them back the other's run.
-      const existing = this.deps.db
+      const existing = (await this.deps.db
         .prepare('SELECT id FROM workflow_runs WHERE idempotency_key = ? AND owner_id = ?')
-        .get(input.idempotencyKey, principal.ownerId) as { id: string } | undefined;
+        .get(input.idempotencyKey, principal.ownerId)) as { id: string } | undefined;
       if (existing !== undefined) return this.getRun(existing.id);
     }
 
@@ -329,7 +338,7 @@ export class WorkflowEngine {
     // that belongs to someone else, the same class of gap resolveAgentTarget
     // had for agentId.
     const workflow =
-      input.workflowId === undefined ? undefined : this.getVisibleWorkflow(input.workflowId, principal);
+      input.workflowId === undefined ? undefined : await this.getVisibleWorkflow(input.workflowId, principal);
     const spec = workflow?.spec ?? input.spec;
 
     if (spec === undefined) {
@@ -344,8 +353,8 @@ export class WorkflowEngine {
     const runId = newId('workflowRun');
     const now = new Date().toISOString();
 
-    const create = this.deps.db.transaction(() => {
-      this.deps.db
+    await this.deps.db.transaction(async tx => {
+      await tx
         .prepare(
           `INSERT INTO workflow_runs (id, owner_id, workflow_id, spec, inputs, state, idempotency_key, created_at, updated_at)
            VALUES (?, ?, ?, ?, ?, 'running', ?, ?, ?)`
@@ -361,25 +370,23 @@ export class WorkflowEngine {
           now
         );
 
-      const insertStep = this.deps.db.prepare(
+      const insertStep = tx.prepare(
         `INSERT INTO step_runs (id, run_id, step_id, state, attempt, created_at, updated_at)
          VALUES (?, ?, ?, 'pending', 0, ?, ?)`
       );
       for (const step of spec.steps) {
-        insertStep.run(newId('workflowRun'), runId, step.id, now, now);
+        await insertStep.run(newId('workflowRun'), runId, step.id, now, now);
       }
     });
 
-    create();
-
-    this.deps.events.append({ type: 'workflow.started', runId, payload: { name: spec.name } });
-    this.advance(runId);
+    await this.deps.events.append({ type: 'workflow.started', runId, payload: { name: spec.name } });
+    await this.advance(runId);
     return this.getRun(runId);
   }
 
   /** Unchecked — for internal use only (advanceOnce, spawning, the idempotency shortcut). */
-  getRun(runId: string): WorkflowRunRecord {
-    const row = this.deps.db.prepare('SELECT * FROM workflow_runs WHERE id = ?').get(runId) as
+  async getRun(runId: string): Promise<WorkflowRunRecord> {
+    const row = (await this.deps.db.prepare('SELECT * FROM workflow_runs WHERE id = ?').get(runId)) as
       RunRow | undefined;
     if (row === undefined) {
       throw new OrchestratorError(
@@ -390,7 +397,9 @@ export class WorkflowEngine {
     }
 
     const spec = JSON.parse(row.spec) as WorkflowSpec;
-    const stepRows = this.deps.db.prepare('SELECT * FROM step_runs WHERE run_id = ?').all(runId) as StepRow[];
+    const stepRows = (await this.deps.db
+      .prepare('SELECT * FROM step_runs WHERE run_id = ?')
+      .all(runId)) as StepRow[];
 
     const byId = new Map(stepRows.map(step => [step.step_id, step]));
 
@@ -421,15 +430,18 @@ export class WorkflowEngine {
   }
 
   /** The tool-facing fetch: NOT_FOUND for a run belonging to someone else, existence undisclosed. */
-  getVisibleRun(runId: string, principal: { ownerId: string; isAdmin: boolean }): WorkflowRunRecord {
-    const run = this.getRun(runId);
+  async getVisibleRun(
+    runId: string,
+    principal: { ownerId: string; isAdmin: boolean }
+  ): Promise<WorkflowRunRecord> {
+    const run = await this.getRun(runId);
     if (principal.isAdmin || run.ownerId === principal.ownerId) return run;
     throw new OrchestratorError('NOT_FOUND', `No workflow run with id ${runId}.`, 'Call workflow_run_list.');
   }
 
-  listRuns(
+  async listRuns(
     filter: { workflowId?: string; state?: RunState; limit?: number; ownerId?: string } = {}
-  ): WorkflowRunRecord[] {
+  ): Promise<WorkflowRunRecord[]> {
     const where: string[] = [];
     const params: unknown[] = [];
 
@@ -447,11 +459,11 @@ export class WorkflowEngine {
     }
 
     const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
-    const rows = this.deps.db
+    const rows = (await this.deps.db
       .prepare(`SELECT id FROM workflow_runs ${clause} ORDER BY id DESC LIMIT ?`)
-      .all(...params, Math.min(Math.max(filter.limit ?? 20, 1), 100)) as { id: string }[];
+      .all(...params, Math.min(Math.max(filter.limit ?? 20, 1), 100))) as { id: string }[];
 
-    return rows.map(row => this.getRun(row.id));
+    return Promise.all(rows.map(row => this.getRun(row.id)));
   }
 
   /**
@@ -461,32 +473,32 @@ export class WorkflowEngine {
    * so a reviewer resuming a run they do not own is the entire point of a
    * gate, not a bypass of one.
    */
-  control(
+  async control(
     runId: string,
     action: 'pause' | 'resume' | 'cancel' | 'retry_step',
     stepId?: string,
     principal?: { ownerId: string; isAdmin: boolean }
-  ): WorkflowRunRecord {
-    const run = principal === undefined ? this.getRun(runId) : this.getVisibleRun(runId, principal);
+  ): Promise<WorkflowRunRecord> {
+    const run = principal === undefined ? await this.getRun(runId) : await this.getVisibleRun(runId, principal);
 
     switch (action) {
       case 'pause':
-        this.setRunState(runId, 'paused');
+        await this.setRunState(runId, 'paused');
         break;
 
       case 'resume':
-        if (run.state === 'paused') this.setRunState(runId, 'running');
-        this.advance(runId);
+        if (run.state === 'paused') await this.setRunState(runId, 'running');
+        await this.advance(runId);
         break;
 
       case 'cancel': {
         for (const step of run.steps) {
           if (step.jobId !== undefined && !STEP_TERMINAL.has(step.state)) {
-            this.deps.scheduler.cancel(step.jobId, 'Workflow run cancelled.');
+            await this.deps.scheduler.cancel(step.jobId, 'Workflow run cancelled.');
           }
-          if (!STEP_TERMINAL.has(step.state)) this.setStepState(runId, step.stepId, 'cancelled');
+          if (!STEP_TERMINAL.has(step.state)) await this.setStepState(runId, step.stepId, 'cancelled');
         }
-        this.finishRun(runId, 'cancelled');
+        await this.finishRun(runId, 'cancelled');
         break;
       }
 
@@ -507,9 +519,9 @@ export class WorkflowEngine {
         // longer points at it. Cancel any live job first, exactly like the
         // 'cancel' action already does for every non-terminal step.
         if (target.jobId !== undefined && !STEP_TERMINAL.has(target.state)) {
-          this.deps.scheduler.cancel(target.jobId, 'Retried by workflow_run_control.');
+          await this.deps.scheduler.cancel(target.jobId, 'Retried by workflow_run_control.');
         }
-        this.deps.db
+        await this.deps.db
           .prepare(
             `UPDATE step_runs SET state = 'pending', job_id = NULL, error = NULL, output = NULL, updated_at = ?
              WHERE run_id = ? AND step_id = ?`
@@ -520,9 +532,9 @@ export class WorkflowEngine {
         // rejected decision forever, since nothing else ever creates a new
         // one once a decision exists. Clearing it here is what lets the step
         // be gated fresh, exactly like a step running for the first time.
-        this.deps.approvals.deleteForStep(runId, stepId);
-        this.setRunState(runId, 'running');
-        this.advance(runId);
+        await this.deps.approvals.deleteForStep(runId, stepId);
+        await this.setRunState(runId, 'running');
+        await this.advance(runId);
         break;
       }
     }
@@ -530,65 +542,78 @@ export class WorkflowEngine {
     return this.getRun(runId);
   }
 
-  private advanceAll(): void {
-    const rows = this.deps.db
+  private async advanceAll(): Promise<void> {
+    const rows = (await this.deps.db
       .prepare(`SELECT id FROM workflow_runs WHERE state IN ('running', 'paused')`)
-      .all() as { id: string }[];
-    for (const row of rows) this.advance(row.id);
+      .all()) as { id: string }[];
+    for (const row of rows) await this.advance(row.id);
   }
 
   /**
-   * One pass of the run's state machine. Re-entrant calls are dropped because
-   * submitting a job notifies the scheduler, which calls back into here.
+   * One pass of the run's state machine. A re-entrant call is not dropped but
+   * folded into the pass already running: submitting a job notifies the
+   * scheduler, which calls straight back into here, and while `advanceOnce`
+   * was synchronous that nested call could safely be ignored because the
+   * outer pass had not yet read the state it would have seen. Now that the
+   * pass awaits, a dropped notification is a genuinely missed state change —
+   * the job that just finished would sit settled with nothing scheduling the
+   * step after it. Same shape as the scheduler's own `pump` guard.
    */
-  private advance(runId: string): void {
-    if (this.advancing.has(runId)) return;
+  private async advance(runId: string): Promise<void> {
+    if (this.advancing.has(runId)) {
+      this.advanceAgain.add(runId);
+      return;
+    }
     this.advancing.add(runId);
 
     try {
-      this.advanceOnce(runId);
+      do {
+        this.advanceAgain.delete(runId);
+        await this.advanceOnce(runId);
+      } while (this.advanceAgain.has(runId));
     } catch (error) {
       this.deps.logger.error({ err: error, runId }, 'workflow advance failed');
     } finally {
+      this.advanceAgain.delete(runId);
       this.advancing.delete(runId);
     }
   }
 
-  private advanceOnce(runId: string): void {
-    const run = this.getRun(runId);
+  private async advanceOnce(runId: string): Promise<void> {
+    const run = await this.getRun(runId);
     if (run.state === 'succeeded' || run.state === 'failed' || run.state === 'cancelled') return;
 
-    const spec = this.specFor(runId);
+    const spec = await this.specFor(runId);
     const stepById = new Map(run.steps.map(step => [step.stepId, step]));
 
     // 1. Settle anything that was running.
     for (const step of run.steps) {
       if (step.state !== 'running' || step.jobId === undefined) continue;
 
-      const job = this.deps.jobs.get(step.jobId);
+      const job = await this.deps.jobs.get(step.jobId);
       if (job === undefined || !isTerminal(job.state)) continue;
 
       const definition = spec.steps.find(s => s.id === step.stepId);
 
       if (job.state === 'succeeded') {
-        this.setStepState(runId, step.stepId, 'succeeded', {
+        await this.setStepState(runId, step.stepId, 'succeeded', {
           output: job.resultStructured ?? job.resultText ?? null
         });
       } else if (step.attempt <= (definition?.retries ?? 0)) {
         // Another attempt is allowed; put the step back in the queue.
-        this.setStepState(runId, step.stepId, 'pending');
+        await this.setStepState(runId, step.stepId, 'pending');
       } else {
-        this.setStepState(runId, step.stepId, 'failed', {
+        await this.setStepState(runId, step.stepId, 'failed', {
           error: job.error ?? { code: 'RUNNER_FAILED', message: `Step job ended ${job.state}.` }
         });
       }
     }
 
     // 2. Resolve approval gates.
-    for (const step of this.getRun(runId).steps) {
+    for (const step of (await this.getRun(runId)).steps) {
       if (step.state !== 'awaiting_approval') continue;
 
-      const approval = this.deps.approvals.findPendingForStep(runId, step.stepId);
+      const approval = await this.deps.approvals.findPendingForStep(runId, step.stepId);
       if (approval !== undefined) continue;
 
       // Not list({ limit: 100 }).find(...): that scans the 100 OLDEST
@@ -596,30 +621,31 @@ export class WorkflowEngine {
       // more than 100 approval rows, a just-resolved decision for this run
       // falls outside the window and the step hangs in awaiting_approval
       // forever. findForStep is scoped to this exact (runId, stepId).
-      const resolved = this.deps.approvals.findForStep(runId, step.stepId);
+      const resolved = await this.deps.approvals.findForStep(runId, step.stepId);
 
       if (resolved?.status === 'approved') {
-        this.setStepState(runId, step.stepId, 'pending');
-        this.setRunState(runId, 'running');
+        await this.setStepState(runId, step.stepId, 'pending');
+        await this.setRunState(runId, 'running');
       } else if (resolved?.status === 'rejected') {
-        this.setStepState(runId, step.stepId, 'failed', {
+        await this.setStepState(runId, step.stepId, 'failed', {
           error: { code: 'POLICY_DENIED', message: resolved.comment ?? 'Rejected by a human reviewer.' }
         });
-        this.setRunState(runId, 'running');
+        await this.setRunState(runId, 'running');
       }
     }
 
     // 3. Start whatever is now ready.
-    const current = this.getRun(runId);
+    const current = await this.getRun(runId);
     if (current.state === 'paused') return;
 
     for (const definition of spec.steps) {
       const step = stepById.get(definition.id);
-      const state = this.getRun(runId).steps.find(s => s.stepId === definition.id)?.state ?? step?.state;
+      const state = (await this.getRun(runId)).steps.find(s => s.stepId === definition.id)?.state ?? step?.state;
       if (state !== 'pending') continue;
 
       const deps = definition.dependsOn ?? [];
-      const depRuns = deps.map(id => this.getRun(runId).steps.find(s => s.stepId === id));
+      const runNow = await this.getRun(runId);
+      const depRuns = deps.map(id => runNow.steps.find(s => s.stepId === id));
 
       // A dependency that died takes this step with it, transitively. Marking
       // the skip with DEPENDENCY_FAILED is what carries the failure down the
@@ -628,7 +654,7 @@ export class WorkflowEngine {
       const dead = depRuns.find(dep => dep !== undefined && isDeadDependency(dep));
 
       if (dead !== undefined) {
-        this.setStepState(runId, definition.id, 'skipped', {
+        await this.setStepState(runId, definition.id, 'skipped', {
           error: {
             code: 'DEPENDENCY_FAILED',
             message: `Step "${dead.stepId}" ${dead.state === 'skipped' ? 'was skipped after its own dependency failed' : dead.state}, so this step cannot run.`
@@ -639,66 +665,66 @@ export class WorkflowEngine {
 
       if (!depRuns.every(dep => dep?.state === 'succeeded' || dep?.state === 'skipped')) continue;
 
-      const vars = this.templateVars(runId);
+      const vars = await this.templateVars(runId);
 
       if (definition.when !== undefined && !isTruthy(renderTemplate(definition.when, vars))) {
-        this.setStepState(runId, definition.id, 'skipped');
+        await this.setStepState(runId, definition.id, 'skipped');
         continue;
       }
 
       if (definition.approval === true) {
         // A decision already made must not re-gate the step when the run
         // resumes, or approving would simply open a fresh approval.
-        const decision = this.deps.approvals.findForStep(runId, definition.id);
+        const decision = await this.deps.approvals.findForStep(runId, definition.id);
 
         if (decision === undefined) {
-          this.deps.approvals.create({
+          await this.deps.approvals.create({
             scope: 'workflow_step',
             runId,
             stepId: definition.id,
             summary: `Approve step "${definition.id}" of ${spec.name}?`,
             payload: { instruction: renderTemplate(definition.instruction, vars) }
           });
-          this.setStepState(runId, definition.id, 'awaiting_approval');
-          this.setRunState(runId, 'paused');
+          await this.setStepState(runId, definition.id, 'awaiting_approval');
+          await this.setRunState(runId, 'paused');
           continue;
         }
 
         if (decision.status === 'pending') {
-          this.setStepState(runId, definition.id, 'awaiting_approval');
-          this.setRunState(runId, 'paused');
+          await this.setStepState(runId, definition.id, 'awaiting_approval');
+          await this.setRunState(runId, 'paused');
           continue;
         }
 
         if (decision.status === 'rejected') {
-          this.setStepState(runId, definition.id, 'failed', {
+          await this.setStepState(runId, definition.id, 'failed', {
             error: { code: 'POLICY_DENIED', message: decision.comment ?? 'Rejected by a human reviewer.' }
           });
           continue;
         }
       }
 
-      this.startStep(runId, definition, vars, run.ownerId);
+      await this.startStep(runId, definition, vars, run.ownerId);
     }
 
     // 4. Close the run out when nothing is left to do.
-    const settled = this.getRun(runId);
+    const settled = await this.getRun(runId);
     const allTerminal = settled.steps.every(step => STEP_TERMINAL.has(step.state));
     if (!allTerminal) return;
 
     const failed = settled.steps.some(step => step.state === 'failed');
-    this.finishRun(runId, failed ? 'failed' : 'succeeded');
+    await this.finishRun(runId, failed ? 'failed' : 'succeeded');
   }
 
-  private startStep(
+  private async startStep(
     runId: string,
     definition: WorkflowStep,
     vars: Record<string, unknown>,
     ownerId: string
-  ): void {
+  ): Promise<void> {
     // Never admin: a step naming an agentId/skillQuery reaches only what the
     // run's own starter could reach — their own agents, or shared ones.
-    const agent = resolveAgentTarget(
+    const agent = await resolveAgentTarget(
       this.deps.agents,
       {
         ...(definition.agentId !== undefined && { agentId: definition.agentId }),
@@ -709,7 +735,7 @@ export class WorkflowEngine {
       { ownerId, isAdmin: false }
     );
 
-    const job = this.deps.scheduler.submit({
+    const job = await this.deps.scheduler.submit({
       ownerId,
       backend: 'local',
       agentId: agent.id,
@@ -719,11 +745,11 @@ export class WorkflowEngine {
       ...(definition.outputSchema !== undefined && { outputSchema: definition.outputSchema })
     });
 
-    const row = this.deps.db
+    const row = (await this.deps.db
       .prepare('SELECT attempt FROM step_runs WHERE run_id = ? AND step_id = ?')
-      .get(runId, definition.id) as { attempt: number };
+      .get(runId, definition.id)) as { attempt: number };
 
-    this.deps.db
+    await this.deps.db
       .prepare(
         `UPDATE step_runs SET state = 'running', job_id = ?, attempt = ?, updated_at = ?
          WHERE run_id = ? AND step_id = ?`
@@ -731,8 +757,8 @@ export class WorkflowEngine {
       .run(job.id, row.attempt + 1, new Date().toISOString(), runId, definition.id);
   }
 
-  private templateVars(runId: string): Record<string, unknown> {
-    const run = this.getRun(runId);
+  private async templateVars(runId: string): Promise<Record<string, unknown>> {
+    const run = await this.getRun(runId);
     const steps: Record<string, unknown> = {};
     for (const step of run.steps) {
       steps[step.stepId] = { output: step.output ?? null, state: step.state };
@@ -740,20 +766,20 @@ export class WorkflowEngine {
     return { inputs: run.inputs, steps };
   }
 
-  private specFor(runId: string): WorkflowSpec {
-    const row = this.deps.db.prepare('SELECT spec FROM workflow_runs WHERE id = ?').get(runId) as {
+  private async specFor(runId: string): Promise<WorkflowSpec> {
+    const row = (await this.deps.db.prepare('SELECT spec FROM workflow_runs WHERE id = ?').get(runId)) as {
       spec: string;
     };
     return JSON.parse(row.spec) as WorkflowSpec;
   }
 
-  private setStepState(
+  private async setStepState(
     runId: string,
     stepId: string,
     state: StepState,
     patch: { output?: unknown; error?: ErrorPayload } = {}
-  ): void {
-    this.deps.db
+  ): Promise<void> {
+    await this.deps.db
       .prepare(
         `UPDATE step_runs SET state = ?, output = COALESCE(?, output), error = COALESCE(?, error), updated_at = ?
          WHERE run_id = ? AND step_id = ?`
@@ -768,19 +794,19 @@ export class WorkflowEngine {
       );
   }
 
-  private setRunState(runId: string, state: RunState): void {
-    this.deps.db
+  private async setRunState(runId: string, state: RunState): Promise<void> {
+    await this.deps.db
       .prepare('UPDATE workflow_runs SET state = ?, updated_at = ? WHERE id = ?')
       .run(state, new Date().toISOString(), runId);
   }
 
-  private finishRun(runId: string, state: RunState): void {
+  private async finishRun(runId: string, state: RunState): Promise<void> {
     const now = new Date().toISOString();
-    this.deps.db
+    await this.deps.db
       .prepare('UPDATE workflow_runs SET state = ?, updated_at = ?, finished_at = ? WHERE id = ?')
       .run(state, now, now, runId);
 
-    this.deps.events.append({
+    await this.deps.events.append({
       type: state === 'succeeded' ? 'workflow.succeeded' : 'workflow.failed',
       runId,
       payload: { state }

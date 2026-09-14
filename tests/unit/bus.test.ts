@@ -3,42 +3,42 @@ import { MessageBus } from '../../src/core/bus.js';
 import { migratedDb } from '../helpers.js';
 
 describe('MessageBus', () => {
-  it('sends a message and lists it back', () => {
-    const bus = new MessageBus(migratedDb());
-    const sent = bus.send({ toAgentId: 'agt_1', body: 'hello' });
+  it('sends a message and lists it back', async () => {
+    const bus = new MessageBus(await migratedDb());
+    const sent = await bus.send({ toAgentId: 'agt_1', body: 'hello' });
 
-    expect(bus.list({ agentId: 'agt_1' })).toEqual([sent]);
+    expect(await bus.list({ agentId: 'agt_1' })).toEqual([sent]);
   });
 
-  it('requires at least one recipient', () => {
-    const bus = new MessageBus(migratedDb());
-    expect(() => bus.send({ body: 'nowhere' })).toThrow(/recipient/);
+  it('requires at least one recipient', async () => {
+    const bus = new MessageBus(await migratedDb());
+    await expect(bus.send({ body: 'nowhere' })).rejects.toThrow(/recipient/);
   });
 
-  it('markRead only touches the given ids, once', () => {
-    const bus = new MessageBus(migratedDb());
-    const a = bus.send({ toAgentId: 'agt_1', body: 'a' });
-    const b = bus.send({ toAgentId: 'agt_1', body: 'b' });
+  it('markRead only touches the given ids, once', async () => {
+    const bus = new MessageBus(await migratedDb());
+    const a = await bus.send({ toAgentId: 'agt_1', body: 'a' });
+    const b = await bus.send({ toAgentId: 'agt_1', body: 'b' });
 
-    expect(bus.markRead([a.messageId])).toBe(1);
-    expect(bus.markRead([a.messageId])).toBe(0); // already read
-    const unread = bus.list({ agentId: 'agt_1', unreadOnly: true });
+    expect(await bus.markRead([a.messageId])).toBe(1);
+    expect(await bus.markRead([a.messageId])).toBe(0); // already read
+    const unread = await bus.list({ agentId: 'agt_1', unreadOnly: true });
     expect(unread.map(m => m.messageId)).toEqual([b.messageId]);
   });
 
   describe('createChannel', () => {
-    it('creates a channel with its own id kind, not a message id', () => {
-      const bus = new MessageBus(migratedDb());
-      const channel = bus.createChannel('team', ['alice']);
+    it('creates a channel with its own id kind, not a message id', async () => {
+      const bus = new MessageBus(await migratedDb());
+      const channel = await bus.createChannel('team', ['alice']);
 
       expect(channel.channelId).toMatch(/^chan_/);
       expect(channel.members).toEqual(['alice']);
     });
 
-    it('returns the existing channel for a repeated name instead of erroring', () => {
-      const bus = new MessageBus(migratedDb());
-      const first = bus.createChannel('team', ['alice']);
-      const second = bus.createChannel('team', ['bob']);
+    it('returns the existing channel for a repeated name instead of erroring', async () => {
+      const bus = new MessageBus(await migratedDb());
+      const first = await bus.createChannel('team', ['alice']);
+      const second = await bus.createChannel('team', ['bob']);
 
       expect(second.channelId).toBe(first.channelId);
       // The second call's members are ignored — the channel already exists.
@@ -62,8 +62,8 @@ describe('MessageBus', () => {
     // once their SELECTs had both already missed the row), must not throw.
     // The plain INSERT this replaced would raise SQLITE_CONSTRAINT_UNIQUE
     // here; ON CONFLICT (name) DO UPDATE must not.
-    it("the channel insert survives a name collision the caller's own guard cannot see coming", () => {
-      const db = migratedDb();
+    it("the channel insert survives a name collision the caller's own guard cannot see coming", async () => {
+      const db = await migratedDb();
       const insert = db.prepare(
         `INSERT INTO channels (id, name, members, created_at) VALUES (?, ?, ?, ?)
          ON CONFLICT (name) DO UPDATE SET name = excluded.name`
@@ -72,16 +72,16 @@ describe('MessageBus', () => {
       insert.run('chan_a', 'team', JSON.stringify(['alice']), new Date().toISOString());
       expect(() => insert.run('chan_b', 'team', JSON.stringify(['bob']), new Date().toISOString())).not.toThrow();
 
-      const row = db.prepare('SELECT * FROM channels WHERE name = ?').get('team') as { id: string };
+      const row = (await db.prepare('SELECT * FROM channels WHERE name = ?').get('team')) as { id: string };
       expect(row.id).toBe('chan_a');
     });
   });
 
-  it('listChannels lists every channel, alphabetically', () => {
-    const bus = new MessageBus(migratedDb());
-    bus.createChannel('zeta');
-    bus.createChannel('alpha');
+  it('listChannels lists every channel, alphabetically', async () => {
+    const bus = new MessageBus(await migratedDb());
+    await bus.createChannel('zeta');
+    await bus.createChannel('alpha');
 
-    expect(bus.listChannels().map(c => c.name)).toEqual(['alpha', 'zeta']);
+    expect((await bus.listChannels()).map(c => c.name)).toEqual(['alpha', 'zeta']);
   });
 });

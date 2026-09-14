@@ -124,8 +124,8 @@ function postWithOrigin(url: string, origin: string | undefined, body: string): 
 
 describe('A2A inbound server', () => {
   it('serves the Agent Card at the well-known path', async () => {
-    services = testServices();
-    services.publishedSkills.upsert({
+    services = await testServices();
+    await services.publishedSkills.upsert({
       skillId: 'review',
       templateName: 'reviewer',
       description: 'Reviews code.',
@@ -141,7 +141,7 @@ describe('A2A inbound server', () => {
   });
 
   it('publishes nothing until a skill is opted in', async () => {
-    services = testServices();
+    services = await testServices();
     server = await start(services);
 
     const card = (await (await fetch(server.cardUrl)).json()) as { skills: unknown[] };
@@ -152,21 +152,21 @@ describe('A2A inbound server', () => {
   // Regression: DefaultRequestHandler takes the card by value, so a skill
   // withdrawn after startup stayed advertised until the process restarted.
   it('stops advertising a skill as soon as it is withdrawn', async () => {
-    services = testServices();
+    services = await testServices();
     const skill = { skillId: 'review', templateName: 'reviewer', description: 'x' };
-    services.publishedSkills.upsert({ ...skill, exposed: true });
+    await services.publishedSkills.upsert({ ...skill, exposed: true });
     server = await start(services);
 
     expect(((await (await fetch(server.cardUrl)).json()) as { skills: unknown[] }).skills).toHaveLength(1);
 
-    services.publishedSkills.upsert({ ...skill, exposed: false });
+    await services.publishedSkills.upsert({ ...skill, exposed: false });
 
     expect(((await (await fetch(server.cardUrl)).json()) as { skills: unknown[] }).skills).toEqual([]);
   });
 
   it('runs a published skill and returns its result', async () => {
-    services = testServices({ mockScript: job => ({ text: `handled:${job.instruction}` }) });
-    services.publishedSkills.upsert({
+    services = await testServices({ mockScript: job => ({ text: `handled:${job.instruction}` }) });
+    await services.publishedSkills.upsert({
       skillId: 'review',
       templateName: 'reviewer',
       description: 'x',
@@ -181,7 +181,7 @@ describe('A2A inbound server', () => {
   });
 
   it('rejects a skill that was never published', async () => {
-    services = testServices();
+    services = await testServices();
     server = await start(services);
 
     const body = await rpc(server.url, 'SendMessage', sendParams('do something', 'not-published'));
@@ -190,7 +190,7 @@ describe('A2A inbound server', () => {
   });
 
   it('refuses a request whose Host header is not allowed', async () => {
-    services = testServices();
+    services = await testServices();
     server = await start(services);
 
     await expect(getWithHost(server.cardUrl, 'evil.example.com')).resolves.toBe(403);
@@ -203,7 +203,7 @@ describe('A2A inbound server', () => {
   // from posting JSON-RPC directly to this loopback server - only Origin
   // validation does, which is why the MCP surface (src/http.ts) checks both.
   it('refuses a request whose Origin header is not allowed, even with a valid Host', async () => {
-    services = testServices();
+    services = await testServices();
     server = await start(services);
     const body = JSON.stringify({
       jsonrpc: '2.0',
@@ -219,7 +219,7 @@ describe('A2A inbound server', () => {
   });
 
   it('answers a malformed body with a JSON-RPC parse error, not a crash', async () => {
-    services = testServices();
+    services = await testServices();
     server = await start(services);
 
     const response = await fetch(server.url, {
@@ -233,7 +233,7 @@ describe('A2A inbound server', () => {
   });
 
   it('404s an unknown path with a pointer to the real ones', async () => {
-    services = testServices();
+    services = await testServices();
     server = await start(services);
 
     const response = await fetch(`${server.url.replace('/a2a', '')}/nope`);
@@ -247,8 +247,8 @@ describe('A2A inbound server', () => {
   // to completion — the cancel changed the report, not the work.
   it('cancelling a task cancels the job behind it', async () => {
     const gate = deferred();
-    services = testServices({ mockScript: () => ({ gate: gate.promise }) });
-    services.publishedSkills.upsert({
+    services = await testServices({ mockScript: () => ({ gate: gate.promise }) });
+    await services.publishedSkills.upsert({
       skillId: 'slow',
       templateName: 'coder',
       description: 'x',
@@ -262,7 +262,7 @@ describe('A2A inbound server', () => {
     let jobId: string | undefined;
     for (let attempt = 0; attempt < 40 && jobId === undefined; attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 25));
-      jobId = (services as Services).jobs.list({ state: 'running' }).jobs[0]?.id;
+      jobId = (await (services as Services).jobs.list({ state: 'running' })).jobs[0]?.id;
     }
     expect(jobId).toBeDefined();
 
@@ -274,7 +274,7 @@ describe('A2A inbound server', () => {
     expect(cancelled['error']).toBeUndefined();
 
     // The job must already be cancelled — without ever releasing the gate.
-    const after = (services as Services).jobs.getOrThrow(jobId as string);
+    const after = await (services as Services).jobs.getOrThrow(jobId as string);
     expect(after.state).toBe('cancelled');
 
     gate.resolve();
@@ -289,14 +289,14 @@ describe('A2A inbound server', () => {
   // very agent that ran it, breaking the "a job belongs to whoever owns the
   // agent doing the work" convention every other job-creation path follows.
   it("the job behind an inbound task belongs to the published agent's owner", async () => {
-    services = testServices({ mockScript: job => ({ text: `handled:${job.instruction}` }) });
-    const agent = services.agents.create({
+    services = await testServices({ mockScript: job => ({ text: `handled:${job.instruction}` }) });
+    const agent = await services.agents.create({
       ownerId: 'user_alice',
       name: 'alice-published',
       instructions: 'x',
       runner: 'mock'
     });
-    services.publishedSkills.upsert({
+    await services.publishedSkills.upsert({
       skillId: 'review',
       agentId: agent.id,
       description: 'x',
@@ -307,8 +307,8 @@ describe('A2A inbound server', () => {
     const body = await rpc(server.url, 'SendMessage', sendParams('check this diff', 'review'));
     expect(body['error']).toBeUndefined();
 
-    const job = services.jobs.list({}).jobs.find(j => j.agentId === agent.id);
+    const job = (await services.jobs.list({})).jobs.find(j => j.agentId === agent.id);
     expect(job?.ownerId).toBe('user_alice');
-    expect(services.jobs.getVisible(job!.id, { ownerId: 'user_alice', isAdmin: false }).id).toBe(job!.id);
+    expect((await services.jobs.getVisible(job!.id, { ownerId: 'user_alice', isAdmin: false })).id).toBe(job!.id);
   });
 });

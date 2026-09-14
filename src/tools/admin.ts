@@ -52,26 +52,28 @@ export const orchestratorStatusTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      () => {
+      async () => {
         try {
           const { config, db, jobs } = deps.services;
+
+          const [queued, running, blocked] = await Promise.all([
+            jobs.countByState('queued'),
+            jobs.countByState('running'),
+            jobs.countByState('blocked')
+          ]);
 
           const status = buildStatus({
             version: deps.version,
             profile: config.toolProfile,
             transport: config.transport,
             protocolEra: deps.era,
-            schemaVersion: getSchemaVersion(db),
+            schemaVersion: await getSchemaVersion(db),
             latestSchemaVersion: LATEST_SCHEMA_VERSION,
             a2aEnabled: config.a2aEnabled,
             maxConcurrency: config.maxConcurrency,
             maxDepth: config.maxDepth,
             uptimeSec: (Date.now() - deps.startedAt) / 1000,
-            jobs: {
-              queued: jobs.countByState('queued'),
-              running: jobs.countByState('running'),
-              blocked: jobs.countByState('blocked')
-            }
+            jobs: { queued, running, blocked }
           });
 
           return toolOk(

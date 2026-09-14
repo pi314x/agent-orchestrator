@@ -51,7 +51,7 @@ export const jobSubmitTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
           // dependsOn is a caller-supplied job id resolved by releaseBlocked
           // on every scheduler pump, not just here — and unlike job_wait's
@@ -63,10 +63,10 @@ export const jobSubmitTool: ToolRegistration = {
           // owner's private job's existence, state and the exact timing of
           // its state changes, without ever going through job_get.
           for (const depId of args.dependsOn ?? []) {
-            deps.services.jobs.getVisible(depId, deps.principal);
+            await deps.services.jobs.getVisible(depId, deps.principal);
           }
 
-          const agent = resolveAgentTarget(
+          const agent = await resolveAgentTarget(
             deps.services.agents,
             {
               ...(args.agentId !== undefined && { agentId: args.agentId }),
@@ -80,7 +80,7 @@ export const jobSubmitTool: ToolRegistration = {
             deps.principal
           );
 
-          const job = deps.services.scheduler.submit({
+          const job = await deps.services.scheduler.submit({
             ownerId: deps.principal.ownerId,
             backend: 'local',
             agentId: agent.id,
@@ -131,14 +131,16 @@ export const jobGetTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
-          const job = deps.services.jobs.getVisible(args.jobId, deps.principal);
+          const job = await deps.services.jobs.getVisible(args.jobId, deps.principal);
           const events =
             args.includeEvents === true
-              ? deps.services.events
-                  .query({ jobId: job.id })
-                  .map(e => ({ ts: e.ts, type: e.type, payload: e.payload }))
+              ? (await deps.services.events.query({ jobId: job.id })).map(e => ({
+                  ts: e.ts,
+                  type: e.type,
+                  payload: e.payload
+                }))
               : undefined;
 
           return toolOk(
@@ -188,7 +190,7 @@ export const jobWaitTool: ToolRegistration = {
           // ids directly. Without this, naming another owner's jobId here
           // would hand back that job's full result, not just its state.
           for (const jobId of args.jobIds) {
-            deps.services.jobs.getVisible(jobId, deps.principal);
+            await deps.services.jobs.getVisible(jobId, deps.principal);
           }
 
           const jobs = await deps.services.scheduler.wait(args.jobIds, args.mode, args.timeoutSec * 1000);
@@ -232,12 +234,12 @@ export const jobCancelTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
           // Resolve through the visibility guard first, so cancelling someone
           // else's job reads as "no such job" rather than succeeding.
-          deps.services.jobs.getVisible(args.jobId, deps.principal);
-          const job = deps.services.scheduler.cancel(
+          await deps.services.jobs.getVisible(args.jobId, deps.principal);
+          const job = await deps.services.scheduler.cancel(
             args.jobId,
             ...(args.reason !== undefined ? [args.reason] : [])
           );
@@ -276,9 +278,9 @@ export const jobListTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
-          const result = deps.services.jobs.list({
+          const result = await deps.services.jobs.list({
             ...ownerFilter(deps.principal),
             ...(args.state !== undefined && { state: args.state }),
             ...(args.agentId !== undefined && { agentId: args.agentId }),
@@ -322,10 +324,10 @@ export const jobRetryTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
-          deps.services.jobs.getVisible(args.jobId, deps.principal);
-          const job = deps.services.scheduler.retry(args.jobId);
+          await deps.services.jobs.getVisible(args.jobId, deps.principal);
+          const job = await deps.services.scheduler.retry(args.jobId);
           return toolOk({ job: toJobView(job) }, `Job ${job.id} re-queued (attempt ${job.attempt}).`);
         } catch (error) {
           return toolError(error);
@@ -355,9 +357,9 @@ export const jobSteerTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
-          const job = deps.services.jobs.getVisible(args.jobId, deps.principal);
+          const job = await deps.services.jobs.getVisible(args.jobId, deps.principal);
 
           if (job.finishedAt !== undefined) {
             return toolError(
@@ -380,13 +382,13 @@ export const jobSteerTool: ToolRegistration = {
           }
 
           // Delivered through the inbox the agent already polls with message_list.
-          deps.services.bus.send({
+          await deps.services.bus.send({
             toJobId: job.id,
             toAgentId: job.agentId,
             body: args.message
           });
 
-          deps.services.events.append({
+          await deps.services.events.append({
             type: 'job.progress',
             jobId: job.id,
             payload: { message: `steered: ${args.message}` }

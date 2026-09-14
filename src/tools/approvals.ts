@@ -11,16 +11,16 @@ import type { ToolDeps, ToolRegistration } from './types.js';
  * rendered step instruction and all), and approval_resolve let anyone
  * approve or reject another owner's workflow step outright.
  */
-function isApprovalVisible(deps: ToolDeps, approval: ApprovalRecord): boolean {
+async function isApprovalVisible(deps: ToolDeps, approval: ApprovalRecord): Promise<boolean> {
   if (deps.principal.isAdmin) return true;
 
   try {
     if (approval.runId !== undefined) {
-      deps.services.workflows.getVisibleRun(approval.runId, deps.principal);
+      await deps.services.workflows.getVisibleRun(approval.runId, deps.principal);
       return true;
     }
     if (approval.jobId !== undefined) {
-      deps.services.jobs.getVisible(approval.jobId, deps.principal);
+      await deps.services.jobs.getVisible(approval.jobId, deps.principal);
       return true;
     }
   } catch {
@@ -71,15 +71,15 @@ export const approvalListTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
-          const approvals = deps.services.approvals
-            .list({
-              status: args.status ?? 'pending',
-              ...(args.scope !== undefined && { scope: args.scope }),
-              ...(args.limit !== undefined && { limit: args.limit })
-            })
-            .filter(approval => isApprovalVisible(deps, approval));
+          const all = await deps.services.approvals.list({
+            status: args.status ?? 'pending',
+            ...(args.scope !== undefined && { scope: args.scope }),
+            ...(args.limit !== undefined && { limit: args.limit })
+          });
+          const visible = await Promise.all(all.map(approval => isApprovalVisible(deps, approval)));
+          const approvals = all.filter((_, index) => visible[index] === true);
 
           return toolOk({ approvals }, `${approvals.length} ${args.status ?? 'pending'} approval(s).`);
         } catch (error) {
@@ -115,13 +115,13 @@ export const approvalResolveTool: ToolRegistration = {
           openWorldHint: false
         }
       },
-      args => {
+      async args => {
         try {
           // Resolve through the visibility guard first, so resolving someone
           // else's approval reads as "no such approval" rather than
           // succeeding — same pattern as job_cancel.
-          const existing = deps.services.approvals.getOrThrow(args.approvalId);
-          if (!isApprovalVisible(deps, existing)) {
+          const existing = await deps.services.approvals.getOrThrow(args.approvalId);
+          if (!(await isApprovalVisible(deps, existing))) {
             throw new OrchestratorError(
               'NOT_FOUND',
               `No approval with id ${args.approvalId}.`,
@@ -129,12 +129,12 @@ export const approvalResolveTool: ToolRegistration = {
             );
           }
 
-          const approval = deps.services.approvals.resolve(args.approvalId, args.decision, {
+          const approval = await deps.services.approvals.resolve(args.approvalId, args.decision, {
             ...(args.comment !== undefined && { comment: args.comment }),
             ...(args.editedInput !== undefined && { editedInput: args.editedInput })
           });
 
-          deps.services.events.append({
+          await deps.services.events.append({
             type: 'approval.resolved',
             ...(approval.jobId !== undefined && { jobId: approval.jobId }),
             ...(approval.runId !== undefined && { runId: approval.runId }),
@@ -143,7 +143,7 @@ export const approvalResolveTool: ToolRegistration = {
 
           // A resolved gate may unblock a paused run; nudge the engine.
           if (approval.runId !== undefined) {
-            deps.services.workflows.control(approval.runId, 'resume');
+            await deps.services.workflows.control(approval.runId, 'resume');
           }
 
           return toolOk({ approval }, `Approval ${approval.approvalId} ${approval.status}.`);

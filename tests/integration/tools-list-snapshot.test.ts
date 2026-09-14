@@ -10,7 +10,7 @@ import { testServices } from '../helpers.js';
  * Regenerate with `pnpm test -u` and call it out in the PR.
  */
 async function listTools(profile: ToolProfile) {
-  const services = testServices({ profile });
+  const services = await testServices({ profile });
   const factory = createServerFactory({ services, startedAt: Date.now() });
   const server = await factory({ era: 'modern' });
 

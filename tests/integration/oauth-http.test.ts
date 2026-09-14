@@ -33,7 +33,7 @@ afterEach(async () => {
 
 async function start(): Promise<HttpServerHandle> {
   jwks = await startJwks();
-  services = testServices();
+  services = await testServices();
   return startHttpServer({
     factory: createServerFactory({ services, startedAt: Date.now() }),
     config: {

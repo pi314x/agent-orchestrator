@@ -7,9 +7,9 @@ import { closeServices, testServices } from '../helpers.js';
 type ResourceCallback = (uri: URL, variables: Record<string, string>, ctx: unknown) => unknown;
 
 /** Captures every resource `registerResources` registers, keyed by name. */
-function captureResources(principal: Principal) {
+async function captureResources(principal: Principal) {
   const handlers = new Map<string, ResourceCallback>();
-  const services = testServices();
+  const services = await testServices();
 
   const fakeServer = {
     registerResource: (
@@ -51,16 +51,16 @@ const bob: Principal = { ownerId: 'user_bob', isAdmin: false };
 // through a tool could still read orch://agents/{id} directly.
 describe('resource ownership', () => {
   it("cannot read another user's agent via orch://agents/{agentId}", async () => {
-    const owner = captureResources(alice);
-    const agent = owner.services.agents.create({ ownerId: alice.ownerId, name: 'a', instructions: 'x' });
+    const owner = await captureResources(alice);
+    const agent = await owner.services.agents.create({ ownerId: alice.ownerId, name: 'a', instructions: 'x' });
 
     const asAlice = await read(owner.handlers, 'agent', { agentId: agent.id });
     expect(asAlice.isError).toBe(false);
 
-    const bobView = captureResources(bob);
+    const bobView = await captureResources(bob);
     // Bob's services instance is separate in this harness; point his handlers
     // at Alice's actual database instead, the way one shared server would.
-    const bobHandlersOnSharedDb = captureResourcesAgainst(owner.services, bob);
+    const bobHandlersOnSharedDb = await captureResourcesAgainst(owner.services, bob);
     const asBob = await read(bobHandlersOnSharedDb, 'agent', { agentId: agent.id });
 
     expect(asBob.isError).toBe(true);
@@ -70,14 +70,14 @@ describe('resource ownership', () => {
   });
 
   it("cannot read another user's job via orch://jobs/{jobId}", async () => {
-    const owner = captureResources(alice);
-    const agent = owner.services.agents.create({
+    const owner = await captureResources(alice);
+    const agent = await owner.services.agents.create({
       ownerId: alice.ownerId,
       name: 'a',
       instructions: 'x',
       runner: 'mock'
     });
-    const job = owner.services.jobs.create({
+    const job = await owner.services.jobs.create({
       ownerId: alice.ownerId,
       backend: 'local',
       agentId: agent.id,
@@ -85,7 +85,7 @@ describe('resource ownership', () => {
       instruction: 'x'
     });
 
-    const bobHandlers = captureResourcesAgainst(owner.services, bob);
+    const bobHandlers = await captureResourcesAgainst(owner.services, bob);
     const asBob = await read(bobHandlers, 'job', { jobId: job.id });
     const asAlice = await read(owner.handlers, 'job', { jobId: job.id });
 
@@ -95,27 +95,27 @@ describe('resource ownership', () => {
   });
 
   it("cannot read another user's job transcript, even the event log", async () => {
-    const owner = captureResources(alice);
-    const agent = owner.services.agents.create({
+    const owner = await captureResources(alice);
+    const agent = await owner.services.agents.create({
       ownerId: alice.ownerId,
       name: 'a',
       instructions: 'x',
       runner: 'mock'
     });
-    const job = owner.services.jobs.create({
+    const job = await owner.services.jobs.create({
       ownerId: alice.ownerId,
       backend: 'local',
       agentId: agent.id,
       agentSnapshot: toSnapshot(agent),
       instruction: 'secret plan'
     });
-    owner.services.events.append({
+    await owner.services.events.append({
       type: 'job.submitted',
       jobId: job.id,
       payload: { instruction: 'secret plan' }
     });
 
-    const bobHandlers = captureResourcesAgainst(owner.services, bob);
+    const bobHandlers = await captureResourcesAgainst(owner.services, bob);
     const asBob = await read(bobHandlers, 'job-transcript', { jobId: job.id });
 
     expect(asBob.isError).toBe(true);
@@ -124,14 +124,14 @@ describe('resource ownership', () => {
   });
 
   it("cannot read another user's artifact via orch://artifacts/{artifactId}", async () => {
-    const owner = captureResources(alice);
-    const artifact = owner.services.artifacts.put({
+    const owner = await captureResources(alice);
+    const artifact = await owner.services.artifacts.put({
       ownerId: alice.ownerId,
       name: 'x.txt',
       content: 'classified'
     });
 
-    const bobHandlers = captureResourcesAgainst(owner.services, bob);
+    const bobHandlers = await captureResourcesAgainst(owner.services, bob);
     const asBob = await read(bobHandlers, 'artifact', { artifactId: artifact.artifactId });
     const asAlice = await read(owner.handlers, 'artifact', { artifactId: artifact.artifactId });
 
@@ -141,15 +141,15 @@ describe('resource ownership', () => {
   });
 
   it("cannot read another user's memory via orch://memory/{namespace}/{key}", async () => {
-    const owner = captureResources(alice);
-    owner.services.memory.write({
+    const owner = await captureResources(alice);
+    await owner.services.memory.write({
       ownerId: alice.ownerId,
       namespace: 'n',
       key: 'secret',
       value: 'classified'
     });
 
-    const bobHandlers = captureResourcesAgainst(owner.services, bob);
+    const bobHandlers = await captureResourcesAgainst(owner.services, bob);
     const asBob = await read(bobHandlers, 'memory', { namespace: 'n', key: 'secret' });
     const asAlice = await read(owner.handlers, 'memory', { namespace: 'n', key: 'secret' });
 
@@ -166,13 +166,13 @@ describe('resource ownership', () => {
   // The tool and the resource are separate registration paths, so scoping one
   // does nothing for the other.
   it("cannot read another user's workflow via orch://workflows/{workflowId}", async () => {
-    const owner = captureResources(alice);
-    const workflow = owner.services.workflows.define(
+    const owner = await captureResources(alice);
+    const workflow = await owner.services.workflows.define(
       { name: 'alice-wf', steps: [{ id: 'a', instruction: 'x', template: 'writer' }] },
       alice.ownerId
     );
 
-    const bobHandlers = captureResourcesAgainst(owner.services, bob);
+    const bobHandlers = await captureResourcesAgainst(owner.services, bob);
     const asBob = await read(bobHandlers, 'workflow', { workflowId: workflow.workflowId });
     const asAlice = await read(owner.handlers, 'workflow', { workflowId: workflow.workflowId });
 
@@ -183,13 +183,13 @@ describe('resource ownership', () => {
 
   // Same bug, the run side: getRun instead of getVisibleRun.
   it("cannot read another user's run via orch://workflow-runs/{runId}", async () => {
-    const owner = captureResources(alice);
-    const run = owner.services.workflows.start({
+    const owner = await captureResources(alice);
+    const run = await owner.services.workflows.start({
       ownerId: alice.ownerId,
       spec: { name: 'alice-run', steps: [{ id: 'a', instruction: 'x', template: 'writer' }] }
     });
 
-    const bobHandlers = captureResourcesAgainst(owner.services, bob);
+    const bobHandlers = await captureResourcesAgainst(owner.services, bob);
     const asBob = await read(bobHandlers, 'workflow-run', { runId: run.runId });
     const asAlice = await read(owner.handlers, 'workflow-run', { runId: run.runId });
 
@@ -200,7 +200,7 @@ describe('resource ownership', () => {
 });
 
 /** Re-registers resources against an existing Services instance, as a different principal. */
-function captureResourcesAgainst(services: ReturnType<typeof testServices>, principal: Principal) {
+async function captureResourcesAgainst(services: Awaited<ReturnType<typeof testServices>>, principal: Principal) {
   const handlers = new Map<string, ResourceCallback>();
   const fakeServer = {
     registerResource: (name: string, _u: unknown, _c: unknown, callback: ResourceCallback) => {

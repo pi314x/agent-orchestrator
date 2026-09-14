@@ -87,10 +87,10 @@ export class McpProxyPool {
     private readonly logger: Logger
   ) {}
 
-  register(input: RegisterToolServerInput): ToolServerRecord {
+  async register(input: RegisterToolServerInput): Promise<ToolServerRecord> {
     const now = new Date().toISOString();
 
-    this.db
+    await this.db
       .prepare(
         `INSERT INTO tool_servers (name, transport, auth_ref, allow_tools, deny_tools, require_approval_for, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -118,14 +118,14 @@ export class McpProxyPool {
     return this.getOrThrow(input.name);
   }
 
-  get(name: string): ToolServerRecord | undefined {
-    const row = this.db.prepare('SELECT * FROM tool_servers WHERE name = ?').get(name) as
+  async get(name: string): Promise<ToolServerRecord | undefined> {
+    const row = (await this.db.prepare('SELECT * FROM tool_servers WHERE name = ?').get(name)) as
       ServerRow | undefined;
     return row === undefined ? undefined : toRecord(row);
   }
 
-  getOrThrow(name: string): ToolServerRecord {
-    const found = this.get(name);
+  async getOrThrow(name: string): Promise<ToolServerRecord> {
+    const found = await this.get(name);
     if (found === undefined) {
       throw new OrchestratorError(
         'NOT_FOUND',
@@ -136,14 +136,15 @@ export class McpProxyPool {
     return found;
   }
 
-  list(): ToolServerRecord[] {
-    const rows = this.db.prepare('SELECT * FROM tool_servers ORDER BY name').all() as ServerRow[];
+  async list(): Promise<ToolServerRecord[]> {
+    const rows = (await this.db.prepare('SELECT * FROM tool_servers ORDER BY name').all()) as ServerRow[];
     return rows.map(toRecord);
   }
 
   async remove(name: string): Promise<boolean> {
     await this.disconnect(name);
-    return this.db.prepare('DELETE FROM tool_servers WHERE name = ?').run(name).changes > 0;
+    const result = await this.db.prepare('DELETE FROM tool_servers WHERE name = ?').run(name);
+    return result.changes > 0;
   }
 
   /** Connect lazily and keep the client, so a stdio server is spawned once. */
@@ -190,7 +191,7 @@ export class McpProxyPool {
 
   /** The tools this server offers, after allow/deny filtering. */
   async tools(name: string): Promise<DownstreamTool[]> {
-    const server = this.getOrThrow(name);
+    const server = await this.getOrThrow(name);
     const client = await this.connect(server);
     const { tools } = await client.listTools();
 
@@ -204,7 +205,7 @@ export class McpProxyPool {
   }
 
   async call(name: string, toolName: string, args: Record<string, unknown>): Promise<string> {
-    const server = this.getOrThrow(name);
+    const server = await this.getOrThrow(name);
 
     if (!isToolAllowed(server, toolName)) {
       throw new OrchestratorError(

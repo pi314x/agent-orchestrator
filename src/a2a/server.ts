@@ -53,16 +53,16 @@ function toSkill(row: SkillRow): PublishedSkill {
 export class PublishedSkillStore {
   constructor(private readonly db: Db) {}
 
-  upsert(input: {
+  async upsert(input: {
     skillId: string;
     agentId?: string;
     templateName?: string;
     description: string;
     exposed: boolean;
-  }): PublishedSkill {
+  }): Promise<PublishedSkill> {
     const now = new Date().toISOString();
 
-    this.db
+    await this.db
       .prepare(
         `INSERT INTO published_skills (skill_id, agent_id, template_name, description, exposed, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -83,26 +83,28 @@ export class PublishedSkillStore {
         now
       );
 
-    const row = this.db
+    const row = (await this.db
       .prepare('SELECT * FROM published_skills WHERE skill_id = ?')
-      .get(input.skillId) as SkillRow;
+      .get(input.skillId)) as SkillRow;
     return toSkill(row);
   }
 
-  listExposed(): PublishedSkill[] {
-    const rows = this.db
+  async listExposed(): Promise<PublishedSkill[]> {
+    const rows = (await this.db
       .prepare('SELECT * FROM published_skills WHERE exposed = 1 ORDER BY skill_id')
-      .all() as SkillRow[];
+      .all()) as SkillRow[];
     return rows.map(toSkill);
   }
 
-  listAll(): PublishedSkill[] {
-    const rows = this.db.prepare('SELECT * FROM published_skills ORDER BY skill_id').all() as SkillRow[];
+  async listAll(): Promise<PublishedSkill[]> {
+    const rows = (await this.db
+      .prepare('SELECT * FROM published_skills ORDER BY skill_id')
+      .all()) as SkillRow[];
     return rows.map(toSkill);
   }
 
-  get(skillId: string): PublishedSkill | undefined {
-    const row = this.db.prepare('SELECT * FROM published_skills WHERE skill_id = ?').get(skillId) as
+  async get(skillId: string): Promise<PublishedSkill | undefined> {
+    const row = (await this.db.prepare('SELECT * FROM published_skills WHERE skill_id = ?').get(skillId)) as
       SkillRow | undefined;
     return row === undefined ? undefined : toSkill(row);
   }
@@ -129,8 +131,9 @@ export interface A2AServerDeps {
 export const DEFAULT_INBOUND_TASK_TIMEOUT_SEC = 300;
 
 /** Build our Agent Card from the skills explicitly opted in via agent_publish. */
-export function buildAgentCard(deps: A2AServerDeps): AgentCard {
-  const skills: AgentSkill[] = deps.skills.listExposed().map(skill => ({
+export async function buildAgentCard(deps: A2AServerDeps): Promise<AgentCard> {
+  const exposed = await deps.skills.listExposed();
+  const skills: AgentSkill[] = exposed.map(skill => ({
     id: skill.skillId,
     name: skill.skillId,
     description: skill.description,
@@ -174,9 +177,9 @@ class OrchestratorExecutor implements AgentExecutor {
     const { taskId, contextId } = requestContext;
     const instruction = textFromMessage(requestContext.userMessage);
 
+    const exposed = await this.deps.skills.listExposed();
     const requestedSkill =
-      (requestContext.userMessage.metadata?.['skillId'] as string | undefined) ??
-      this.deps.skills.listExposed()[0]?.skillId;
+      (requestContext.userMessage.metadata?.['skillId'] as string | undefined) ?? exposed[0]?.skillId;
 
     const statusFor = (state: TaskState, text: string) => ({
       state,
@@ -223,7 +226,7 @@ class OrchestratorExecutor implements AgentExecutor {
       });
     };
 
-    const skill = requestedSkill === undefined ? undefined : this.deps.skills.get(requestedSkill);
+    const skill = requestedSkill === undefined ? undefined : await this.deps.skills.get(requestedSkill);
 
     if (skill === undefined || !skill.exposed) {
       publish(TaskState.TASK_STATE_REJECTED, `No published skill named "${requestedSkill ?? 'default'}".`);
@@ -237,7 +240,7 @@ class OrchestratorExecutor implements AgentExecutor {
       // Full visibility here is correct, not a gap: agent_publish already
       // requires orch:admin, so an operator has already decided this exact
       // agent is externally reachable by anyone who can reach this server.
-      const agent = resolveAgentTarget(
+      const agent = await resolveAgentTarget(
         this.deps.agents,
         {
           ...(skill.agentId !== undefined && { agentId: skill.agentId }),
@@ -249,7 +252,7 @@ class OrchestratorExecutor implements AgentExecutor {
 
       const timeoutSec = this.deps.taskTimeoutSec ?? DEFAULT_INBOUND_TASK_TIMEOUT_SEC;
 
-      const job = this.deps.scheduler.submit({
+      const job = await this.deps.scheduler.submit({
         // Same convention as a spawned sub-job: the job belongs to whoever
         // owns the agent doing the work, not to nobody. Without this it
         // defaulted to ownerId '' — the admin-wide shared sentinel — which
@@ -269,7 +272,7 @@ class OrchestratorExecutor implements AgentExecutor {
       this.jobByTask.set(taskId, job.id);
 
       // A cancel that arrived before the job existed still has to land.
-      if (this.cancelled.has(taskId)) this.deps.scheduler.cancel(job.id, 'Cancelled by the A2A caller.');
+      if (this.cancelled.has(taskId)) await this.deps.scheduler.cancel(job.id, 'Cancelled by the A2A caller.');
 
       const [finished] = await this.deps.scheduler.wait([job.id], 'all', timeoutSec * 1000);
 
@@ -301,7 +304,7 @@ class OrchestratorExecutor implements AgentExecutor {
     if (jobId === undefined) return;
 
     try {
-      this.deps.scheduler.cancel(jobId, 'Cancelled by the A2A caller.');
+      await this.deps.scheduler.cancel(jobId, 'Cancelled by the A2A caller.');
     } catch (error) {
       this.deps.logger.warn({ err: error, taskId, jobId }, 'could not cancel the job behind an A2A task');
     }
@@ -310,17 +313,15 @@ class OrchestratorExecutor implements AgentExecutor {
 
 export interface A2AServerHandle {
   /** The card as it stands now, rebuilt whenever the published skills change. */
-  card(): AgentCard;
+  card(): Promise<AgentCard>;
   /** Handles one JSON-RPC request body and resolves with the response. */
   handleJsonRpc(body: unknown, headers?: Record<string, string>): Promise<unknown>;
 }
 
 /** Identifies the exposed-skill set, so a change to it is cheap to detect. */
-function skillSignature(deps: A2AServerDeps): string {
-  return deps.skills
-    .listExposed()
-    .map(skill => `${skill.skillId}:${skill.description}`)
-    .join('|');
+async function skillSignature(deps: A2AServerDeps): Promise<string> {
+  const exposed = await deps.skills.listExposed();
+  return exposed.map(skill => `${skill.skillId}:${skill.description}`).join('|');
 }
 
 export function createA2AServer(deps: A2AServerDeps): A2AServerHandle {
@@ -330,38 +331,38 @@ export function createA2AServer(deps: A2AServerDeps): A2AServerHandle {
   const taskStore = new InMemoryTaskStore();
   const executor = new OrchestratorExecutor(deps);
 
-  let signature = skillSignature(deps);
-  let card = buildAgentCard(deps);
-  let handler = new DefaultRequestHandler(card, taskStore, executor);
-  let jsonRpc = new JsonRpcTransportHandler(handler);
+  let signature: string | undefined;
+  let card: AgentCard | undefined;
+  let handler: DefaultRequestHandler | undefined;
+  let jsonRpc: JsonRpcTransportHandler | undefined;
 
   // DefaultRequestHandler takes the card by value, so publishing or
   // withdrawing a skill would otherwise keep serving the card as it looked at
   // startup — advertising skills that no longer answer.
-  const refresh = (): void => {
-    const current = skillSignature(deps);
-    if (current === signature) return;
+  const refresh = async (): Promise<void> => {
+    const current = await skillSignature(deps);
+    if (current === signature && handler !== undefined && jsonRpc !== undefined) return;
 
     signature = current;
-    card = buildAgentCard(deps);
+    card = await buildAgentCard(deps);
     handler = new DefaultRequestHandler(card, taskStore, executor);
     jsonRpc = new JsonRpcTransportHandler(handler);
   };
 
   return {
-    card() {
-      refresh();
-      return card;
+    async card() {
+      await refresh();
+      return card as AgentCard;
     },
     async handleJsonRpc(body: unknown, headers: Record<string, string> = {}) {
-      refresh();
+      await refresh();
 
       const context = defaultServerCallContextBuilder({
         headers,
         extensions: [],
         user: new UnauthenticatedUser()
       });
-      return jsonRpc.handle(body as Record<string, unknown>, context);
+      return (jsonRpc as JsonRpcTransportHandler).handle(body as Record<string, unknown>, context);
     }
   };
 }

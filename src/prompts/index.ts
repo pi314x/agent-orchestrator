@@ -106,12 +106,12 @@ export function registerPrompts(server: McpServer, services: Services, principal
       description: 'Send one brief to agents from different vendors and diff their answers.',
       argsSchema: z.object({ brief: z.string() })
     },
-    ({ brief }) => {
+    async ({ brief }) => {
       // Regression: this listed every remote agent in the deployment, not
       // just the caller's own — the same "resources need the same scoping
       // as tools" gap, this time on the third registration surface (prompts)
       // that never received a principal at all.
-      const remote = services.agents.list({ kind: 'remote', ...ownerFilter(principal) }).agents;
+      const { agents: remote } = await services.agents.list({ kind: 'remote', ...ownerFilter(principal) });
 
       return userMessage(
         [

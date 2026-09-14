@@ -10,7 +10,7 @@ let client: Client;
 let services: Services;
 
 beforeAll(async () => {
-  services = testServices({
+  services = await testServices({
     profile: 'standard',
     // Every item whose text contains "bad" fails.
     mockScript: job =>

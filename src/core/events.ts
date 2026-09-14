@@ -84,7 +84,7 @@ function toRecord(row: EventRow): EventRecord {
 export class EventLog {
   constructor(private readonly db: Db) {}
 
-  append(input: AppendEventInput): EventRecord {
+  async append(input: AppendEventInput): Promise<EventRecord> {
     const record: EventRecord = {
       id: newId('event'),
       ts: new Date().toISOString(),
@@ -95,7 +95,7 @@ export class EventLog {
       ...(input.runId !== undefined && { runId: input.runId })
     };
 
-    this.db
+    await this.db
       .prepare(
         'INSERT INTO events (id, ts, type, job_id, agent_id, run_id, payload) VALUES (?, ?, ?, ?, ?, ?, ?)'
       )
@@ -112,7 +112,7 @@ export class EventLog {
     return record;
   }
 
-  query(filter: EventQuery = {}): EventRecord[] {
+  async query(filter: EventQuery = {}): Promise<EventRecord[]> {
     const where: string[] = [];
     const params: unknown[] = [];
 
@@ -144,9 +144,9 @@ export class EventLog {
     const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
     const limit = Math.min(Math.max(filter.limit ?? 100, 1), 1000);
 
-    const rows = this.db
+    const rows = (await this.db
       .prepare(`SELECT * FROM events ${clause} ORDER BY ts ASC, id ASC LIMIT ?`)
-      .all(...params, limit) as EventRow[];
+      .all(...params, limit)) as EventRow[];
 
     return rows.map(toRecord);
   }

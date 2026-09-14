@@ -44,7 +44,12 @@ function toGrant(row: GrantRow): Grant {
 export class GrantStore {
   constructor(private readonly db: Db) {}
 
-  grant(resourceType: GrantResourceType, resourceId: string, ownerId: string, granteeId: string): Grant {
+  async grant(
+    resourceType: GrantResourceType,
+    resourceId: string,
+    ownerId: string,
+    granteeId: string
+  ): Promise<Grant> {
     if (granteeId === ownerId) {
       throw new OrchestratorError(
         'INVALID_INPUT',
@@ -54,7 +59,7 @@ export class GrantStore {
     }
 
     const now = new Date().toISOString();
-    this.db
+    await this.db
       .prepare(
         `INSERT INTO resource_grants (id, resource_type, resource_id, owner_id, grantee_id, created_at)
          VALUES (?, ?, ?, ?, ?, ?)
@@ -62,44 +67,55 @@ export class GrantStore {
       )
       .run(newId('grant'), resourceType, resourceId, ownerId, granteeId, now);
 
-    const row = this.db
+    const row = (await this.db
       .prepare(
         `SELECT * FROM resource_grants WHERE resource_type = ? AND resource_id = ? AND owner_id = ? AND grantee_id = ?`
       )
-      .get(resourceType, resourceId, ownerId, granteeId) as GrantRow;
+      .get(resourceType, resourceId, ownerId, granteeId)) as GrantRow;
     return toGrant(row);
   }
 
-  revoke(resourceType: GrantResourceType, resourceId: string, ownerId: string, granteeId: string): boolean {
-    return (
-      this.db
-        .prepare(
-          `DELETE FROM resource_grants WHERE resource_type = ? AND resource_id = ? AND owner_id = ? AND grantee_id = ?`
-        )
-        .run(resourceType, resourceId, ownerId, granteeId).changes > 0
-    );
+  async revoke(
+    resourceType: GrantResourceType,
+    resourceId: string,
+    ownerId: string,
+    granteeId: string
+  ): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `DELETE FROM resource_grants WHERE resource_type = ? AND resource_id = ? AND owner_id = ? AND grantee_id = ?`
+      )
+      .run(resourceType, resourceId, ownerId, granteeId);
+    return result.changes > 0;
   }
 
   /** Whether `granteeId` has specifically been granted this resource by this owner. */
-  hasGrant(resourceType: GrantResourceType, resourceId: string, ownerId: string, granteeId: string): boolean {
-    return (
-      this.db
-        .prepare(
-          `SELECT 1 FROM resource_grants WHERE resource_type = ? AND resource_id = ? AND owner_id = ? AND grantee_id = ?`
-        )
-        .get(resourceType, resourceId, ownerId, granteeId) !== undefined
-    );
+  async hasGrant(
+    resourceType: GrantResourceType,
+    resourceId: string,
+    ownerId: string,
+    granteeId: string
+  ): Promise<boolean> {
+    const row = await this.db
+      .prepare(
+        `SELECT 1 FROM resource_grants WHERE resource_type = ? AND resource_id = ? AND owner_id = ? AND grantee_id = ?`
+      )
+      .get(resourceType, resourceId, ownerId, granteeId);
+    return row !== undefined;
   }
 
   /** Every grantee a resource has been shared with, for its owner to review or revoke. */
-  listGrantees(resourceType: GrantResourceType, resourceId: string, ownerId: string): Grant[] {
-    return (
-      this.db
-        .prepare(
-          `SELECT * FROM resource_grants WHERE resource_type = ? AND resource_id = ? AND owner_id = ? ORDER BY created_at ASC`
-        )
-        .all(resourceType, resourceId, ownerId) as GrantRow[]
-    ).map(toGrant);
+  async listGrantees(
+    resourceType: GrantResourceType,
+    resourceId: string,
+    ownerId: string
+  ): Promise<Grant[]> {
+    const rows = (await this.db
+      .prepare(
+        `SELECT * FROM resource_grants WHERE resource_type = ? AND resource_id = ? AND owner_id = ? ORDER BY created_at ASC`
+      )
+      .all(resourceType, resourceId, ownerId)) as GrantRow[];
+    return rows.map(toGrant);
   }
 
   /**
@@ -109,11 +125,10 @@ export class GrantStore {
    * per-owner-ambiguous resource ids (e.g. a memory namespace name) must
    * disambiguate with `hasGrant` instead of relying on this alone.
    */
-  listGrantedResourceIds(resourceType: GrantResourceType, granteeId: string): string[] {
-    return (
-      this.db
-        .prepare(`SELECT DISTINCT resource_id FROM resource_grants WHERE resource_type = ? AND grantee_id = ?`)
-        .all(resourceType, granteeId) as { resource_id: string }[]
-    ).map(r => r.resource_id);
+  async listGrantedResourceIds(resourceType: GrantResourceType, granteeId: string): Promise<string[]> {
+    const rows = (await this.db
+      .prepare(`SELECT DISTINCT resource_id FROM resource_grants WHERE resource_type = ? AND grantee_id = ?`)
+      .all(resourceType, granteeId)) as { resource_id: string }[];
+    return rows.map(r => r.resource_id);
   }
 }

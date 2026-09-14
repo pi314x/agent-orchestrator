@@ -70,7 +70,7 @@ function toMessage(row: MessageRow): MessageRecord {
 export class MessageBus {
   constructor(private readonly db: Db) {}
 
-  send(input: SendMessageInput): MessageRecord {
+  async send(input: SendMessageInput): Promise<MessageRecord> {
     if (input.toAgentId === undefined && input.toChannel === undefined && input.toJobId === undefined) {
       throw new OrchestratorError(
         'INVALID_INPUT',
@@ -81,7 +81,7 @@ export class MessageBus {
 
     const id = newId('message');
 
-    this.db
+    await this.db
       .prepare(
         `INSERT INTO messages (id, to_agent_id, to_channel, to_job_id, from_agent_id, body, reply_to, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
@@ -97,11 +97,11 @@ export class MessageBus {
         new Date().toISOString()
       );
 
-    const row = this.db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as MessageRow;
+    const row = (await this.db.prepare('SELECT * FROM messages WHERE id = ?').get(id)) as MessageRow;
     return toMessage(row);
   }
 
-  list(input: ListMessagesInput): MessageRecord[] {
+  async list(input: ListMessagesInput): Promise<MessageRecord[]> {
     const where: string[] = [];
     const params: unknown[] = [];
 
@@ -126,22 +126,23 @@ export class MessageBus {
     const clause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
     const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
 
-    const rows = this.db
+    const rows = (await this.db
       .prepare(`SELECT * FROM messages ${clause} ORDER BY created_at ASC, id ASC LIMIT ?`)
-      .all(...params, limit) as MessageRow[];
+      .all(...params, limit)) as MessageRow[];
 
     return rows.map(toMessage);
   }
 
-  markRead(messageIds: readonly string[]): number {
+  async markRead(messageIds: readonly string[]): Promise<number> {
     if (messageIds.length === 0) return 0;
     const placeholders = messageIds.map(() => '?').join(', ');
-    return this.db
+    const result = await this.db
       .prepare(`UPDATE messages SET read_at = ? WHERE id IN (${placeholders}) AND read_at IS NULL`)
-      .run(new Date().toISOString(), ...messageIds).changes;
+      .run(new Date().toISOString(), ...messageIds);
+    return result.changes;
   }
 
-  createChannel(name: string, members: readonly string[] = []): ChannelRecord {
+  async createChannel(name: string, members: readonly string[] = []): Promise<ChannelRecord> {
     // One statement, not check-then-insert: two instances sharing a database
     // (or two near-simultaneous calls) could both see "no such channel" and
     // both try to INSERT, and name carries a UNIQUE constraint — the loser
@@ -150,14 +151,14 @@ export class MessageBus {
     // a no-op that exists only to make the statement succeed either way, so
     // an existing channel's members are left untouched, matching the
     // pre-existing behaviour of returning it unchanged.
-    this.db
+    await this.db
       .prepare(
         `INSERT INTO channels (id, name, members, created_at) VALUES (?, ?, ?, ?)
          ON CONFLICT (name) DO UPDATE SET name = excluded.name`
       )
       .run(newId('channel'), name, JSON.stringify([...members]), new Date().toISOString());
 
-    const row = this.db.prepare('SELECT * FROM channels WHERE name = ?').get(name) as ChannelRow;
+    const row = (await this.db.prepare('SELECT * FROM channels WHERE name = ?').get(name)) as ChannelRow;
     return {
       channelId: row.id,
       name: row.name,
@@ -166,8 +167,8 @@ export class MessageBus {
     };
   }
 
-  listChannels(): ChannelRecord[] {
-    const rows = this.db.prepare('SELECT * FROM channels ORDER BY name ASC').all() as ChannelRow[];
+  async listChannels(): Promise<ChannelRecord[]> {
+    const rows = (await this.db.prepare('SELECT * FROM channels ORDER BY name ASC').all()) as ChannelRow[];
     return rows.map(row => ({
       channelId: row.id,
       name: row.name,

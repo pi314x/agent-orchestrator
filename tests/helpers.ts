@@ -37,9 +37,9 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
   };
 }
 
-export function migratedDb(): Db {
+export async function migratedDb(): Promise<Db> {
   const db = openDatabase({ url: ':memory:' });
-  migrate(db);
+  await migrate(db);
   return db;
 }
 
@@ -52,8 +52,8 @@ export interface TestServicesOptions {
   a2aClientProvider?: ClientProvider;
 }
 
-export function testServices(options: TestServicesOptions = {}): Services {
-  const db = migratedDb();
+export async function testServices(options: TestServicesOptions = {}): Promise<Services> {
+  const db = await migratedDb();
   const config = testConfig({
     ...(options.profile !== undefined && { toolProfile: options.profile }),
     ...options.config
@@ -80,7 +80,7 @@ export function testServices(options: TestServicesOptions = {}): Services {
 export async function closeServices(services: Services): Promise<void> {
   await services.scheduler.shutdown();
   await services.proxy.close();
-  services.db.close();
+  await services.db.close();
 }
 
 /** A promise plus the handle to settle it, for gating a scripted mock run. */

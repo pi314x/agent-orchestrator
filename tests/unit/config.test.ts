@@ -4,7 +4,7 @@ import { loadConfig } from '../../src/config.js';
 import { BUILTIN_TEMPLATES, DEFAULT_RUNNER } from '../../src/core/templates.js';
 
 describe('loadConfig', () => {
-  it('applies documented defaults', () => {
+  it('applies documented defaults', async () => {
     const config = loadConfig({ ORCH_DATA_DIR: '/data' });
 
     expect(config.toolProfile).toBe('standard');
@@ -21,7 +21,7 @@ describe('loadConfig', () => {
   // The same choice is written down in three places — the config default, the
   // built-in templates and `.env.example`. Only the first two share a constant,
   // so the documented one is easy to leave behind.
-  it('keeps the default runner, the templates and .env.example in agreement', () => {
+  it('keeps the default runner, the templates and .env.example in agreement', async () => {
     const config = loadConfig({ ORCH_DATA_DIR: '/data' });
 
     expect(config.defaultRunner).toBe(DEFAULT_RUNNER);
@@ -31,19 +31,19 @@ describe('loadConfig', () => {
     expect(example).toMatch(new RegExp(`^ORCH_DEFAULT_RUNNER=${DEFAULT_RUNNER}\\b`, 'm'));
   });
 
-  it('still honours an explicit runner choice', () => {
+  it('still honours an explicit runner choice', async () => {
     expect(loadConfig({ ORCH_DATA_DIR: '/data', ORCH_DEFAULT_RUNNER: 'anthropic' }).defaultRunner).toBe(
       'anthropic'
     );
   });
 
-  it('reads the model for the default runner from the environment', () => {
+  it('reads the model for the default runner from the environment', async () => {
     const config = loadConfig({ ORCH_DATA_DIR: '/data', OPENAI_MODEL: 'gpt-4.1-mini' });
 
     expect(config.openaiModel).toBe('gpt-4.1-mini');
   });
 
-  it('reads the transport and port used for Streamable HTTP', () => {
+  it('reads the transport and port used for Streamable HTTP', async () => {
     const config = loadConfig({ ORCH_DATA_DIR: '/data', ORCH_TRANSPORT: 'http', ORCH_HTTP_PORT: '8080' });
 
     expect(config.transport).toBe('http');
@@ -62,11 +62,11 @@ describe('loadConfig', () => {
     expect(loadConfig({ ORCH_DATA_DIR: '/d', A2A_ENABLED: raw }).a2aEnabled).toBe(expected);
   });
 
-  it('rejects an unknown tool profile', () => {
+  it('rejects an unknown tool profile', async () => {
     expect(() => loadConfig({ ORCH_DATA_DIR: '/d', ORCH_TOOL_PROFILE: 'everything' })).toThrow();
   });
 
-  it('rejects a non-numeric port', () => {
+  it('rejects a non-numeric port', async () => {
     expect(() => loadConfig({ ORCH_DATA_DIR: '/d', ORCH_HTTP_PORT: 'abc' })).toThrow();
   });
 });

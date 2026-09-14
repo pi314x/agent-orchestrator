@@ -118,7 +118,7 @@ async function callAs(
 
 describe('multi-user isolation', () => {
   it('each user sees only their own agents', async () => {
-    const services = testServices();
+    const services = await testServices();
 
     await callAs(services, alice, agentCreateTool, 'agent_create', {
       name: 'alice-reviewer',
@@ -140,7 +140,7 @@ describe('multi-user isolation', () => {
   });
 
   it("one user cannot fetch another's agent, and is not told it exists", async () => {
-    const services = testServices();
+    const services = await testServices();
     const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
       name: 'alice-secret',
       instructions: 'x',
@@ -157,7 +157,7 @@ describe('multi-user isolation', () => {
   });
 
   it("one user cannot delete another's agent", async () => {
-    const services = testServices();
+    const services = await testServices();
     const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
       name: 'alice-keep',
       instructions: 'x',
@@ -168,12 +168,12 @@ describe('multi-user isolation', () => {
     const byBob = await callAs(services, bob, agentDeleteTool, 'agent_delete', { agentId, force: true });
 
     expect(byBob.isError).toBe(true);
-    expect(services.agents.getOrThrow(agentId).status).toBe('active');
+    expect((await services.agents.getOrThrow(agentId)).status).toBe('active');
     await closeServices(services);
   });
 
   it('each user sees only their own jobs', async () => {
-    const services = testServices();
+    const services = await testServices();
 
     for (const [principal, name] of [
       [alice, 'a'],
@@ -199,7 +199,7 @@ describe('multi-user isolation', () => {
   });
 
   it("one user cannot read or cancel another's job", async () => {
-    const services = testServices();
+    const services = await testServices();
     const submitted = await callAs(services, alice, jobSubmitTool, 'job_submit', {
       instruction: 'alice work',
       template: 'writer'
@@ -211,21 +211,21 @@ describe('multi-user isolation', () => {
 
     expect(read.isError).toBe(true);
     expect(cancel.isError).toBe(true);
-    expect(services.jobs.getOrThrow(jobId).state).not.toBe('cancelled');
+    expect((await services.jobs.getOrThrow(jobId)).state).not.toBe('cancelled');
     await closeServices(services);
   });
 
   it("one user cannot read another's artifact", async () => {
-    const services = testServices();
-    const mine = services.artifacts.put({
+    const services = await testServices();
+    const mine = await services.artifacts.put({
       ownerId: alice.ownerId,
       name: 'secret.txt',
       content: 'classified'
     });
 
-    expect(services.artifacts.readVisible(mine.artifactId, alice).content).toBe('classified');
-    expect(() => services.artifacts.readVisible(mine.artifactId, bob)).toThrow(/No artifact/);
-    expect(services.artifacts.readVisible(mine.artifactId, admin).content).toBe('classified');
+    expect((await services.artifacts.readVisible(mine.artifactId, alice)).content).toBe('classified');
+    await expect(services.artifacts.readVisible(mine.artifactId, bob)).rejects.toThrow(/No artifact/);
+    expect((await services.artifacts.readVisible(mine.artifactId, admin)).content).toBe('classified');
     await closeServices(services);
   });
 
@@ -234,32 +234,32 @@ describe('multi-user isolation', () => {
   // could permanently delete any other owner's artifact just by knowing (or
   // guessing) its id. Worse than a read leak: destructive, and irreversible.
   it("one user cannot delete another's artifact", async () => {
-    const services = testServices();
-    const mine = services.artifacts.put({ ownerId: alice.ownerId, name: 'keep.txt', content: 'classified' });
+    const services = await testServices();
+    const mine = await services.artifacts.put({ ownerId: alice.ownerId, name: 'keep.txt', content: 'classified' });
 
     const byBob = await callAs(services, bob, artifactDeleteTool, 'artifact_delete', {
       artifactId: mine.artifactId
     });
 
     expect(byBob.isError).toBe(true);
-    expect(services.artifacts.getOrThrow(mine.artifactId).name).toBe('keep.txt');
+    expect((await services.artifacts.getOrThrow(mine.artifactId)).name).toBe('keep.txt');
     await closeServices(services);
   });
 
   it('a job spawned by an agent belongs to whoever owns the parent', async () => {
-    const services = testServices();
+    const services = await testServices();
     const submitted = await callAs(services, alice, jobSubmitTool, 'job_submit', {
       instruction: 'parent work',
       template: 'writer'
     });
-    const parent = services.jobs.getOrThrow((submitted.out['job'] as { jobId: string }).jobId);
+    const parent = await services.jobs.getOrThrow((submitted.out['job'] as { jobId: string }).jobId);
 
     expect(parent.ownerId).toBe(alice.ownerId);
     await closeServices(services);
   });
 
   it('an admin sees across owners', async () => {
-    const services = testServices();
+    const services = await testServices();
     await callAs(services, alice, jobSubmitTool, 'job_submit', { instruction: 'a', template: 'writer' });
     await callAs(services, bob, jobSubmitTool, 'job_submit', { instruction: 'b', template: 'writer' });
 
@@ -272,7 +272,7 @@ describe('multi-user isolation', () => {
   // With OAuth unconfigured there is no identity, so everything belongs to one
   // owner and the orchestrator behaves exactly as it did before ownership.
   it("cannot write to another user's memory namespace via the shared-key path", async () => {
-    const services = testServices();
+    const services = await testServices();
 
     await callAs(services, alice, memoryWriteTool, 'memory_write', {
       namespace: 'notes',
@@ -301,7 +301,7 @@ describe('multi-user isolation', () => {
   });
 
   it("memory_search does not surface another user's entries", async () => {
-    const services = testServices();
+    const services = await testServices();
     await callAs(services, alice, memoryWriteTool, 'memory_write', {
       namespace: 'n',
       key: 'a',
@@ -320,7 +320,7 @@ describe('multi-user isolation', () => {
   });
 
   it('a single-owner deployment is unaffected', async () => {
-    const services = testServices();
+    const services = await testServices();
     const single: Principal = { ownerId: '', isAdmin: true };
 
     await callAs(services, single, jobSubmitTool, 'job_submit', { instruction: 'x', template: 'writer' });
@@ -340,9 +340,9 @@ describe('agent_register defaults to private', () => {
   // without shared: true ever being set and without the admin gate that
   // guards it on agent_create ever running.
   it("a registered remote agent is private to whoever registered it, not visible to another user", async () => {
-    const services = testServices();
-    services.cards.fetchAndCache = (url: string) =>
-      services.cards.cache(url, { name: 'alice-remote-bot', description: 'a remote agent', skills: [] } as never);
+    const services = await testServices();
+    services.cards.fetchAndCache = async (url: string) =>
+      await services.cards.cache(url, { name: 'alice-remote-bot', description: 'a remote agent', skills: [] } as never);
 
     const registered = await callAs(services, alice, agentRegisterTool, 'agent_register', {
       cardUrl: 'https://example.test/card'
@@ -367,7 +367,7 @@ describe('events_query is scoped by the id it is asked about', () => {
   // could pass any other owner's jobId/agentId/runId (or none, for the
   // entire log) and get back that owner's full event history and payloads.
   it("a non-admin cannot read another user's job events by naming its jobId", async () => {
-    const services = testServices();
+    const services = await testServices();
     const submitted = await callAs(services, alice, jobSubmitTool, 'job_submit', {
       instruction: 'alice secret work',
       template: 'writer'
@@ -383,7 +383,7 @@ describe('events_query is scoped by the id it is asked about', () => {
   });
 
   it('a non-admin cannot query the unscoped event log', async () => {
-    const services = testServices();
+    const services = await testServices();
     await callAs(services, alice, jobSubmitTool, 'job_submit', { instruction: 'x', template: 'writer' });
 
     const byBob = await callAs(services, bob, eventsQueryTool, 'events_query', {});
@@ -393,7 +393,7 @@ describe('events_query is scoped by the id it is asked about', () => {
   });
 
   it('an admin can query the unscoped event log and any jobId', async () => {
-    const services = testServices();
+    const services = await testServices();
     const submitted = await callAs(services, alice, jobSubmitTool, 'job_submit', {
       instruction: 'x',
       template: 'writer'
@@ -410,12 +410,12 @@ describe('events_query is scoped by the id it is asked about', () => {
 
   // Regression: unlike jobId/runId, an agentId does not pin to one owner —
   // a shared agent is used by many. The visibility check only proved the
-  // agent itself was visible, then events.query(args) filtered purely by
+  // agent itself was visible, then await events.query(args) filtered purely by
   // agent_id with no owner filter at all, so a non-admin scoping by that
   // agent's id got back every owner's job.submitted events for it, full
   // instruction text included, for every job anyone had ever run against it.
   it("a shared agent's events do not leak another owner's job instructions", async () => {
-    const services = testServices({ mockScript: () => ({ text: 'ok' }) });
+    const services = await testServices({ mockScript: () => ({ text: 'ok' }) });
     const created = await callAs(services, admin, agentCreateTool, 'agent_create', {
       name: 'shared-worker',
       instructions: 'x',
@@ -461,7 +461,7 @@ describe("job_wait and the A2A debug tools do not leak another owner's job", () 
   // it just submitted itself, but job_wait takes caller-supplied jobIds
   // directly and returns the full job view, result included.
   it("job_wait cannot be used to read another user's job result", async () => {
-    const services = testServices({ mockScript: () => ({ text: 'alice secret result' }) });
+    const services = await testServices({ mockScript: () => ({ text: 'alice secret result' }) });
     const submitted = await callAs(services, alice, jobSubmitTool, 'job_submit', {
       instruction: 'x',
       template: 'writer'
@@ -485,7 +485,7 @@ describe("job_wait and the A2A debug tools do not leak another owner's job", () 
   // the timing of every state change of a job the caller was never
   // authorized to see, all without ever calling job_get on it.
   it("job_submit's dependsOn cannot be used to track another user's private job", async () => {
-    const services = testServices();
+    const services = await testServices();
     const aliceJob = await callAs(services, alice, jobSubmitTool, 'job_submit', {
       instruction: 'alice private work',
       template: 'writer'
@@ -516,12 +516,12 @@ describe("job_wait and the A2A debug tools do not leak another owner's job", () 
   // fail some other way, and assert on JobStore.getVisible's own exact
   // message, not just isError, to make sure the rejection is really the
   // ownership check and not a coincidence of the job's shape.
-  const stampRemoteTask = (services: ReturnType<typeof testServices>, jobId: string) => {
+  const stampRemoteTask = (services: Awaited<ReturnType<typeof testServices>>, jobId: string) => {
     services.db.prepare('UPDATE jobs SET remote_task_id = ? WHERE id = ?').run('remote-task-1', jobId);
   };
 
   it("a2a_task_get cannot read another user's job", async () => {
-    const services = testServices();
+    const services = await testServices();
     const submitted = await callAs(services, alice, jobSubmitTool, 'job_submit', {
       instruction: 'x',
       template: 'writer'
@@ -537,7 +537,7 @@ describe("job_wait and the A2A debug tools do not leak another owner's job", () 
   });
 
   it("a2a_task_cancel cannot cancel another user's job", async () => {
-    const services = testServices({ mockScript: () => ({ gate: new Promise<void>(() => {}) }) });
+    const services = await testServices({ mockScript: () => ({ gate: new Promise<void>(() => {}) }) });
     const submitted = await callAs(services, alice, jobSubmitTool, 'job_submit', {
       instruction: 'x',
       template: 'writer'
@@ -553,7 +553,7 @@ describe("job_wait and the A2A debug tools do not leak another owner's job", () 
   });
 
   it("a2a_push_config_set cannot redirect another user's job callback", async () => {
-    const services = testServices();
+    const services = await testServices();
     const submitted = await callAs(services, alice, jobSubmitTool, 'job_submit', {
       instruction: 'x',
       template: 'writer'
@@ -581,7 +581,7 @@ describe("job_wait and the A2A debug tools do not leak another owner's job", () 
 // has.
 describe('message_send and message_list are scoped to visible agents and jobs', () => {
   it("a non-admin cannot read another user's agent inbox or job messages", async () => {
-    const services = testServices();
+    const services = await testServices();
     const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
       name: 'alice-agent',
       instructions: 'x',
@@ -594,8 +594,8 @@ describe('message_send and message_list are scoped to visible agents and jobs', 
     });
     const jobId = (submitted.out['job'] as { jobId: string }).jobId;
 
-    services.bus.send({ toAgentId: agentId, body: 'agent secret' });
-    services.bus.send({ toJobId: jobId, body: 'job secret' });
+    await services.bus.send({ toAgentId: agentId, body: 'agent secret' });
+    await services.bus.send({ toJobId: jobId, body: 'job secret' });
 
     const byBobAgent = await callAs(services, bob, messageListTool, 'message_list', { agentId });
     const byBobJob = await callAs(services, bob, messageListTool, 'message_list', { jobId });
@@ -609,7 +609,7 @@ describe('message_send and message_list are scoped to visible agents and jobs', 
   });
 
   it("a non-admin cannot inject a message into another user's agent inbox or running job", async () => {
-    const services = testServices();
+    const services = await testServices();
     const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
       name: 'alice-agent-2',
       instructions: 'x',
@@ -633,13 +633,13 @@ describe('message_send and message_list are scoped to visible agents and jobs', 
 
     expect(toAgent.isError).toBe(true);
     expect(toJob.isError).toBe(true);
-    expect(services.bus.list({ agentId })).toEqual([]);
-    expect(services.bus.list({ jobId })).toEqual([]);
+    expect(await services.bus.list({ agentId })).toEqual([]);
+    expect(await services.bus.list({ jobId })).toEqual([]);
     await closeServices(services);
   });
 
   it('a channel stays shared team space, not scoped to one owner', async () => {
-    const services = testServices();
+    const services = await testServices();
     await callAs(services, alice, messageSendTool, 'message_send', { toChannel: 'team', body: 'hi' });
 
     const byBob = await callAs(services, bob, messageListTool, 'message_list', { channel: 'team' });
@@ -657,7 +657,7 @@ describe('cross-owner agent targeting', () => {
   // agent could still run a job on it directly — using its system prompt,
   // its runner, its model, and for a remote A2A registration, its credentials.
   it("cannot delegate to another user's private agent by naming its id", async () => {
-    const services = testServices();
+    const services = await testServices();
     const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
       name: 'alice-private',
       instructions: 'You are Alice private assistant. Secret sauce: XYZZY.',
@@ -675,7 +675,7 @@ describe('cross-owner agent targeting', () => {
   // Same bug, the skillQuery path: findBySkill scanned every agent with no
   // owner filter at all.
   it("skillQuery does not match another user's private agent", async () => {
-    const services = testServices();
+    const services = await testServices();
     await callAs(services, alice, agentCreateTool, 'agent_create', {
       name: 'alice-reviewer',
       role: 'reviewer',
@@ -698,7 +698,7 @@ describe('cross-owner agent targeting', () => {
 
 describe('shared agents', () => {
   it('a non-admin cannot create a shared agent', async () => {
-    const services = testServices();
+    const services = await testServices();
     const result = await callAs(services, alice, agentCreateTool, 'agent_create', {
       name: 'attempted-shared',
       instructions: 'x',
@@ -712,7 +712,7 @@ describe('shared agents', () => {
   });
 
   it('an admin-created shared agent is visible to, and usable by, every user', async () => {
-    const services = testServices({ mockScript: () => ({ text: 'shared answer' }) });
+    const services = await testServices({ mockScript: () => ({ text: 'shared answer' }) });
     const created = await callAs(services, admin, agentCreateTool, 'agent_create', {
       name: 'central-reviewer',
       instructions: 'x',
@@ -743,7 +743,7 @@ describe('shared agents', () => {
   });
 
   it('a non-admin cannot update or delete a shared agent', async () => {
-    const services = testServices();
+    const services = await testServices();
     const created = await callAs(services, admin, agentCreateTool, 'agent_create', {
       name: 'central-writer',
       instructions: 'x',
@@ -761,12 +761,12 @@ describe('shared agents', () => {
     expect(updated.isError).toBe(true);
     expect(updated.text).toMatch(/only an admin/i);
     expect(deleted.isError).toBe(true);
-    expect(services.agents.getOrThrow(agentId).instructions).toBe('x');
+    expect((await services.agents.getOrThrow(agentId)).instructions).toBe('x');
     await closeServices(services);
   });
 
   it('an admin can update a shared agent', async () => {
-    const services = testServices();
+    const services = await testServices();
     const created = await callAs(services, admin, agentCreateTool, 'agent_create', {
       name: 'central-tester',
       instructions: 'x',
@@ -781,7 +781,7 @@ describe('shared agents', () => {
     });
 
     expect(updated.isError).toBe(false);
-    expect(services.agents.getOrThrow(agentId).instructions).toBe('revised');
+    expect((await services.agents.getOrThrow(agentId)).instructions).toBe('revised');
     await closeServices(services);
   });
 
@@ -789,12 +789,12 @@ describe('shared agents', () => {
   // to exercise honestly, so the ownership half of "admin can manage a shared
   // agent" is proven at the store level instead — this is exactly the check
   // agent_delete's handler makes before it ever gets to confirming anything.
-  it('getManaged lets an admin manage a shared agent, and refuses everyone else', () => {
-    const services = testServices();
-    const sharedAgent = services.agents.create({ ownerId: '', name: 'central', instructions: 'x' });
+  it('getManaged lets an admin manage a shared agent, and refuses everyone else', async () => {
+    const services = await testServices();
+    const sharedAgent = await services.agents.create({ ownerId: '', name: 'central', instructions: 'x' });
 
-    expect(services.agents.getManaged(sharedAgent.id, admin).id).toBe(sharedAgent.id);
-    expect(() => services.agents.getManaged(sharedAgent.id, alice)).toThrow(/only an admin/i);
+    expect((await services.agents.getManaged(sharedAgent.id, admin)).id).toBe(sharedAgent.id);
+    await expect(services.agents.getManaged(sharedAgent.id, alice)).rejects.toThrow(/only an admin/i);
 
     services.db.close();
   });
@@ -807,7 +807,7 @@ describe('workflow and run isolation', () => {
   });
 
   it('two users can each define a workflow with the same name', async () => {
-    const services = testServices();
+    const services = await testServices();
 
     const aliceDefined = await callAs(services, alice, workflowDefineTool, 'workflow_define', spec('shared-name'));
     const bobDefined = await callAs(services, bob, workflowDefineTool, 'workflow_define', spec('shared-name'));
@@ -818,7 +818,7 @@ describe('workflow and run isolation', () => {
   });
 
   it("one user cannot fetch, list, delete or start another's workflow", async () => {
-    const services = testServices();
+    const services = await testServices();
     const defined = await callAs(services, alice, workflowDefineTool, 'workflow_define', spec('alice-only'));
     const workflowId = (defined.out['workflow'] as { workflowId: string }).workflowId;
 
@@ -832,12 +832,12 @@ describe('workflow and run isolation', () => {
     expect(gotByBob.text).toContain('NOT_FOUND');
     expect(startedByBob.isError).toBe(true);
     expect(deletedByBob.isError).toBe(true);
-    expect(services.workflows.getWorkflowOrThrow(workflowId).name).toBe('alice-only');
+    expect((await services.workflows.getWorkflowOrThrow(workflowId)).name).toBe('alice-only');
     await closeServices(services);
   });
 
   it("one user cannot fetch or list another's run", async () => {
-    const services = testServices();
+    const services = await testServices();
     const started = await callAs(services, alice, workflowStartTool, 'workflow_start', {
       spec: spec('alice-run')
     });
@@ -856,7 +856,7 @@ describe('workflow and run isolation', () => {
   });
 
   it("workflow_start with a workflowId cannot reach another user's private workflow", async () => {
-    const services = testServices();
+    const services = await testServices();
     const defined = await callAs(services, alice, workflowDefineTool, 'workflow_define', spec('alice-private-wf'));
     const workflowId = (defined.out['workflow'] as { workflowId: string }).workflowId;
 
@@ -868,7 +868,7 @@ describe('workflow and run isolation', () => {
   });
 
   it('the same idempotency key chosen by two different owners does not collide', async () => {
-    const services = testServices();
+    const services = await testServices();
 
     const aliceRun = await callAs(services, alice, workflowStartTool, 'workflow_start', {
       spec: spec('idem-a'),
@@ -887,7 +887,7 @@ describe('workflow and run isolation', () => {
   });
 
   it('an admin sees and can act on workflows and runs across owners', async () => {
-    const services = testServices();
+    const services = await testServices();
     const defined = await callAs(services, alice, workflowDefineTool, 'workflow_define', spec('admin-visible'));
     const workflowId = (defined.out['workflow'] as { workflowId: string }).workflowId;
 
@@ -905,7 +905,7 @@ describe('workflow and run isolation', () => {
   // owner's pending gates (including the rendered step instruction in
   // payload) and approve or reject them outright.
   it("an approval gate on one user's run is invisible to, and unresolvable by, another user", async () => {
-    const services = testServices();
+    const services = await testServices();
     const started = await callAs(services, alice, workflowStartTool, 'workflow_start', {
       spec: {
         name: 'alice-gated',
@@ -915,7 +915,7 @@ describe('workflow and run isolation', () => {
     const runId = (started.out['run'] as { runId: string }).runId;
     await services.scheduler.drain();
 
-    const approvalId = services.approvals.list({ status: 'pending' }).find(a => a.runId === runId)!
+    const approvalId = (await services.approvals.list({ status: 'pending' })).find(a => a.runId === runId)!
       .approvalId;
 
     const listedByBob = await callAs(services, bob, approvalListTool, 'approval_list', {});
@@ -931,7 +931,7 @@ describe('workflow and run isolation', () => {
     ]);
     expect(resolvedByBob.isError).toBe(true);
     expect(resolvedByBob.text).toContain('NOT_FOUND');
-    expect(services.approvals.getOrThrow(approvalId).status).toBe('pending');
+    expect((await services.approvals.getOrThrow(approvalId)).status).toBe('pending');
 
     const resolvedByAlice = await callAs(services, alice, approvalResolveTool, 'approval_resolve', {
       approvalId,
@@ -944,7 +944,7 @@ describe('workflow and run isolation', () => {
 
 describe('peer-to-peer sharing', () => {
   it('is off by default: an agent created by one user is invisible to another', async () => {
-    const services = testServices();
+    const services = await testServices();
     const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
       name: 'alice-default-private',
       instructions: 'x',
@@ -960,7 +960,7 @@ describe('peer-to-peer sharing', () => {
   });
 
   it('a memory namespace is off by default: not readable by another user even by name', async () => {
-    const services = testServices();
+    const services = await testServices();
     await callAs(services, alice, memoryWriteTool, 'memory_write', {
       namespace: 'private-notes',
       key: 'k',
@@ -978,7 +978,7 @@ describe('peer-to-peer sharing', () => {
   });
 
   it('agent_share grants exactly the named user access, and no one else', async () => {
-    const services = testServices({ mockScript: () => ({ text: 'agent answer' }) });
+    const services = await testServices({ mockScript: () => ({ text: 'agent answer' }) });
     const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
       name: 'alice-shareable',
       instructions: 'x',
@@ -1017,7 +1017,7 @@ describe('peer-to-peer sharing', () => {
   // contradicting the exact same reasoning: Bob had just read and used this
   // agent, then got told it does not exist the moment he tried to write it.
   it('a grantee can see and use a shared agent but cannot manage it, and hears why', async () => {
-    const services = testServices();
+    const services = await testServices();
     const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
       name: 'alice-shareable-2',
       instructions: 'x'
@@ -1040,7 +1040,7 @@ describe('peer-to-peer sharing', () => {
   });
 
   it('agent_unshare revokes access again', async () => {
-    const services = testServices();
+    const services = await testServices();
     const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
       name: 'alice-revocable',
       instructions: 'x',
@@ -1065,7 +1065,7 @@ describe('peer-to-peer sharing', () => {
   });
 
   it('only the owner (or an admin) may share or unshare an agent', async () => {
-    const services = testServices();
+    const services = await testServices();
     const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
       name: 'alice-guarded',
       instructions: 'x',
@@ -1088,7 +1088,7 @@ describe('peer-to-peer sharing', () => {
   });
 
   it('agent_share_list reports current grantees', async () => {
-    const services = testServices();
+    const services = await testServices();
     const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
       name: 'alice-listed',
       instructions: 'x',
@@ -1106,7 +1106,7 @@ describe('peer-to-peer sharing', () => {
   });
 
   it('memory_share grants read access to exactly one namespace for one named user', async () => {
-    const services = testServices();
+    const services = await testServices();
     await callAs(services, alice, memoryWriteTool, 'memory_write', {
       namespace: 'shared-notes',
       key: 'k',
@@ -1141,7 +1141,7 @@ describe('peer-to-peer sharing', () => {
   });
 
   it('memory_search across a shared namespace needs both ownerId and namespace', async () => {
-    const services = testServices();
+    const services = await testServices();
     await callAs(services, alice, memoryWriteTool, 'memory_write', {
       namespace: 'shared-search',
       key: 'k',
@@ -1168,7 +1168,7 @@ describe('peer-to-peer sharing', () => {
   });
 
   it('memory_unshare revokes access again', async () => {
-    const services = testServices();
+    const services = await testServices();
     await callAs(services, alice, memoryWriteTool, 'memory_write', {
       namespace: 'revocable-notes',
       key: 'k',
@@ -1200,7 +1200,7 @@ describe('peer-to-peer sharing', () => {
   });
 
   it('memory_share_list reports current grantees, only to the namespace owner', async () => {
-    const services = testServices();
+    const services = await testServices();
     await callAs(services, alice, memoryWriteTool, 'memory_write', { namespace: 'ns', key: 'k', value: 'x' });
     await callAs(services, alice, memoryShareTool, 'memory_share', { namespace: 'ns', granteeId: bob.ownerId });
 
@@ -1214,7 +1214,7 @@ describe('peer-to-peer sharing', () => {
   });
 
   it('cannot share a resource with its own owner', async () => {
-    const services = testServices();
+    const services = await testServices();
     const created = await callAs(services, alice, agentCreateTool, 'agent_create', {
       name: 'alice-self-share',
       instructions: 'x',
@@ -1237,7 +1237,7 @@ describe('agent templates remain admin-only to change', () => {
   // gate at all, despite templates being global — any non-admin caller could
   // overwrite a built-in template's instructions for every user.
   it('a non-admin cannot save (or shadow a built-in) template', async () => {
-    const services = testServices();
+    const services = await testServices();
     const result = await callAs(services, alice, agentTemplateSaveTool, 'agent_template_save', {
       name: 'reviewer',
       role: 'reviewer',
@@ -1251,7 +1251,7 @@ describe('agent templates remain admin-only to change', () => {
   });
 
   it('an admin can save a template', async () => {
-    const services = testServices();
+    const services = await testServices();
     const result = await callAs(services, admin, agentTemplateSaveTool, 'agent_template_save', {
       name: 'custom-role',
       role: 'custom',
