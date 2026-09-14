@@ -137,6 +137,37 @@ one.
 | `cli` | Spawns a headless coding-agent CLI, confined to `ORCH_CLI_WORKSPACE_DIRS` |
 | `mock` | Deterministic, for tests and CI |
 
+### The orchestrator has no model of its own
+
+There is no LLM in here. Every model call goes to an endpoint you name, so you
+can point it at your own gateway, a local Ollama or vLLM, or an application that
+fronts its own model — and **an endpoint that is not `api.openai.com` needs no
+API key at all**:
+
+```bash
+OPENAI_BASE_URL=http://127.0.0.1:8080/v1   # wherever your model lives
+OPENAI_MODEL=your-model
+ORCH_DEFAULT_RUNNER=openai-compatible
+# no OPENAI_API_KEY, no ANTHROPIC_API_KEY
+```
+
+That is the whole of it — a configuration, not a mode. The server boots with no
+keys set, `runner_list` reports `openai-compatible` as available, and jobs,
+workflows, fan-out and budgets all behave exactly as documented; usage still
+accounts, so `budget_set` keeps working against someone else's model. Operation
+is unchanged: everything goes through the same MCP tools.
+
+`tests/integration/bring-your-own-llm.test.ts` keeps it that way — it runs a job
+end to end with no API key configured and asserts the request reached the
+supplied endpoint.
+
+MCP's *sampling* (`sampling/createMessage`) would be the other way to do this,
+with the client answering each model call. It is deliberately **not** used here:
+it is deprecated as of protocol revision `2026-07-28` (SEP-2577), whose own
+guidance is to call LLM provider APIs directly, and it would trade a single
+environment variable for a resumable agent loop, a capability gate and a second
+code path. A base URL does the same job.
+
 ## A2A is off by default
 
 `A2A_ENABLED=false` removes the whole `a2a_*` group, `agent_register` and
@@ -410,11 +441,11 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 464 tests, no network, no model calls
+pnpm test        # 465 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 
 # The 10 Postgres tests skip unless pointed at a database (docker compose up -d db):
-TEST_POSTGRES_URL=postgres://orch:orch@127.0.0.1:5432/orch pnpm test   # 474
+TEST_POSTGRES_URL=postgres://orch:orch@127.0.0.1:5432/orch pnpm test   # 475
 pnpm typecheck && pnpm lint && pnpm build
 ```
 
