@@ -146,10 +146,18 @@ API key at all**:
 
 ```bash
 OPENAI_BASE_URL=http://127.0.0.1:8080/v1   # wherever your model lives
-OPENAI_MODEL=your-model
 ORCH_DEFAULT_RUNNER=openai-compatible
+# OPENAI_MODEL=your-model                  # optional — see below
 # no OPENAI_API_KEY, no ANTHROPIC_API_KEY
 ```
+
+`OPENAI_MODEL` is optional against your own endpoint. Set it and it is sent as
+usual; leave it unset and the `model` field is **omitted** rather than guessed,
+so a server that serves one loaded model (llama.cpp, LM Studio, a single-model
+gateway) works with no configuration at all. Nothing invents a model name for a
+non-OpenAI endpoint — `runner_list` reports no `defaultModel` instead of naming
+one your server has never heard of. An agent can always override with its own
+`model`.
 
 That is the whole of it — a configuration, not a mode. The server boots with no
 keys set, `runner_list` reports `openai-compatible` as available, and jobs,
@@ -441,11 +449,11 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 465 tests, no network, no model calls
+pnpm test        # 468 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 
 # The 10 Postgres tests skip unless pointed at a database (docker compose up -d db):
-TEST_POSTGRES_URL=postgres://orch:orch@127.0.0.1:5432/orch pnpm test   # 475
+TEST_POSTGRES_URL=postgres://orch:orch@127.0.0.1:5432/orch pnpm test   # 478
 pnpm typecheck && pnpm lint && pnpm build
 ```
 

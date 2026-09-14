@@ -59,29 +59,43 @@ export class OpenAiCompatibleRunner implements Runner {
 
   private readonly apiKey: string | undefined;
   private readonly baseUrl: string;
-  private readonly defaultModel: string;
+  private readonly defaultModel: string | undefined;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: OpenAiRunnerOptions = {}) {
     this.apiKey = options.apiKey;
     this.baseUrl = (options.baseUrl ?? 'https://api.openai.com/v1').replace(/\/$/, '');
-    this.defaultModel = options.defaultModel ?? 'gpt-4o-mini';
+    // A default model name is only meaningful against OpenAI itself. Pointed at
+    // your own gateway, Ollama or vLLM, 'gpt-4o-mini' is a name that server has
+    // never heard of — and a gateway that quietly routes unknown names to its
+    // own default would answer from a model nobody chose while runner_list
+    // reported a different one. Better to have no default and say so.
+    this.defaultModel =
+      options.defaultModel ?? (this.isOpenAi() ? 'gpt-4o-mini' : undefined);
     this.fetchImpl = options.fetchImpl ?? fetch;
+  }
+
+  private isOpenAi(): boolean {
+    return this.baseUrl.includes('api.openai.com');
   }
 
   health(): RunnerHealth {
     // A local endpoint (Ollama, vLLM) needs no key, so a configured base URL is
     // enough on its own.
-    const available = this.apiKey !== undefined || !this.baseUrl.includes('api.openai.com');
+    const available = this.apiKey !== undefined || !this.isOpenAi();
     return {
       name: this.name,
       available,
-      defaultModel: this.defaultModel,
+      // Reported only when there really is one: an agent may still name its
+      // own model, so a custom endpoint without OPENAI_MODEL stays usable.
+      ...(this.defaultModel !== undefined && { defaultModel: this.defaultModel }),
       ...(available ? {} : { reason: 'OPENAI_API_KEY is not set.' })
     };
   }
 
   async *run({ job, toolkit, maxSteps }: RunnerInput, signal: AbortSignal): AsyncIterable<RunnerEvent> {
+    // May be undefined against a custom endpoint with no OPENAI_MODEL set —
+    // see `chat`, which then omits the field entirely.
     const model = job.agentSnapshot.model ?? this.defaultModel;
 
     const messages: ChatMessage[] = [
@@ -167,7 +181,7 @@ export class OpenAiCompatibleRunner implements Runner {
   }
 
   private async chat(
-    model: string,
+    model: string | undefined,
     messages: readonly ChatMessage[],
     tools: unknown,
     signal: AbortSignal
@@ -180,7 +194,13 @@ export class OpenAiCompatibleRunner implements Runner {
         ...(this.apiKey !== undefined && { authorization: `Bearer ${this.apiKey}` })
       },
       body: JSON.stringify({
-        model,
+        // Omitted rather than guessed when nothing is configured: plenty of
+        // OpenAI-compatible servers (llama.cpp, LM Studio, a single-model
+        // gateway) ignore it and serve whatever they have loaded, so sending a
+        // name they have never heard of would break the zero-config case for
+        // no benefit. A server that does require it answers with its own clear
+        // error, which the status-and-body message above already surfaces.
+        ...(model !== undefined && { model }),
         max_tokens: DEFAULT_MAX_TOKENS,
         messages,
         ...(tools !== undefined && { tools })
@@ -195,7 +215,21 @@ export class OpenAiCompatibleRunner implements Runner {
       );
     }
 
-    return (await response.json()) as ChatResponse;
+    // Not `response.json()` on its own: pointing at the wrong path, dropping
+    // the /v1 suffix, or sitting behind an SSO portal all answer 200 with an
+    // HTML page, and the bare parse error ("Unexpected token '<'") names
+    // neither the endpoint nor the cause. This is the likeliest mistake when
+    // the endpoint is your own, so it gets a real message.
+    const text = await response.text();
+    try {
+      return JSON.parse(text) as ChatResponse;
+    } catch {
+      throw new OrchestratorError(
+        'RUNNER_FAILED',
+        `${this.baseUrl}/chat/completions answered ${response.status} with something that is not JSON: ${text.slice(0, 120)}`,
+        'Check OPENAI_BASE_URL points at the API root (usually ending in /v1) and that nothing is intercepting the request.'
+      );
+    }
   }
 }
 
