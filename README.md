@@ -202,7 +202,11 @@ statement rather than a read followed by a write:
 - taking a queued job (`UPDATE ... WHERE state = 'queued' RETURNING *`), so two
   schedulers never run the same job, and the loser simply moves on;
 - resolving an approval (`UPDATE ... WHERE status = 'pending'`), so an approve can
-  never land on top of someone else's reject.
+  never land on top of someone else's reject;
+- starting a workflow step (`UPDATE ... WHERE state = 'pending' RETURNING`), so a
+  step is submitted by whichever instance takes the row and skipped by the other.
+  Every instance re-evaluates every live run on any job state change, so two of
+  them reach the same pending step routinely, not rarely.
 
 A third case needed more than one statement. A job left `running` by a process
 that died has to be recovered — but from a database row alone, "abandoned" and
@@ -381,11 +385,11 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 457 tests, no network, no model calls
+pnpm test        # 458 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 
 # The 10 Postgres tests skip unless pointed at a database (docker compose up -d db):
-TEST_POSTGRES_URL=postgres://orch:orch@127.0.0.1:5432/orch pnpm test   # 467
+TEST_POSTGRES_URL=postgres://orch:orch@127.0.0.1:5432/orch pnpm test   # 468
 pnpm typecheck && pnpm lint && pnpm build
 ```
 

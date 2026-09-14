@@ -735,26 +735,55 @@ export class WorkflowEngine {
       { ownerId, isAdmin: false }
     );
 
-    const job = await this.deps.scheduler.submit({
-      ownerId,
-      backend: 'local',
-      agentId: agent.id,
-      agentSnapshot: toSnapshot(agent),
-      instruction: renderTemplate(definition.instruction, vars),
-      context: vars,
-      ...(definition.outputSchema !== undefined && { outputSchema: definition.outputSchema })
-    });
+    // Take the step before creating anything, in one guarded statement — the
+    // same shape as jobs.claim, and for the same reason. `advanceAll` scans
+    // every running workflow on every instance, so two instances routinely
+    // reach a pending step together; submitting first and marking the row
+    // afterwards let both submit, so the step ran twice (two agent
+    // invocations, twice the spend) and step_runs.job_id recorded only the
+    // later one, silently discarding the other's result. With two instances
+    // that reproduced on every attempt, not occasionally.
+    const claimed = (await this.deps.db
+      .prepare(
+        `UPDATE step_runs
+            SET state = 'running', attempt = attempt + 1, updated_at = ?
+          WHERE run_id = ? AND step_id = ? AND state = 'pending'
+        RETURNING attempt`
+      )
+      .all(new Date().toISOString(), runId, definition.id)) as { attempt: number }[];
 
-    const row = (await this.deps.db
-      .prepare('SELECT attempt FROM step_runs WHERE run_id = ? AND step_id = ?')
-      .get(runId, definition.id)) as { attempt: number };
+    // Someone else got there first. Their pass owns the step from here.
+    if (claimed.length === 0) return;
+
+    // The row now reads `running` with no job_id yet. Nothing settles a step
+    // in that state — `advanceOnce` skips any running step whose jobId is
+    // undefined — so the gap is safe to cross.
+    let job;
+    try {
+      job = await this.deps.scheduler.submit({
+        ownerId,
+        backend: 'local',
+        agentId: agent.id,
+        agentSnapshot: toSnapshot(agent),
+        instruction: renderTemplate(definition.instruction, vars),
+        context: vars,
+        ...(definition.outputSchema !== undefined && { outputSchema: definition.outputSchema })
+      });
+    } catch (error) {
+      // Put the step back exactly as it was, or a failed submit would strand
+      // it `running` forever with no job to settle it.
+      await this.deps.db
+        .prepare(
+          `UPDATE step_runs SET state = 'pending', attempt = attempt - 1, updated_at = ?
+            WHERE run_id = ? AND step_id = ? AND state = 'running' AND job_id IS NULL`
+        )
+        .run(new Date().toISOString(), runId, definition.id);
+      throw error;
+    }
 
     await this.deps.db
-      .prepare(
-        `UPDATE step_runs SET state = 'running', job_id = ?, attempt = ?, updated_at = ?
-         WHERE run_id = ? AND step_id = ?`
-      )
-      .run(job.id, row.attempt + 1, new Date().toISOString(), runId, definition.id);
+      .prepare(`UPDATE step_runs SET job_id = ?, updated_at = ? WHERE run_id = ? AND step_id = ?`)
+      .run(job.id, new Date().toISOString(), runId, definition.id);
   }
 
   private async templateVars(runId: string): Promise<Record<string, unknown>> {
