@@ -73,8 +73,6 @@ export interface RemoteExecutor {
 
 export class JobScheduler {
   private readonly active = new Map<string, AbortController>();
-  /** Running jobs per agent, for the per-agent `maxConcurrent` budget. */
-  private readonly activeByAgent = new Map<string, number>();
   /** Jobs already reported as unblockable, so `pump` warns once, not per tick. */
   private readonly reportedUnblockable = new Set<string>();
   private readonly abortReasons = new Map<string, AbortReason>();
@@ -422,11 +420,15 @@ export class JobScheduler {
     }
     if (unblockable.length > 0) this.notify();
 
+    // Two different limits. `maxConcurrency` is this process's worker pool, so
+    // it is counted in memory and applies per instance. A `maxConcurrent`
+    // budget is a policy cap on the deployment, so it is counted in the
+    // database — in memory it was applied once per instance, which turned a
+    // cap of 1 across three instances into three.
     const globalCap = await this.deps.budgets.maxConcurrentFor('global');
-    const ceiling =
-      globalCap === undefined ? this.deps.maxConcurrency : Math.min(globalCap, this.deps.maxConcurrency);
 
-    while (this.active.size < ceiling) {
+    while (this.active.size < this.deps.maxConcurrency) {
+      if (globalCap !== undefined && (await this.deps.jobs.countRunning()) >= globalCap) break;
       // Look past the jobs we cannot start: one agent sitting at its own cap
       // must not starve every other agent's queue behind it.
       const queued = await this.deps.jobs.nextQueued(Math.max(this.deps.maxConcurrency * 2, 20));
@@ -456,17 +458,17 @@ export class JobScheduler {
   /** Per-agent `maxConcurrent`, which is a budget rather than a config limit. */
   private async hasAgentCapacity(agentId: string): Promise<boolean> {
     const cap = await this.deps.budgets.maxConcurrentFor('agent', agentId);
-    return cap === undefined || (this.activeByAgent.get(agentId) ?? 0) < cap;
+    // Counted across the deployment, not just this process — see `pump`.
+    return cap === undefined || (await this.deps.jobs.countRunning(agentId)) < cap;
   }
 
   /** Takes a job this scheduler has already claimed, so it is `running` here. */
   private async execute(job: JobRecord): Promise<void> {
     const controller = new AbortController();
+    // Set before the first await, which is what stops `pump` picking this job
+    // twice. Per-agent counting used to live here too; it now comes from the
+    // database, because the cap it serves is deployment-wide.
     this.active.set(job.id, controller);
-    // Counted here rather than in `pump`, alongside `active`, so the increment
-    // and its decrement in `finally` stay in one place. Both run before the
-    // first await, which is what stops `pump` picking this job twice.
-    this.activeByAgent.set(job.agentId, (this.activeByAgent.get(job.agentId) ?? 0) + 1);
 
     const startedAtMs = Date.now();
     let timer: NodeJS.Timeout | undefined;
@@ -605,9 +607,6 @@ export class JobScheduler {
     } finally {
       if (timer !== undefined) clearTimeout(timer);
       this.active.delete(job.id);
-      const remaining = (this.activeByAgent.get(job.agentId) ?? 1) - 1;
-      if (remaining > 0) this.activeByAgent.set(job.agentId, remaining);
-      else this.activeByAgent.delete(job.agentId);
       this.abortReasons.delete(job.id);
       this.notify();
       this.track(this.pump(), 'scheduler pump failed');

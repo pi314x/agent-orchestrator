@@ -500,6 +500,25 @@ export class JobStore {
   }
 
   /**
+   * How many jobs the whole deployment is running, optionally for one agent.
+   *
+   * The scheduler's own `maxConcurrency` is a per-process worker limit and is
+   * counted in memory, which is right. A `maxConcurrent` *budget* is a policy
+   * cap and has to be counted here instead: counted in memory it was enforced
+   * once per instance, so a cap of 1 across three instances allowed three.
+   */
+  async countRunning(agentId?: string): Promise<number> {
+    const row = (await this.db
+      .prepare(
+        agentId === undefined
+          ? `SELECT COUNT(*) AS n FROM jobs WHERE state = 'running'`
+          : `SELECT COUNT(*) AS n FROM jobs WHERE state = 'running' AND agent_id = ?`
+      )
+      .get(...(agentId === undefined ? [] : [agentId]))) as { n: number | string };
+    return Number(row.n);
+  }
+
+  /**
    * Ask whoever is running this job to stop it.
    *
    * The AbortController that actually stops a run lives in one process's
