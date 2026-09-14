@@ -185,6 +185,33 @@ describePg('Postgres backend', () => {
     expect(spent.costUsd).toBeCloseTo(0.002, 6);
   });
 
+  // A dropped idle connection is an EventEmitter `error` on the pool, and Node
+  // turns an unlistened `error` event into an uncaught exception — so before
+  // there was a listener, one Postgres restart or failover took the whole
+  // orchestrator down with every job running in it.
+  it('survives a pooled connection dropped while idle, and keeps working', async () => {
+    const seen: Error[] = [];
+    // One connection, so pg_backend_pid() below names the one the pool holds.
+    const victim = openDatabase({ url: url as string, maxConnections: 1, onError: e => seen.push(e) });
+
+    const { pid } = (await victim.prepare('SELECT pg_backend_pid() AS pid').get()) as { pid: number };
+
+    // Exactly what a restart, a failover or an idle-session timeout does.
+    const killer = openDatabase({ url: url as string });
+    await killer.prepare('SELECT pg_terminate_backend(?)').all(pid);
+    await killer.close();
+
+    // Let the socket close and the pool notice before asserting on either.
+    await new Promise(resolve => setTimeout(resolve, 300));
+
+    expect(seen.map(e => e.message).join(' ')).toMatch(/terminating connection|connection terminated/i);
+
+    // The pool discards the dead connection and opens a fresh one, so the very
+    // next query works. Surviving is only half of it; recovering is the point.
+    expect(await victim.prepare('SELECT 1 AS one').get()).toEqual({ one: 1 });
+    await victim.close();
+  });
+
   it('rolls a failed transaction back', async () => {
     const marker = `tx_${Date.now().toString(36)}`;
 

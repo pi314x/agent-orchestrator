@@ -8,6 +8,12 @@ export interface OpenPostgresOptions {
   url: string;
   /** Connections per instance. Small by default: many instances share one server. */
   maxConnections?: number;
+  /**
+   * Called when a pooled connection fails while sitting idle. Defaults to a
+   * line on stderr — never stdout, which carries JSON-RPC under the stdio
+   * transport.
+   */
+  onError?: (error: Error) => void;
 }
 
 /**
@@ -139,6 +145,25 @@ class PostgresDb implements Db {
   }
 }
 
-export function openPostgresDatabase({ url, maxConnections = 10 }: OpenPostgresOptions): Db {
-  return new PostgresDb(new Pool({ connectionString: url, max: maxConnections }));
+export function openPostgresDatabase({
+  url,
+  maxConnections = 10,
+  onError = error => process.stderr.write(`postgres pool error: ${error.message}\n`)
+}: OpenPostgresOptions): Db {
+  const pool = new Pool({ connectionString: url, max: maxConnections });
+
+  // A `Pool` is an EventEmitter, and it emits `error` when a connection dies
+  // while idle — which is what a Postgres restart, a failover, or an
+  // idle_in_transaction_session_timeout does to every pooled connection at
+  // once. Node turns an `error` event with no listener into an uncaught
+  // exception, so without this line the first such blip kills the whole
+  // orchestrator and every job running in it. There is nothing to repair
+  // here: the pool has already discarded the dead connection and will open a
+  // fresh one on the next query. The listener exists so the process lives to
+  // see that happen.
+  pool.on('error', error => {
+    onError(error instanceof Error ? error : new Error(String(error)));
+  });
+
+  return new PostgresDb(pool);
 }

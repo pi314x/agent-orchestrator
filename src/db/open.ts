@@ -15,6 +15,11 @@ export interface OpenOptions {
   url: string;
   /** Postgres only; ignored for SQLite, which has a single connection. */
   maxConnections?: number;
+  /**
+   * Postgres only: a pooled connection dropped while idle. Survivable, but it
+   * should be visible in the log rather than silent.
+   */
+  onError?: (error: Error) => void;
 }
 
 /**
@@ -22,9 +27,13 @@ export interface OpenOptions {
  * point ORCH_DB_URL at a file for SQLite, at postgres://… for Postgres, and
  * nothing else in the codebase knows the difference.
  */
-export function openDatabase({ url, maxConnections }: OpenOptions): Db {
+export function openDatabase({ url, maxConnections, onError }: OpenOptions): Db {
   if (dialectFor(url) === 'postgres') {
-    return openPostgresDatabase({ url, ...(maxConnections !== undefined && { maxConnections }) });
+    return openPostgresDatabase({
+      url,
+      ...(maxConnections !== undefined && { maxConnections }),
+      ...(onError !== undefined && { onError })
+    });
   }
   return openSqliteDatabase({ url });
 }

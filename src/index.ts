@@ -16,7 +16,8 @@ const logger = createLogger(config);
 
 const db = openDatabase({
   url: config.dbUrl,
-  ...(config.dbMaxConnections !== undefined && { maxConnections: config.dbMaxConnections })
+  ...(config.dbMaxConnections !== undefined && { maxConnections: config.dbMaxConnections }),
+  onError: error => logger.error({ err: error }, 'database connection dropped while idle')
 });
 await assertSearchSupport(db);
 const migration = await migrate(db);
