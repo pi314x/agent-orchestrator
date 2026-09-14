@@ -106,6 +106,7 @@ export function createServices({ config, db, logger, a2aClientProvider, lease }:
     new CliRunner({
       workspaceDirs: config.cliWorkspaceDirs,
       allowNetwork: config.cliAllowNetwork,
+      args: config.cliArgs,
       ...(config.cliCommand !== undefined && { command: config.cliCommand })
     })
   ]);

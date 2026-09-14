@@ -134,7 +134,7 @@ one.
 |---|---|
 | `openai-compatible` | **Default.** OpenAI, OpenRouter, Ollama, vLLM, LM Studio — `OPENAI_BASE_URL` is the only difference |
 | `anthropic` | Claude models, streaming with tool use |
-| `cli` | Spawns a headless coding-agent CLI, confined to `ORCH_CLI_WORKSPACE_DIRS` |
+| `cli` | Spawns a headless coding-agent CLI (`claude`, `codex`, …) under **your own login**, confined to `ORCH_CLI_WORKSPACE_DIRS` |
 | `mock` | Deterministic, for tests and CI |
 
 ### The orchestrator has no model of its own
@@ -169,7 +169,28 @@ is unchanged: everything goes through the same MCP tools.
 end to end with no API key configured and asserts the request reached the
 supplied endpoint.
 
-MCP's *sampling* (`sampling/createMessage`) would be the other way to do this,
+### Or let a coding-agent CLI be the model
+
+If the model you want to use is one you are already logged into — a `claude` or
+`codex` CLI — the `cli` runner spawns it per job and reads its answer from
+stdout. Its own login is the credential, so again there is no key here:
+
+```bash
+ORCH_CLI_COMMAND=claude
+ORCH_CLI_ARGS=-p                       # comma-separated; `codex,exec` for Codex
+ORCH_CLI_WORKSPACE_DIRS=/srv/workspaces
+ORCH_CLI_ALLOW_NETWORK=true            # the CLI has to reach its own backend
+```
+
+Two things to know before choosing this over a base URL. A `cli` agent gets
+**no toolkit** — no `finish`, no `memory_*`, no `artifact_put`, no spawning
+sub-agents; the instruction goes in on stdin and whatever the process prints
+comes back as the result. And only wall-clock duration is recorded, not tokens,
+so `maxTokens` and `maxCostUsd` budgets do not bind it (`maxCalls` and
+`maxConcurrent` still do). The workspace allow-list is the security boundary:
+with none set the runner refuses to run at all.
+
+MCP's *sampling* (`sampling/createMessage`) would be a third way to do this,
 with the client answering each model call. It is deliberately **not** used here:
 it is deprecated as of protocol revision `2026-07-28` (SEP-2577), whose own
 guidance is to call LLM provider APIs directly, and it would trade a single
@@ -449,11 +470,11 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 468 tests, no network, no model calls
+pnpm test        # 470 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 
 # The 10 Postgres tests skip unless pointed at a database (docker compose up -d db):
-TEST_POSTGRES_URL=postgres://orch:orch@127.0.0.1:5432/orch pnpm test   # 478
+TEST_POSTGRES_URL=postgres://orch:orch@127.0.0.1:5432/orch pnpm test   # 480
 pnpm typecheck && pnpm lint && pnpm build
 ```
 

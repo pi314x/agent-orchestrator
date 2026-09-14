@@ -47,7 +47,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (url === undefined) return;
-  await db.close();
+  // Guarded: when beforeAll could not reach the server, `db` was never
+  // assigned, and an unguarded close throws a second, unrelated error that
+  // buries the connection failure that actually explains the run.
+  await db?.close();
   const admin = openDatabase({ url });
   await admin.exec(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
   await admin.close();

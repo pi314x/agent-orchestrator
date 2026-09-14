@@ -25,6 +25,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     // CI never reaches a real model.
     defaultRunner: 'mock',
     agentsDir: 'agents',
+    cliArgs: [],
     cliWorkspaceDirs: [],
     cliAllowNetwork: false,
     oauthRequiredScopes: [],

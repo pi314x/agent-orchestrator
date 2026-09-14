@@ -37,6 +37,8 @@ const ConfigSchema = z.object({
   defaultRunner: z.enum(RUNNER_NAMES),
   agentsDir: z.string().min(1),
   cliCommand: z.string().optional(),
+  /** Comma-separated, so an argument may itself contain spaces. */
+  cliArgs: z.array(z.string()).default([]),
   cliWorkspaceDirs: z.array(z.string()),
   cliAllowNetwork: z.boolean(),
   oauthIssuerUrl: z.string().optional(),
@@ -93,6 +95,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     defaultRunner: z.enum(RUNNER_NAMES).parse(env.ORCH_DEFAULT_RUNNER?.trim() || DEFAULT_RUNNER),
     agentsDir: env.ORCH_AGENTS_DIR?.trim() || 'agents',
     ...(env.ORCH_CLI_COMMAND?.trim() && { cliCommand: env.ORCH_CLI_COMMAND.trim() }),
+    // Some CLIs need a subcommand or flag before they will run headless
+    // (`codex exec`, for instance). Without this the runner could only ever
+    // invoke a bare command, which silently rules those out.
+    cliArgs: splitList(env.ORCH_CLI_ARGS),
     cliWorkspaceDirs: splitList(env.ORCH_CLI_WORKSPACE_DIRS),
     cliAllowNetwork: boolish(false).parse(env.ORCH_CLI_ALLOW_NETWORK),
     ...(env.ORCH_OAUTH_ISSUER_URL?.trim() && { oauthIssuerUrl: env.ORCH_OAUTH_ISSUER_URL.trim() }),
