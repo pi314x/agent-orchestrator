@@ -271,21 +271,37 @@ export class AgentRegistry {
     const existing = new Map(rows.map(row => [row.name, toRecord(row)]));
 
     for (const definition of definitions) {
-      const current = existing.get(definition.name);
+      let current = existing.get(definition.name);
 
       if (current === undefined) {
-        await this.create({
-          name: definition.name,
-          instructions: definition.instructions,
-          toolGrants: definition.toolGrants,
-          source: 'file',
-          sourcePath: definition.sourcePath,
-          ...(definition.role !== undefined && { role: definition.role }),
-          ...(definition.runner !== undefined && { runner: definition.runner }),
-          ...(definition.model !== undefined && { model: definition.model })
-        });
-        created.push(definition.name);
-        continue;
+        try {
+          await this.create({
+            name: definition.name,
+            instructions: definition.instructions,
+            toolGrants: definition.toolGrants,
+            source: 'file',
+            sourcePath: definition.sourcePath,
+            ...(definition.role !== undefined && { role: definition.role }),
+            ...(definition.runner !== undefined && { runner: definition.runner }),
+            ...(definition.model !== undefined && { model: definition.model })
+          });
+          created.push(definition.name);
+          continue;
+        } catch (error) {
+          // Every instance syncs the agents directory at startup, so two
+          // starting together both read "not there yet" and both insert. The
+          // loser used to die on the way up — a second instance simply could
+          // not be started against a fresh database, which rules out a rolling
+          // deploy or a scale-up.
+          //
+          // Losing this race is not a failure: the agent the sibling wrote is
+          // the one this file describes. Re-read it and take the update path,
+          // so the definition still lands. Anything that is *not* this race
+          // leaves the agent missing, and is re-thrown untouched.
+          const raced = await this.findByName(definition.name, '');
+          if (raced === undefined) throw error;
+          current = raced;
+        }
       }
 
       await this.db
