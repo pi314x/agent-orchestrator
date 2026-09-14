@@ -54,7 +54,18 @@ const ConfigSchema = z.object({
   a2aTrustMode: z.enum(TRUST_MODES),
   a2aAgentCardUrl: z.string().optional(),
   a2aRegistryUrl: z.string().optional(),
-  a2aWebhookAllowedHosts: z.array(z.string())
+  a2aWebhookAllowedHosts: z.array(z.string()),
+  /**
+   * Extra hostnames accepted in an inbound request's Host and Origin headers,
+   * beyond loopback and `httpHost`. `httpHost` is a bind *address*
+   * (0.0.0.0 to accept remote connections); the Host header a real remote
+   * client sends is the public hostname it connects to (e.g. a reverse
+   * proxy's domain), which is a different string entirely. Without an entry
+   * here, every request from behind a reverse proxy is rejected with 403
+   * before OAuth or anything else runs — binding 0.0.0.0 alone does not make
+   * the server reachable by a hosted client.
+   */
+  httpAllowedHosts: z.array(z.string())
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -114,7 +125,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     a2aTrustMode: z.enum(TRUST_MODES).parse(env.A2A_TRUST_MODE?.trim() || 'verified-only'),
     ...(env.A2A_AGENT_CARD_URL?.trim() && { a2aAgentCardUrl: env.A2A_AGENT_CARD_URL.trim() }),
     ...(env.A2A_REGISTRY_URL?.trim() && { a2aRegistryUrl: env.A2A_REGISTRY_URL.trim() }),
-    a2aWebhookAllowedHosts: splitList(env.A2A_WEBHOOK_ALLOWED_HOSTS).map(host => host.toLowerCase())
+    a2aWebhookAllowedHosts: splitList(env.A2A_WEBHOOK_ALLOWED_HOSTS).map(host => host.toLowerCase()),
+    httpAllowedHosts: splitList(env.ORCH_HTTP_ALLOWED_HOSTS).map(host => host.toLowerCase())
   };
 
   return ConfigSchema.parse(raw);

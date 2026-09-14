@@ -34,6 +34,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     // Tests use unsigned fixture cards, so signature checks would block them.
     a2aTrustMode: 'allow-unverified',
     a2aWebhookAllowedHosts: [],
+    httpAllowedHosts: [],
     ...overrides
   };
 }

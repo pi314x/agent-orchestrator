@@ -27,7 +27,7 @@ export interface HttpServerHandle {
 export interface StartHttpServerOptions {
   factory: McpServerFactory;
   config: Pick<Config, 'httpHost' | 'httpPort'> &
-    Partial<Pick<Config, 'oauthIssuerUrl' | 'oauthResourceUrl' | 'oauthRequiredScopes'>>;
+    Partial<Pick<Config, 'oauthIssuerUrl' | 'oauthResourceUrl' | 'oauthRequiredScopes' | 'httpAllowedHosts'>>;
   logger: Logger;
 }
 
@@ -65,8 +65,15 @@ export async function startHttpServer({
           resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(new URL(oauth.resourceUrl))
         });
 
-  // DNS-rebinding and cross-site protection for a locally bound server.
-  const allowedHostnames = Array.from(new Set(['localhost', '127.0.0.1', '[::1]', config.httpHost]));
+  // DNS-rebinding and cross-site protection. `httpHost` alone only ever
+  // covers loopback and the bind address itself — the hostname a real remote
+  // client sends (a reverse proxy's public domain) is a different string, so
+  // ORCH_HTTP_ALLOWED_HOSTS is what actually makes a publicly exposed
+  // deployment reachable. Without it every remote request is rejected here,
+  // before OAuth or anything else runs.
+  const allowedHostnames = Array.from(
+    new Set(['localhost', '127.0.0.1', '[::1]', config.httpHost, ...(config.httpAllowedHosts ?? [])])
+  );
   const validateHost = hostHeaderValidation(allowedHostnames);
   const validateOrigin = originValidation(allowedHostnames);
 

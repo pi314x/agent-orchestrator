@@ -461,7 +461,28 @@ single-operator server: loopback binding, no auth, SQLite in `~/.agent-orchestra
 Point `ORCH_DB_URL` at a `postgres://` URL to run several instances across hosts
 against one database instead.
 
-Before exposing it beyond localhost, set `ORCH_OAUTH_ISSUER_URL` — tools that change
+### Reaching it from a hosted client (ChatGPT, or any client that is not on this host)
+
+`ORCH_HTTP_HOST=0.0.0.0` alone does **not** make the server reachable from a
+hosted MCP client. `httpHost` is only the bind *address*; a real client — behind
+a reverse proxy terminating TLS in front of this process, which is how you'd
+expose it — sends its own public hostname in the Host header (and browsers send
+Origin), and that string has nothing to do with the bind address. Without
+naming it, the DNS-rebinding guard rejects every such request with a bare 403
+before OAuth, routing, or any tool ever runs:
+
+```bash
+ORCH_HTTP_HOST=0.0.0.0
+ORCH_HTTP_ALLOWED_HOSTS=orchestrator.example.com   # comma-separated for more than one
+```
+
+This is additive — loopback names keep working regardless — and it is an
+allowlist, not a switch that disables the check: a Host or Origin that is not
+named here is still rejected. `tests/integration/http-remote-host.test.ts`
+covers both the default (still closed) and the configured (now reachable) case
+against the real HTTP server.
+
+Before exposing it beyond localhost, also set `ORCH_OAUTH_ISSUER_URL` — tools that change
 what the orchestrator may do (`budget_set`, `toolserver_*`, `agent_publish`, and
 attaching `toolGrants` to an agent) then require the `orch:admin` scope. Without
 OAuth configured there is no caller identity and every tool is open, which is the
@@ -470,11 +491,11 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 473 tests, no network, no model calls
+pnpm test        # 475 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 
 # The 10 Postgres tests skip unless pointed at a database (docker compose up -d db):
-TEST_POSTGRES_URL=postgres://orch:orch@127.0.0.1:5432/orch pnpm test   # 483
+TEST_POSTGRES_URL=postgres://orch:orch@127.0.0.1:5432/orch pnpm test   # 485
 pnpm typecheck && pnpm lint && pnpm build
 ```
 
