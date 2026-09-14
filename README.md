@@ -228,6 +228,12 @@ shared SQLite file, running twelve jobs across two schedulers to check each
 executes exactly once; `tests/integration/postgres-db.test.ts` re-proves the same
 two races against a live Postgres server.
 
+Waiting works across instances too. `job_wait` — and `delegate`, `fan_out` and
+`consensus`, which all wait internally — reacts to this instance's own job
+events and also re-reads the jobs every 250ms, because those events only ever
+fire for work this process ran. Without the second half, a wait on a job another
+instance picked up ran to its full timeout on work that had already finished.
+
 Cancelling works across instances too, in two steps for the same reason. The
 `AbortController` that actually stops a run lives in the memory of the one
 process running it, so `job_cancel` served anywhere else records the request and
@@ -394,11 +400,11 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 463 tests, no network, no model calls
+pnpm test        # 464 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 
 # The 10 Postgres tests skip unless pointed at a database (docker compose up -d db):
-TEST_POSTGRES_URL=postgres://orch:orch@127.0.0.1:5432/orch pnpm test   # 473
+TEST_POSTGRES_URL=postgres://orch:orch@127.0.0.1:5432/orch pnpm test   # 474
 pnpm typecheck && pnpm lint && pnpm build
 ```
 

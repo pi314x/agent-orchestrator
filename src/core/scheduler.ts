@@ -64,6 +64,19 @@ const DEFAULT_HEARTBEAT_MS = 15_000;
 const DEFAULT_LEASE_MS = 60_000;
 
 /**
+ * How often `wait` re-reads the jobs it is waiting on, on top of reacting to
+ * this instance's own change notifications.
+ *
+ * Those notifications only ever fire for work this process ran, so a job that
+ * another instance picked up settled without anyone here hearing about it and
+ * every wait ran to its full deadline — `job_wait`, and with it `delegate`,
+ * `fan_out` and `consensus`, blocked for the whole timeout on work that had
+ * finished in milliseconds. The listener is still what makes the local case
+ * instant; this is the floor under the remote one.
+ */
+const WAIT_POLL_MS = 250;
+
+/**
  * The A2A gateway is not a runner (PLAN §9) but exposes the same shape, so the
  * scheduler drives local and remote work through one path.
  */
@@ -284,6 +297,27 @@ export class JobScheduler {
           );
         })
       );
+
+      // Polled as well as notified. `checking` keeps a slow read from stacking
+      // up behind itself; a missed tick costs nothing, the next one catches it.
+      let checking = false;
+      const poll = setInterval(() => {
+        if (finished || checking) return;
+        checking = true;
+        void settled().then(
+          records => {
+            checking = false;
+            if (records !== undefined) finish(records);
+          },
+          () => {
+            // A transient read failure is not a reason to fail the wait: the
+            // deadline below still bounds it, and the next tick may succeed.
+            checking = false;
+          }
+        );
+      }, WAIT_POLL_MS);
+      poll.unref?.();
+      cleanups.push(() => clearInterval(poll));
 
       const timer = setTimeout(() => {
         void snapshot().then(finish, () => finish([]));
