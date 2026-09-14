@@ -385,11 +385,11 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 459 tests, no network, no model calls
+pnpm test        # 461 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 
 # The 10 Postgres tests skip unless pointed at a database (docker compose up -d db):
-TEST_POSTGRES_URL=postgres://orch:orch@127.0.0.1:5432/orch pnpm test   # 469
+TEST_POSTGRES_URL=postgres://orch:orch@127.0.0.1:5432/orch pnpm test   # 471
 pnpm typecheck && pnpm lint && pnpm build
 ```
 

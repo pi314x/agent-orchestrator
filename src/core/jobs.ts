@@ -356,13 +356,20 @@ export class JobStore {
     // A retry re-opens the job, so clear the previous attempt's outcome.
     const retrying = to === 'queued' && isTerminal(job.state);
 
-    await this.db
+    // `AND state = ?` makes this a compare-and-set against the state the
+    // guard above was checked on. Without it, two writers that both read
+    // `running` both wrote, and the later one silently won: a job cancelled on
+    // one instance while another was finishing it ended up `cancelled` with
+    // the agent's actual result discarded, or `succeeded` despite a user
+    // having explicitly cancelled it. Same shape as the claim — decide and
+    // write in one statement, not two.
+    const result = await this.db
       .prepare(
         `UPDATE jobs SET
            state = ?, updated_at = ?, started_at = ?, finished_at = ?,
            attempt = ?,
            result_text = ?, result_structured = ?, error = ?, usage = ?
-         WHERE id = ?`
+         WHERE id = ? AND state = ?`
       )
       .run(
         to,
@@ -392,8 +399,22 @@ export class JobStore {
             : job.usage
               ? JSON.stringify(job.usage)
               : null,
-        id
+        id,
+        job.state
       );
+
+    if (result.changes === 0) {
+      // Somebody moved the job between the read and the write. Re-read so the
+      // message names where it actually ended up, and refuse rather than
+      // overwrite — the caller's decision was made against a state that is no
+      // longer true.
+      const now = await this.getOrThrow(id);
+      throw new OrchestratorError(
+        'CONFLICT',
+        `Job ${id} changed from ${job.state} to ${now.state} while being moved to ${to}.`,
+        isTerminal(now.state) ? 'It was already finished by someone else.' : undefined
+      );
+    }
 
     return this.getOrThrow(id);
   }
