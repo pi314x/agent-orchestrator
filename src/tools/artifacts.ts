@@ -1,7 +1,30 @@
 import { z } from 'zod';
 import { ownerFilter } from '../core/principal.js';
+import type { ArtifactRecord } from '../core/artifacts.js';
 import { toolError, toolOk } from './result.js';
 import type { ToolRegistration } from './types.js';
+
+/**
+ * The record carries `ownerId`; this view deliberately does not, matching
+ * `toAgentView` — ownership is enforced in the store and is not part of the
+ * tool surface. It also has to be a real projection rather than the record
+ * itself: an MCP client validates `structuredContent` against this schema and
+ * rejects any property it does not list, so returning the raw record failed
+ * artifact_put, artifact_get and artifact_list on every validating client.
+ */
+function toArtifactView(record: ArtifactRecord): z.infer<typeof ArtifactSchema> {
+  return {
+    artifactId: record.artifactId,
+    name: record.name,
+    mimeType: record.mimeType,
+    contentHash: record.contentHash,
+    sizeBytes: record.sizeBytes,
+    tags: record.tags,
+    createdAt: record.createdAt,
+    ...(record.jobId !== undefined && { jobId: record.jobId }),
+    ...(record.workflowRunId !== undefined && { workflowRunId: record.workflowRunId })
+  };
+}
 
 const ArtifactSchema = z.object({
   artifactId: z.string(),
@@ -53,7 +76,7 @@ export const artifactPutTool: ToolRegistration = {
             ...(args.workflowRunId !== undefined && { workflowRunId: args.workflowRunId }),
             ...(args.tags !== undefined && { tags: args.tags })
           });
-          return toolOk({ artifact }, `Stored ${artifact.artifactId} (${artifact.sizeBytes} bytes).`);
+          return toolOk({ artifact: toArtifactView(artifact) }, `Stored ${artifact.artifactId} (${artifact.sizeBytes} bytes).`);
         } catch (error) {
           return toolError(error);
         }
@@ -98,7 +121,10 @@ export const artifactGetTool: ToolRegistration = {
             args.offset,
             args.length
           );
-          return toolOk({ artifact: record, content, eof }, `${record.name}: ${content.length} chars read.`);
+          return toolOk(
+            { artifact: toArtifactView(record), content, eof },
+            `${record.name}: ${content.length} chars read.`
+          );
         } catch (error) {
           return toolError(error);
         }
@@ -141,7 +167,10 @@ export const artifactListTool: ToolRegistration = {
             ...(args.tags !== undefined && { tags: args.tags }),
             ...(args.limit !== undefined && { limit: args.limit })
           });
-          return toolOk({ artifacts }, `${artifacts.length} artifact(s).`);
+          return toolOk(
+            { artifacts: artifacts.map(toArtifactView) },
+            `${artifacts.length} artifact(s).`
+          );
         } catch (error) {
           return toolError(error);
         }

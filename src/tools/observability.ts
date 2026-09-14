@@ -112,6 +112,10 @@ export const budgetSetTool: ToolRegistration = {
             maxTokens: z.number().optional(),
             maxCalls: z.number().optional(),
             maxConcurrent: z.number().optional(),
+            // `BudgetRecord` carries both timestamps. Declaring only one made
+            // the other an undeclared property, which a validating client
+            // rejects — the whole budget_set call failed on it.
+            createdAt: z.string(),
             updatedAt: z.string()
           }),
           spent: z.object({ costUsd: z.number(), tokens: z.number(), calls: z.number() })

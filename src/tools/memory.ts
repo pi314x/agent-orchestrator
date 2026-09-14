@@ -3,12 +3,21 @@ import { ownerFilter } from '../core/principal.js';
 import { toolError, toolOk } from './result.js';
 import type { ToolRegistration } from './types.js';
 
+/**
+ * Must list every field `MemoryEntry` actually carries. The generated JSON
+ * Schema forbids additional properties, and an MCP client validates a tool's
+ * structuredContent against it — so a field the store returns but this schema
+ * omits does not get quietly dropped, it makes the whole call fail on the
+ * client. `createdAt` was missing, which broke memory_read, memory_write and
+ * memory_search for every validating client.
+ */
 const EntrySchema = z.object({
   namespace: z.string(),
   key: z.string(),
   value: z.unknown(),
   tags: z.array(z.string()),
   expiresAt: z.string().optional(),
+  createdAt: z.string(),
   updatedAt: z.string()
 });
 

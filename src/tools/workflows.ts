@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { RUN_STATES, STEP_STATES, type WorkflowSpec } from '../core/workflow-engine.js';
 import { toolError, toolOk } from './result.js';
 import type { ToolRegistration } from './types.js';
+import type { WorkflowRunRecord } from '../core/workflow-engine.js';
 
 const StepSchema = z.object({
   id: z.string().min(1),
@@ -48,6 +49,48 @@ const RunSchema = z.object({
   finishedAt: z.string().optional()
 });
 
+/**
+ * Spreading the record (`{ ...workflow }`) carried `ownerId` into the result,
+ * which this schema does not declare — and a client validating
+ * `structuredContent` rejects any undeclared property, so workflow_define,
+ * workflow_get and workflow_list all failed on it. Ownership stays in the
+ * store, off the tool surface, exactly as `toAgentView` has it.
+ */
+function toWorkflowView(workflow: {
+  workflowId: string;
+  name: string;
+  spec: unknown;
+  createdAt: string;
+  updatedAt: string;
+}): z.infer<typeof WorkflowSchema> {
+  return {
+    workflowId: workflow.workflowId,
+    name: workflow.name,
+    spec: workflow.spec as Record<string, unknown>,
+    createdAt: workflow.createdAt,
+    updatedAt: workflow.updatedAt
+  };
+}
+
+/**
+ * Same reason as `toWorkflowView`: the run record carries `ownerId`, which
+ * this surface does not expose and a validating client rejects. The nested
+ * step records already match `StepRunSchema` exactly, so they pass through.
+ */
+function toRunView(run: WorkflowRunRecord): z.infer<typeof RunSchema> {
+  return {
+    runId: run.runId,
+    name: run.name,
+    state: run.state,
+    inputs: run.inputs,
+    steps: run.steps,
+    createdAt: run.createdAt,
+    updatedAt: run.updatedAt,
+    ...(run.workflowId !== undefined && { workflowId: run.workflowId }),
+    ...(run.finishedAt !== undefined && { finishedAt: run.finishedAt })
+  };
+}
+
 const WorkflowSchema = z.object({
   workflowId: z.string(),
   name: z.string(),
@@ -80,7 +123,7 @@ export const workflowDefineTool: ToolRegistration = {
         try {
           const workflow = await deps.services.workflows.define(args as WorkflowSpec, deps.principal.ownerId);
           return toolOk(
-            { workflow: { ...workflow, spec: workflow.spec as unknown as Record<string, unknown> } },
+            { workflow: toWorkflowView(workflow) },
             `Defined ${workflow.name} with ${workflow.spec.steps.length} step(s).`
           );
         } catch (error) {
@@ -117,7 +160,7 @@ export const workflowListTool: ToolRegistration = {
           deps.principal.isAdmin ? undefined : deps.principal.ownerId
         );
         return toolOk(
-          { workflows: workflows.map(w => ({ ...w, spec: w.spec as unknown as Record<string, unknown> })) },
+          { workflows: workflows.map(toWorkflowView) },
           `${workflows.length} workflow(s).`
         );
       }
@@ -148,7 +191,7 @@ export const workflowGetTool: ToolRegistration = {
         try {
           const workflow = await deps.services.workflows.getVisibleWorkflow(args.workflowId, deps.principal);
           return toolOk(
-            { workflow: { ...workflow, spec: workflow.spec as unknown as Record<string, unknown> } },
+            { workflow: toWorkflowView(workflow) },
             `${workflow.name}: ${workflow.spec.steps.length} step(s).`
           );
         } catch (error) {
@@ -226,7 +269,7 @@ export const workflowStartTool: ToolRegistration = {
             ...(args.inputs !== undefined && { inputs: args.inputs }),
             ...(args.idempotencyKey !== undefined && { idempotencyKey: args.idempotencyKey })
           });
-          return toolOk({ run }, `Run ${run.runId} is ${run.state}.`);
+          return toolOk({ run: toRunView(run) }, `Run ${run.runId} is ${run.state}.`);
         } catch (error) {
           return toolError(error);
         }
@@ -259,7 +302,7 @@ export const workflowRunGetTool: ToolRegistration = {
         try {
           const run = await deps.services.workflows.getVisibleRun(args.runId, deps.principal);
           const done = run.steps.filter(s => s.state === 'succeeded').length;
-          return toolOk({ run }, `${run.state}: ${done}/${run.steps.length} step(s) succeeded.`);
+          return toolOk({ run: toRunView(run) }, `${run.state}: ${done}/${run.steps.length} step(s) succeeded.`);
         } catch (error) {
           return toolError(error);
         }
@@ -297,7 +340,7 @@ export const workflowRunListTool: ToolRegistration = {
           ...args,
           ...(deps.principal.isAdmin ? {} : { ownerId: deps.principal.ownerId })
         });
-        return toolOk({ runs }, `${runs.length} run(s).`);
+        return toolOk({ runs: runs.map(toRunView) }, `${runs.length} run(s).`);
       }
     );
   }
@@ -359,7 +402,7 @@ export const workflowRunControlTool: ToolRegistration = {
           }
 
           const run = await deps.services.workflows.control(args.runId, args.action, args.stepId, deps.principal);
-          return toolOk({ run }, `Run ${run.runId} is ${run.state}.`);
+          return toolOk({ run: toRunView(run) }, `Run ${run.runId} is ${run.state}.`);
         } catch (error) {
           return toolError(error);
         }
