@@ -196,8 +196,8 @@ FIFO queue so one connection is never asked to interleave two transactions.
 ### Concurrency
 
 **Several orchestrator processes can share one database.** What makes that safe
-is that the two places where instances could collide are each a single atomic
-statement rather than a read followed by a write:
+is that every place two instances could collide is a single atomic statement
+rather than a read followed by a write:
 
 - taking a queued job (`UPDATE ... WHERE state = 'queued' RETURNING *`), so two
   schedulers never run the same job, and the loser simply moves on;
@@ -206,9 +206,20 @@ statement rather than a read followed by a write:
 - starting a workflow step (`UPDATE ... WHERE state = 'pending' RETURNING`), so a
   step is submitted by whichever instance takes the row and skipped by the other.
   Every instance re-evaluates every live run on any job state change, so two of
-  them reach the same pending step routinely, not rarely.
+  them reach the same pending step routinely, not rarely;
+- moving a job between states (`UPDATE ... WHERE id = ? AND state = ?`), so the
+  instance finishing a job and a `job_cancel` served elsewhere cannot both write
+  — one wins, the loser is told, and the job never ends up `cancelled` while
+  carrying a successful result.
 
-A third case needed more than one statement. A job left `running` by a process
+Their atomicity comes from being one statement, not from the caller running
+synchronously, which is why it survived the async conversion intact and holds on
+both backends. `tests/integration/shared-db.test.ts` covers the job claim against
+a real shared SQLite file, running twelve jobs across two schedulers to check
+each executes exactly once; `tests/integration/postgres-db.test.ts` re-proves the
+claim and the approval against a live Postgres server.
+
+One case needed more than one statement. A job left `running` by a process
 that died has to be recovered — but from a database row alone, "abandoned" and
 "a sibling is working on it right now" look identical. So a claim records
 **who** took the job, and that instance renews the lease every 15 seconds while
@@ -220,13 +231,6 @@ duplicate) and failed as `INTERRUPTED` otherwise, rather than silently looking
 live. The reaper runs on every instance, so a crashed one's work is picked up by
 a live sibling instead of waiting for the dead process to come back — which,
 behind a load balancer, it may never do.
-
-The first two guarantees' atomicity comes from being one statement, not from the caller running
-synchronously, which is why it survived the async conversion intact and holds on
-both backends. `tests/integration/shared-db.test.ts` covers both against a real
-shared SQLite file, running twelve jobs across two schedulers to check each
-executes exactly once; `tests/integration/postgres-db.test.ts` re-proves the same
-two races against a live Postgres server.
 
 Waiting works across instances too. `job_wait` — and `delegate`, `fan_out` and
 `consensus`, which all wait internally — reacts to this instance's own job
@@ -242,6 +246,12 @@ therefore returns the job still `running`; poll `job_get` for the final state.
 Writing `cancelled` onto the row from another instance would have been a lie:
 the agent would keep working and keep spending, then overwrite the row with its
 own result.
+
+Two limits that sound alike are counted in different places. `ORCH_MAX_CONCURRENCY`
+is one process's worker pool, so it applies per instance. A `maxConcurrent`
+budget is a cap on the deployment, so it is counted in the database — counted in
+memory it was silently enforced once per instance, making a cap of 1 across three
+instances allow three.
 
 **SQLite's boundary is the host.** WAL gives one writer and any number of
 concurrent readers, with competing writers queueing against the busy timeout
@@ -422,10 +432,19 @@ anything under `src/`.
   so far has been ours. Expect to find interop surprises on first contact with
   someone else's implementation.
 - **The Postgres backend is new.** Its migrations, both dialect branches and the
-  two atomicity guarantees are proven against a live server by
+  atomicity guarantees are proven against a live server by
   `tests/integration/postgres-db.test.ts`, but it has nothing like SQLite's
   mileage here. SQLite remains the default and the better-worn path for a single
   host; see [Storage](#storage) below.
+- **A `maxConcurrent` budget can still overshoot by one.** It is counted in the
+  database, so it is a deployment-wide cap rather than a per-instance one, but
+  the count is read just before the claim rather than reserved with it — two
+  instances checking at the same moment can both pass. Overshoot is bounded by
+  one, not by the number of instances.
+- **`job_cancel` is not instant across instances.** Only the process running a
+  job holds the handle that stops it, so a cancel served elsewhere is recorded
+  and acted on within a heartbeat (15s by default). The call returns the job
+  still `running`; poll `job_get`.
 - **Multi-user isolation is partial — do not treat it as a tenancy boundary yet.**
   See [Ownership](#ownership) below for exactly what is and is not separated.
 - **Human-in-the-loop only covers a paused workflow step today.** `approval_list`
