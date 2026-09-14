@@ -3,7 +3,7 @@ import { startA2AServer, type A2AHttpHandle } from './a2a/http.js';
 import { loadConfig } from './config.js';
 import { loadAgentFiles } from './core/agent-files.js';
 import { migrate } from './db/migrate.js';
-import { assertFts5, openDatabase } from './db/sqlite.js';
+import { assertSearchSupport, openDatabase } from './db/open.js';
 import { startHttpServer } from './http.js';
 import { createLogger } from './logger.js';
 import { createServerFactory } from './server.js';
@@ -14,8 +14,11 @@ const startedAt = Date.now();
 const config = loadConfig();
 const logger = createLogger(config);
 
-const db = openDatabase({ url: config.dbUrl });
-await assertFts5(db);
+const db = openDatabase({
+  url: config.dbUrl,
+  ...(config.dbMaxConnections !== undefined && { maxConnections: config.dbMaxConnections })
+});
+await assertSearchSupport(db);
 const migration = await migrate(db);
 if (migration.applied.length > 0) {
   logger.info({ ...migration }, 'applied migrations');

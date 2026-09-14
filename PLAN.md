@@ -374,7 +374,8 @@ Runner interface: `run(job, toolkit, signal) → AsyncIterable<RunnerEvent>`. Ev
 | `ORCH_HTTP_PORT` | `3333` | MCP HTTP mode |
 | `ORCH_MAX_DEPTH` | `2` | Sub-agent recursion |
 | `ORCH_MAX_CONCURRENCY` | `4` | Global parallel jobs |
-| `ORCH_DB_URL` | SQLite file | Set a Postgres URL for multi-instance |
+| `ORCH_DB_URL` | SQLite file | A file path selects SQLite; a `postgres://` URL selects Postgres |
+| `ORCH_DB_MAX_CONNECTIONS` | `10` | Pool size per instance; Postgres only |
 | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENAI_BASE_URL` | — | Local runners |
 | `A2A_ENABLED` | `false` | Turn on the A2A gateway/server |
 | `A2A_HTTP_PORT` | `3334` | Our published A2A endpoint, if different from MCP HTTP |

@@ -119,21 +119,29 @@ export class BudgetTracker {
     const where = scope === 'global' ? '1 = 1' : scope === 'agent' ? 'agent_id = ?' : 'id = ?';
     const params = scope === 'global' ? [] : [scopeId ?? ''];
 
+    // `usage` is a JSON string on both backends; only the extraction operator
+    // differs. Postgres returns NUMERIC/BIGINT aggregates as strings, so the
+    // results are normalized below rather than trusted to arrive as numbers.
+    const field =
+      this.db.dialect === 'postgres'
+        ? (key: string) => `(usage::jsonb ->> '${key}')::double precision`
+        : (key: string) => `json_extract(usage, '$.${key}')`;
+
     const row = (await this.db
       .prepare(
         `SELECT
            COUNT(*) AS calls,
-           COALESCE(SUM(json_extract(usage, '$.costUsd')), 0) AS cost_usd,
+           COALESCE(SUM(${field('costUsd')}), 0) AS cost_usd,
            COALESCE(SUM(
-             COALESCE(json_extract(usage, '$.inputTokens'), 0) +
-             COALESCE(json_extract(usage, '$.outputTokens'), 0)
+             COALESCE(${field('inputTokens')}, 0) +
+             COALESCE(${field('outputTokens')}, 0)
            ), 0) AS tokens
          FROM jobs
          WHERE ${where} AND usage IS NOT NULL`
       )
-      .get(...params)) as { calls: number; cost_usd: number; tokens: number };
+      .get(...params)) as { calls: number | string; cost_usd: number | string; tokens: number | string };
 
-    return { costUsd: row.cost_usd, tokens: row.tokens, calls: row.calls };
+    return { costUsd: Number(row.cost_usd), tokens: Number(row.tokens), calls: Number(row.calls) };
   }
 
   /**

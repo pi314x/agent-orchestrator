@@ -6,7 +6,16 @@
  * Postgres each implement this the same way; callers never know which one
  * they're talking to.
  */
+/** Which backend is behind a `Db`. Two queries have to know; see `Db.dialect`. */
+export type Dialect = 'sqlite' | 'postgres';
+
 export interface Db {
+  /**
+   * Almost every query in this codebase is portable as written. Exactly two
+   * are not — full-text search over `memory` (FTS5 vs tsvector) and the JSON
+   * aggregate in `budget.spend` — and they branch on this.
+   */
+  readonly dialect: Dialect;
   prepare(sql: string): Statement;
   /** Run SQL with no parameters and no result, e.g. DDL during migrations. */
   exec(sql: string): Promise<void>;

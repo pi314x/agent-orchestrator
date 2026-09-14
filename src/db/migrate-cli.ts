@@ -1,7 +1,7 @@
 import { loadConfig } from '../config.js';
 import { createLogger } from '../logger.js';
 import { migrate } from './migrate.js';
-import { openDatabase } from './sqlite.js';
+import { openDatabase } from './open.js';
 
 const config = loadConfig();
 const logger = createLogger(config);

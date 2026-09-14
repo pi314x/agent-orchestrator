@@ -1,5 +1,11 @@
-import type { Db } from './sqlite.js';
+import type { Db } from './types.js';
 import { MIGRATIONS, type Migration } from './migrations.js';
+import { POSTGRES_MIGRATIONS } from './migrations.postgres.js';
+
+/** The set written for whichever backend this `Db` is. */
+export function migrationsFor(db: Db): readonly Migration[] {
+  return db.dialect === 'postgres' ? POSTGRES_MIGRATIONS : MIGRATIONS;
+}
 
 const CREATE_MIGRATIONS_TABLE = `
   CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -25,7 +31,7 @@ export interface MigrationResult {
 
 export async function migrate(
   db: Db,
-  migrations: readonly Migration[] = MIGRATIONS
+  migrations: readonly Migration[] = migrationsFor(db)
 ): Promise<MigrationResult> {
   const from = await getSchemaVersion(db);
   const pending = migrations.filter(m => m.version > from).sort((a, b) => a.version - b.version);

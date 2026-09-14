@@ -3,7 +3,7 @@ import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
 import type { Db, Row, RunResult, Statement } from './types.js';
 
-export type { Db, Row, RunResult, Statement } from './types.js';
+export type { Db, Dialect, Row, RunResult, Statement } from './types.js';
 
 export interface OpenDatabaseOptions {
   /** Filesystem path, or `:memory:` for an ephemeral database. */
@@ -13,6 +13,7 @@ export interface OpenDatabaseOptions {
 /** The handle `transaction()` gives its callback — see the class doc below. */
 function rawTx(raw: Database.Database): Db {
   return {
+    dialect: 'sqlite',
     prepare(sql) {
       const stmt = raw.prepare(sql);
       return {
@@ -49,6 +50,7 @@ function rawTx(raw: Database.Database): Db {
  * that same one-at-a-time shape now that callers can interleave via `await`.
  */
 class SqliteDb implements Db {
+  readonly dialect = 'sqlite' as const;
   private queue: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly raw: Database.Database) {}

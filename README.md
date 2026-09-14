@@ -172,49 +172,75 @@ card advertises the URL peers should actually call.
 
 ## Storage
 
-SQLite, through [`better-sqlite3`](https://github.com/WiseLibs/better-sqlite3) — one
-file, at `~/.agent-orchestrator/orchestrator.sqlite` unless `ORCH_DB_URL` says
-otherwise. Opened in WAL mode with foreign keys on and a 5-second busy timeout.
-Schema changes are append-only migrations applied at startup; `orchestrator_status`
-reports the current version.
+Two backends, chosen in `.env` by what `ORCH_DB_URL` points at:
 
-**The data layer is synchronous, deliberately.** `better-sqlite3` does its I/O on
-the calling thread, so every store — jobs, memory, artifacts, agents, messages,
-budgets — is plain synchronous code with no `async` anywhere. The scheduler and
-workflow engine read job state inside tight loops and rely on that: a query cannot
-interleave with another turn of the event loop, so there is no window for a job's
-state to change between the read and the decision made from it. Local SQLite reads
-are microseconds, and the process is not serving high-concurrency HTTP traffic, so
-the usual reason to go async does not apply.
+| `ORCH_DB_URL` | Backend |
+|---|---|
+| unset, or a file path | SQLite (default: `~/.agent-orchestrator/orchestrator.sqlite`) |
+| `postgres://…` or `postgresql://…` | Postgres |
+
+Nothing else changes: the same stores, the same tools, the same migrations by
+number and name. SQLite runs through
+[`better-sqlite3`](https://github.com/WiseLibs/better-sqlite3) in WAL mode with
+foreign keys on and a 5-second busy timeout; Postgres runs through
+[`pg`](https://github.com/brianc/node-postgres) on a connection pool sized by
+`ORCH_DB_MAX_CONNECTIONS` (default 10). Schema changes are append-only migrations
+applied at startup; `orchestrator_status` reports the current version.
+
+**The data layer is async.** Every store — jobs, memory, artifacts, agents,
+messages, budgets — returns promises, because a network database driver has no
+other option. SQLite still does its I/O synchronously under the hood; the adapter
+just hands back already-resolved promises, and serializes operations through a
+FIFO queue so one connection is never asked to interleave two transactions.
 
 ### Concurrency
 
-WAL mode means one writer and any number of concurrent readers, with competing
-writers queueing against the busy timeout rather than failing. **Several
-orchestrator processes can share one database file**, which is how you run behind
-a round-robin front end.
-
-What makes that safe is that the two places where instances could collide are
-each a single atomic statement rather than a read followed by a write:
+**Several orchestrator processes can share one database.** What makes that safe
+is that the two places where instances could collide are each a single atomic
+statement rather than a read followed by a write:
 
 - taking a queued job (`UPDATE ... WHERE state = 'queued' RETURNING *`), so two
   schedulers never run the same job, and the loser simply moves on;
 - resolving an approval (`UPDATE ... WHERE status = 'pending'`), so an approve can
   never land on top of someone else's reject.
 
-`tests/integration/shared-db.test.ts` covers both against a real shared file, and
-runs twelve jobs across two schedulers to check each executes exactly once.
+Their atomicity comes from being one statement, not from the caller running
+synchronously, which is why it survived the async conversion intact and holds on
+both backends. `tests/integration/shared-db.test.ts` covers both against a real
+shared SQLite file, running twelve jobs across two schedulers to check each
+executes exactly once; `tests/integration/postgres-db.test.ts` re-proves the same
+two races against a live Postgres server.
 
-The boundary is the **host**: every instance must reach the same file, and SQLite
-over NFS or SMB is not safe. Multiple hosts need Postgres.
+**SQLite's boundary is the host.** WAL gives one writer and any number of
+concurrent readers, with competing writers queueing against the busy timeout
+rather than failing — but every instance must reach the same file, and SQLite over
+NFS or SMB is not safe. Postgres lifts that boundary: instances on different hosts
+share one server.
 
-### No Postgres adapter
+### Postgres
 
-PLAN.md §13 sketches one and it is not built. Every network database driver is
-async, so it is not a drop-in: it means making the store classes async and then
-every caller, including the scheduler loops above, where the synchronous read is
-currently doing real work for correctness. That is a refactor, not a config
-switch.
+```bash
+ORCH_DB_URL=postgres://orch:secret@db.internal:5432/orchestrator
+ORCH_DB_MAX_CONNECTIONS=10
+```
+
+Migrations run at startup like they do for SQLite, from a parallel set carrying
+the same version numbers. Two queries have no portable form and branch on the
+dialect: memory search (SQLite FTS5 `MATCH` against an external-content virtual
+table, Postgres `tsvector` + GIN with `plainto_tsquery`), and the budget spend
+aggregate (`json_extract` vs `::jsonb ->>`). Everything else — `?` placeholders,
+`INSERT ... ON CONFLICT DO UPDATE`, `UPDATE ... RETURNING`, partial indexes — is
+written once and runs on both, with `?` rewritten to `$n` inside the adapter.
+
+For a local database to develop against:
+
+```bash
+docker compose up -d db
+TEST_POSTGRES_URL=postgres://orch:orch@127.0.0.1:5432/orch pnpm test
+```
+
+`tests/integration/postgres-db.test.ts` skips cleanly when `TEST_POSTGRES_URL` is
+unset, so a checkout without a database still runs a green suite.
 
 ## Ownership
 
@@ -330,6 +356,8 @@ everyone is trusted and the point is not tripping over each other.
 Every variable is listed with its default in [`.env.example`](.env.example);
 [`PLAN.md`](PLAN.md) §12 is the full table. The defaults are chosen for a local,
 single-operator server: loopback binding, no auth, SQLite in `~/.agent-orchestrator`.
+Point `ORCH_DB_URL` at a `postgres://` URL to run several instances across hosts
+against one database instead.
 
 Before exposing it beyond localhost, set `ORCH_OAUTH_ISSUER_URL` — tools that change
 what the orchestrator may do (`budget_set`, `toolserver_*`, `agent_publish`, and
@@ -340,8 +368,11 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 450 tests, no network, no model calls
+pnpm test        # 452 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
+
+# The 8 Postgres tests skip unless pointed at a database (docker compose up -d db):
+TEST_POSTGRES_URL=postgres://orch:orch@127.0.0.1:5432/orch pnpm test   # 460
 pnpm typecheck && pnpm lint && pnpm build
 ```
 
@@ -358,8 +389,11 @@ anything under `src/`.
   and tested over a real socket, using the SDK's own serializers — but every peer
   so far has been ours. Expect to find interop surprises on first contact with
   someone else's implementation.
-- **SQLite only.** See [Storage](#storage) below — several processes on one host
-  are fine; multiple hosts are not.
+- **The Postgres backend is new.** Its migrations, both dialect branches and the
+  two atomicity guarantees are proven against a live server by
+  `tests/integration/postgres-db.test.ts`, but it has nothing like SQLite's
+  mileage here. SQLite remains the default and the better-worn path for a single
+  host; see [Storage](#storage) below.
 - **Multi-user isolation is partial — do not treat it as a tenancy boundary yet.**
   See [Ownership](#ownership) below for exactly what is and is not separated.
 - **Human-in-the-loop only covers a paused workflow step today.** `approval_list`

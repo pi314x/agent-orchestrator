@@ -135,8 +135,14 @@ export class MemoryStore {
     await this.purgeExpired();
 
     const limit = Math.min(Math.max(input.limit ?? 20, 1), 100);
-    const where: string[] = ['memory_fts MATCH ?'];
-    const params: unknown[] = [escapeFtsQuery(input.query)];
+    const postgres = this.db.dialect === 'postgres';
+
+    // The one query in this codebase with no portable form: SQLite searches an
+    // external-content FTS5 table joined on rowid and ranks with `rank`;
+    // Postgres searches a tsvector column on `memory` itself and ranks with
+    // ts_rank. Both migration sets build the matching index.
+    const where: string[] = postgres ? ['m.search_tsv @@ plainto_tsquery(\'simple\', ?)'] : ['memory_fts MATCH ?'];
+    const params: unknown[] = [postgres ? input.query : escapeFtsQuery(input.query)];
 
     if (input.ownerId !== undefined) {
       where.push('m.owner_id = ?');
@@ -147,15 +153,21 @@ export class MemoryStore {
       params.push(input.namespace);
     }
 
-    const rows = (await this.db
-      .prepare(
-        `SELECT m.* FROM memory_fts f
+    // plainto_tsquery is needed a second time for the ranking expression, and
+    // placeholders are positional, so the term is bound twice.
+    const sql = postgres
+      ? `SELECT m.* FROM memory m
+         WHERE ${where.join(' AND ')}
+         ORDER BY ts_rank(m.search_tsv, plainto_tsquery('simple', ?)) DESC, m.id ASC
+         LIMIT ?`
+      : `SELECT m.* FROM memory_fts f
          JOIN memory m ON m.id = f.rowid
          WHERE ${where.join(' AND ')}
          ORDER BY rank
-         LIMIT ?`
-      )
-      .all(...params, limit)) as MemoryRow[];
+         LIMIT ?`;
+
+    const bound = postgres ? [...params, input.query, limit] : [...params, limit];
+    const rows = (await this.db.prepare(sql).all(...bound)) as MemoryRow[];
 
     const entries = rows.map(toEntry);
 

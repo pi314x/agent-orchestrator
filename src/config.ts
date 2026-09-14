@@ -29,6 +29,8 @@ const ConfigSchema = z.object({
   httpHost: z.string().min(1),
   httpPort: z.number().int().min(1).max(65535),
   dbUrl: z.string().min(1),
+  /** Postgres pool size per instance; unused by SQLite. */
+  dbMaxConnections: z.number().int().min(1).optional(),
   maxDepth: z.number().int().min(0),
   maxConcurrency: z.number().int().min(1),
   logLevel: LogLevelSchema,
@@ -82,6 +84,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     httpHost: env.ORCH_HTTP_HOST?.trim() || '127.0.0.1',
     httpPort: intFromEnv(3333).parse(env.ORCH_HTTP_PORT),
     dbUrl: env.ORCH_DB_URL?.trim() || join(dataDir, 'orchestrator.sqlite'),
+    ...(env.ORCH_DB_MAX_CONNECTIONS?.trim() && {
+      dbMaxConnections: intFromEnv(10).parse(env.ORCH_DB_MAX_CONNECTIONS)
+    }),
     maxDepth: intFromEnv(2).parse(env.ORCH_MAX_DEPTH),
     maxConcurrency: intFromEnv(4).parse(env.ORCH_MAX_CONCURRENCY),
     logLevel: LogLevelSchema.parse(env.ORCH_LOG_LEVEL?.trim() || 'info'),
