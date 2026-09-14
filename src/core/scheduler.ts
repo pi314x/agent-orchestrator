@@ -149,6 +149,16 @@ export class JobScheduler {
       return this.deps.jobs.getOrThrow(jobId);
     }
 
+    // Running, but not by us: the AbortController that would stop it lives in
+    // another process. Writing `cancelled` onto the row here would not stop
+    // anything — the agent would keep working, keep spending, and overwrite
+    // the row with its own result. Record the request and let its owner act on
+    // it; it picks this up on its next lease tick.
+    if (job.state === 'running') {
+      await this.deps.jobs.requestCancel(jobId);
+      return this.deps.jobs.getOrThrow(jobId);
+    }
+
     const cancelled = await this.deps.jobs.transition(jobId, 'cancelled', {
       error: { code: 'POLICY_DENIED', message: reason ?? 'Cancelled by request.' }
     });
@@ -204,6 +214,16 @@ export class JobScheduler {
     if (this.stopped) return;
 
     await this.deps.jobs.heartbeat(this.instanceId);
+
+    // Cancellations asked for elsewhere. Only this process holds the
+    // AbortController for a job it is running, so this is the one place a
+    // remote job_cancel can actually take effect.
+    for (const jobId of await this.deps.jobs.cancelRequested(this.instanceId)) {
+      const controller = this.active.get(jobId);
+      if (controller === undefined) continue;
+      this.abortReasons.set(jobId, 'cancelled');
+      controller.abort();
+    }
 
     const staleBefore = new Date(Date.now() - this.leaseMs).toISOString();
     const reclaimed = await this.deps.jobs.recoverExpired(staleBefore);

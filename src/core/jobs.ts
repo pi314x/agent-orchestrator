@@ -500,6 +500,40 @@ export class JobStore {
   }
 
   /**
+   * Ask whoever is running this job to stop it.
+   *
+   * The AbortController that actually stops a run lives in one process's
+   * memory, so an instance serving `job_cancel` for a job it is not running
+   * has nothing to abort. It used to just write `cancelled` onto the row: the
+   * agent carried on working, spending real money, and then overwrote that row
+   * with its own result. Recording the request instead lets the owner act on
+   * it for real, on its next lease tick.
+   *
+   * Returns false when there was nothing to ask — the job already finished, or
+   * somebody else asked first.
+   */
+  async requestCancel(id: string): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE jobs SET cancel_requested_at = ?, updated_at = ?
+          WHERE id = ? AND state = 'running' AND cancel_requested_at IS NULL`
+      )
+      .run(new Date().toISOString(), new Date().toISOString(), id);
+    return result.changes > 0;
+  }
+
+  /** Jobs this instance is running that somebody has asked to cancel. */
+  async cancelRequested(claimedBy: string): Promise<string[]> {
+    const rows = (await this.db
+      .prepare(
+        `SELECT id FROM jobs
+          WHERE state = 'running' AND claimed_by = ? AND cancel_requested_at IS NOT NULL`
+      )
+      .all(claimedBy)) as { id: string }[];
+    return rows.map(row => row.id);
+  }
+
+  /**
    * Renew this instance's lease on everything it is currently running. The
    * scheduler calls this on a timer; a lease that stops being renewed is what
    * tells another instance the owner is gone.
@@ -547,8 +581,12 @@ export class JobStore {
 
     for (const row of rows) {
       const job = toRecord(row);
+      // Somebody asked for this job to stop, and the instance that could have
+      // stopped it is gone. Re-queueing it here would start the very run that
+      // was cancelled, so the request is honoured instead of the resume.
+      const cancelRequested = (row as { cancel_requested_at?: string | null }).cancel_requested_at != null;
 
-      if (job.idempotencyKey !== undefined) {
+      if (job.idempotencyKey !== undefined && !cancelRequested) {
         // Not through transition(): the state machine deliberately has no
         // general running -> queued edge, because job_retry taking that path
         // against a job that is genuinely executing would let it be claimed
@@ -577,11 +615,13 @@ export class JobStore {
         .run(new Date().toISOString(), new Date().toISOString(), job.id, staleBefore);
       if (claimed.changes === 0) continue;
 
-      await this.transition(job.id, 'failed', {
-        error: {
-          code: 'INTERRUPTED',
-          message: 'The orchestrator running this job stopped responding.'
-        }
+      await this.transition(job.id, cancelRequested ? 'cancelled' : 'failed', {
+        error: cancelRequested
+          ? { code: 'POLICY_DENIED', message: 'Cancelled by request.' }
+          : {
+              code: 'INTERRUPTED',
+              message: 'The orchestrator running this job stopped responding.'
+            }
       });
       affected.push(job.id);
     }

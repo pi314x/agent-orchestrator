@@ -496,6 +496,19 @@ export const MIGRATIONS: readonly Migration[] = [
       -- The reaper's query: running jobs ordered by how stale their lease is.
       CREATE INDEX idx_jobs_lease ON jobs (state, heartbeat_at);
     `
+  },
+  {
+    version: 12,
+    name: 'cross_instance_cancel',
+    up: `
+      -- A cancellation asked for on an instance that is not the one running
+      -- the job. The AbortController that actually stops a run lives in one
+      -- process's memory, so a sibling could only ever mark the row — the
+      -- agent kept running, kept spending, and then overwrote that row with
+      -- its own result. The owner polls this column on its lease tick and
+      -- aborts for real.
+      ALTER TABLE jobs ADD COLUMN cancel_requested_at TEXT;
+    `
   }
 ] as const;
 

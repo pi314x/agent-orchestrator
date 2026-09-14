@@ -400,5 +400,12 @@ export const POSTGRES_MIGRATIONS: readonly Migration[] = [
 
       CREATE INDEX idx_jobs_lease ON jobs (state, heartbeat_at);
     `
+  },
+  {
+    version: 12,
+    name: 'cross_instance_cancel',
+    up: `
+      ALTER TABLE jobs ADD COLUMN cancel_requested_at TEXT;
+    `
   }
 ] as const;

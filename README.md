@@ -228,6 +228,15 @@ shared SQLite file, running twelve jobs across two schedulers to check each
 executes exactly once; `tests/integration/postgres-db.test.ts` re-proves the same
 two races against a live Postgres server.
 
+Cancelling works across instances too, in two steps for the same reason. The
+`AbortController` that actually stops a run lives in the memory of the one
+process running it, so `job_cancel` served anywhere else records the request and
+that process acts on it on its next lease tick — a few seconds. `job_cancel`
+therefore returns the job still `running`; poll `job_get` for the final state.
+Writing `cancelled` onto the row from another instance would have been a lie:
+the agent would keep working and keep spending, then overwrite the row with its
+own result.
+
 **SQLite's boundary is the host.** WAL gives one writer and any number of
 concurrent readers, with competing writers queueing against the busy timeout
 rather than failing — but every instance must reach the same file, and SQLite over
@@ -385,11 +394,11 @@ right default for a loopback server and the wrong one for a shared host.
 ## Development
 
 ```bash
-pnpm test        # 461 tests, no network, no model calls
+pnpm test        # 462 tests, no network, no model calls
 pnpm test:live   # opt-in: needs RUN_LIVE_TESTS=1 and a real ANTHROPIC_API_KEY
 
 # The 10 Postgres tests skip unless pointed at a database (docker compose up -d db):
-TEST_POSTGRES_URL=postgres://orch:orch@127.0.0.1:5432/orch pnpm test   # 471
+TEST_POSTGRES_URL=postgres://orch:orch@127.0.0.1:5432/orch pnpm test   # 472
 pnpm typecheck && pnpm lint && pnpm build
 ```
 

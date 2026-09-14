@@ -221,7 +221,7 @@ export const jobCancelTool: ToolRegistration = {
       {
         title: 'Cancel a job',
         description:
-          'Cancel a queued or running job; for remote jobs this cancels the underlying A2A task too. Already-finished jobs are returned unchanged. Use job_retry to run a cancelled job again.',
+          'Cancel a queued or running job; for remote jobs this cancels the underlying A2A task too. Already-finished jobs are returned unchanged. Use job_retry to run a cancelled job again. A job running on another instance is stopped by its own instance shortly after, so the job comes back still `running` and reaches `cancelled` within a few seconds — poll job_get rather than assuming the returned state is final.',
         inputSchema: z.object({
           jobId: z.string(),
           reason: z.string().optional()
