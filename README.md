@@ -14,8 +14,20 @@ requires an external vendor beyond the model you point a runner at.
 pnpm install
 cp .env.example .env        # set OPENAI_API_KEY, or ANTHROPIC_API_KEY + ORCH_DEFAULT_RUNNER=anthropic
 pnpm build
-pnpm start                  # stdio
+```
+
+Then start it, either through the package manager or by running the compiled
+output directly — they do the same thing, since `pnpm start` (see
+`package.json`) is just a thin wrapper around the second form:
+
+```bash
+pnpm start                       # stdio
 ORCH_TRANSPORT=http pnpm start   # http://127.0.0.1:3333/mcp, health at /health
+
+# equivalent, without going through pnpm — useful once something else
+# (a process manager, an MCP client, systemd) is launching it directly:
+node dist/index.js
+ORCH_TRANSPORT=http node dist/index.js
 ```
 
 Check what it thinks of its own configuration before using it:
@@ -30,26 +42,242 @@ reason, so `runner_list` is the first thing to read when a delegate fails.
 
 ### Connecting Claude Code
 
+Prefer Streamable HTTP: start the server once, keep it running, and point the
+client at a URL. There's no path for the client to get wrong and no process
+for it to manage.
+
 ```bash
-claude mcp add orchestrator -- node /absolute/path/to/dist/index.js
+ORCH_TRANSPORT=http node dist/index.js &    # or: ORCH_TRANSPORT=http pnpm start
+claude mcp add --transport http orchestrator http://127.0.0.1:3333/mcp
 ```
 
-## The everyday tools
+Alternative: stdio, where Claude Code launches and owns the process itself.
+This needs the **absolute** path to `dist/index.js` — a relative path, or a
+placeholder like `/absolute/path/to/dist/index.js` left unedited, connects to
+nothing and fails with `CONNECTION_CLOSED`:
 
-| Tool | Use |
-|---|---|
-| `delegate` | Run one instruction on the best-matching agent, get the answer back |
-| `fan_out` | Run one instruction over many items in parallel, optionally reducing |
-| `job_submit` / `job_wait` / `job_get` | Background work, dependencies, audit trail |
-| `workflow_start` | A DAG of steps, with conditions and human approval gates |
-| `agent_create` / `agent_template_list` | Define agents, or use the eight built-in roles |
+```bash
+claude mcp add orchestrator -- node /absolute/path/to/agent-orchestrator/dist/index.js
+```
+
+Verify either way with `claude mcp get orchestrator` — it should report
+`Status: ✔ Connected`.
+
+## Tools
 
 `ORCH_TOOL_PROFILE` controls how many tools are exposed: `core` (11), `standard`
-(33, the default), `full` (56) — with A2A off, which it is by default. Turning
-on `A2A_ENABLED=true` adds the interop tools to whichever profile is active
-except `core` (none of its tools require A2A): `standard` grows to 37, `full`
-to 65. A smaller profile means better tool selection by the model, so raise it
-only when you need something.
+(33, the default), `full` (56) — with A2A off, which it is by default. Profiles
+are cumulative, and turning on `A2A_ENABLED=true` adds the interop tools to
+whichever profile is active except `core` (none of its tools require A2A):
+`standard` grows to 37, `full` to 65. A smaller profile means better tool
+selection by the model, so raise it only when you need something. Tools marked
+`*` below require `A2A_ENABLED=true` regardless of the profile they're listed at.
+
+**Delegation & orchestration**
+
+| Tool | Profile | Use |
+|---|---|---|
+| `delegate` | core | Run one instruction on the best-matching agent, wait for the result |
+| `fan_out` | core | The same instruction over many items in parallel, with an optional reduce step |
+| `plan_create` | standard | Turn a goal into a draft workflow spec via a planner agent — returned, never run |
+| `consensus` | full | Put one question to several agents, aggregate the answers by vote or judge |
+
+**Jobs** — the queue underneath `delegate`/`fan_out`, for work you don't want to block on
+
+| Tool | Profile | Use |
+|---|---|---|
+| `job_submit` | core | Queue work and return a handle immediately |
+| `job_get` | core | Fetch one job's state, result and usage |
+| `job_wait` | core | Block (≤60s) until given jobs finish |
+| `job_cancel` | core | Cancel a queued or running job |
+| `job_list` | standard | List jobs by state, agent or backend |
+| `job_retry` | standard | Re-queue a failed, cancelled or timed-out job |
+| `job_steer` | standard | Send guidance to a running job through its message inbox |
+
+**Workflows** — a named DAG of steps, with conditions, retries and approval gates
+
+| Tool | Profile | Use |
+|---|---|---|
+| `workflow_define` | standard | Create or replace a named workflow spec |
+| `workflow_list` / `workflow_get` | standard | List / fetch workflow definitions |
+| `workflow_start` | standard | Start a run from a defined or inline spec |
+| `workflow_run_get` | standard | Per-step state and outputs for a run |
+| `workflow_run_control` | standard | `pause` / `resume` / `cancel` / `retry_step` |
+| `workflow_delete` | full | Remove a definition (past runs unaffected) |
+| `workflow_run_list` | full | List runs, filtered by workflow or state |
+
+**Agents**
+
+| Tool | Profile | Use |
+|---|---|---|
+| `agent_template_list` | core | List built-in role templates |
+| `agent_create` | standard | Define a persistent local agent |
+| `agent_list` / `agent_get` | standard | List / fetch agents, local and remote together |
+| `agent_register` * | standard | Register a remote A2A agent from its Agent Card |
+| `agent_publish` * | standard | Expose a local agent or template on this orchestrator's own Agent Card |
+| `agent_update` / `agent_delete` | full | Change or remove a local agent |
+| `agent_template_save` | full | Add or overwrite a role template (admin) |
+| `agent_share` / `agent_unshare` / `agent_share_list` | full | Peer-share one agent with one named user |
+
+**Memory** — a namespaced JSON blackboard, shared by every agent
+
+| Tool | Profile | Use |
+|---|---|---|
+| `memory_write` / `memory_read` / `memory_search` | standard | Write, read, full-text search |
+| `memory_delete` | full | Delete a key, a prefix, or a whole namespace |
+| `memory_share` / `memory_unshare` / `memory_share_list` | full | Peer-share a namespace with one named user |
+
+**Artifacts** — content too large to pass inline between tool calls
+
+| Tool | Profile | Use |
+|---|---|---|
+| `artifact_get` | core | Read an artifact, with `offset`/`length` for paging |
+| `artifact_put` / `artifact_list` | standard | Store / list artifacts |
+| `artifact_delete` | full | Delete an artifact (irreversible) |
+
+**Messaging**
+
+| Tool | Profile | Use |
+|---|---|---|
+| `message_send` / `message_list` | full | Message an agent, a shared channel, or a running job |
+| `channel_create` / `channel_list` | full | Create / list shared topic channels |
+
+**Human in the loop**
+
+| Tool | Profile | Use |
+|---|---|---|
+| `approval_list` / `approval_resolve` | core | List and resolve gates left by a workflow step marked `approval: true` |
+
+**Observability & budgets**
+
+| Tool | Profile | Use |
+|---|---|---|
+| `events_query` | standard | Read the append-only audit trail |
+| `trace_get` | standard | Build a span tree for a job or workflow run, with timings and usage |
+| `usage_report` | standard | Tokens and cost, grouped by agent, model or backend |
+| `budget_set` | full | Set a hard spend cap — deployment, one agent, or one job (admin) |
+
+**Downstream MCP servers** — what `toolGrants` on an agent draws from
+
+| Tool | Profile | Use |
+|---|---|---|
+| `toolserver_register` | full | Register a downstream MCP server, stdio or HTTP (admin) |
+| `toolserver_list` / `toolserver_tools` | full | List servers / the tools one offers, after allow/deny lists (admin) |
+| `toolserver_remove` | full | Unregister a server and close its connection (admin) |
+
+**Admin**
+
+| Tool | Profile | Use |
+|---|---|---|
+| `orchestrator_status` | core | Health, version, active profile, queue depth, schema version |
+| `runner_list` | standard | Each execution backend, and whether it's usable right now |
+
+**A2A interop** (`A2A_ENABLED=true` only)
+
+| Tool | Profile | Use |
+|---|---|---|
+| `a2a_server_info` | standard | Show this orchestrator's own published Agent Card |
+| `a2a_card_get` | standard | Fetch and cache a remote Agent Card without registering it |
+| `a2a_card_verify` | full | Re-check a cached card's signature, report `trustLevel` |
+| `a2a_discover` | full | Search cached cards (and a configured registry) by skill |
+| `a2a_task_get` / `a2a_task_cancel` | full | Read or cancel the raw remote task behind a job |
+| `a2a_push_config_set` | full | Ask a remote agent to push task updates to a webhook instead of being polled |
+
+`orch://` resources (`agent`, `job`, `job-transcript`, `workflow`, `workflow-run`,
+`artifact`, `memory`, `templates`, plus `a2a/card` when A2A is on) mirror this
+same state for a host that prefers pulling context over calling tools — see
+[Ownership](#ownership) for how they're scoped. Six built-in prompts
+(`orchestrate`, `build_feature`, `research_team`, `code_review_swarm`,
+`cross_vendor_review`, `postmortem_run`) chain these tools into a starting
+point for a common task; the host still drives every actual tool call.
+
+## Examples
+
+**Delegate one thing and read the answer:**
+
+```
+delegate { instruction: "Summarize this incident report in 3 bullets.",
+           template: "summarizer" }
+→ { status: "completed", result: "...", usage: { tokens: 812, costUsd: 0.0031 } }
+```
+
+**Fan out over files, then reduce:**
+
+```
+fan_out {
+  instructionTemplate: "Review {{item}} for a null-check bug in the auth path.",
+  items: ["src/auth/login.ts", "src/auth/refresh.ts", "src/auth/session.ts"],
+  template: "reviewer",
+  concurrency: 3,
+  reduce: { template: "summarizer", instruction: "Merge these findings, dedupe overlaps." }
+}
+```
+
+**Background work with a dependency, then wait on both:**
+
+```
+job_submit { instruction: "Draft the release notes for v1.4.", template: "writer" }
+→ { jobId: "job_01H..." }
+
+job_submit { instruction: "Proofread the draft release notes.", template: "reviewer",
+             dependsOn: ["job_01H..."] }
+→ { jobId: "job_01J..." }   # stays queued until the first job finishes
+
+job_wait { jobIds: ["job_01H...", "job_01J..."], mode: "all", timeoutSec: 60 }
+```
+
+**A workflow with a human approval gate before shipping:**
+
+```
+workflow_define {
+  name: "ship-feature",
+  steps: [
+    { id: "plan",   instruction: "Plan the change.",    template: "planner" },
+    { id: "build",  instruction: "Implement the plan.", template: "coder",    dependsOn: ["plan"] },
+    { id: "review", instruction: "Review the diff.",    template: "reviewer", dependsOn: ["build"], approval: true },
+    { id: "ship",   instruction: "Open the PR.",        template: "coder",    dependsOn: ["review"] }
+  ]
+}
+
+workflow_start { workflowId: "wf_...", inputs: { feature: "dark mode toggle" } }
+→ { runId: "run_..." }
+
+# once the "review" step pauses on its gate:
+approval_list { status: "pending" }
+approval_resolve { approvalId: "appr_...", decision: "approve" }
+```
+
+**Share state across jobs with memory and artifacts:**
+
+```
+memory_write { namespace: "release-1.4", key: "changelog", value: { items: ["..."] } }
+artifact_put { name: "full-diff.patch", content: "<patch text>", mimeType: "text/x-diff" }
+→ { artifactId: "art_..." }
+
+# a later job reads both back:
+memory_read   { namespace: "release-1.4", key: "changelog" }
+artifact_get  { artifactId: "art_...", offset: 0 }
+```
+
+**Grant an agent a downstream MCP tool:**
+
+```
+toolserver_register {
+  name: "files",
+  transport: { type: "stdio", command: "npx",
+               args: ["-y", "@modelcontextprotocol/server-filesystem", "/srv/repo"] }
+}
+
+agent_create {
+  name: "repo-reader",
+  role: "researcher",
+  instructions: "Answer questions about the repo at /srv/repo using the files tools.",
+  toolGrants: ["files/read_file", "files/list_directory"]
+}
+```
+
+`repo-reader` sees these inside its own loop as `files__read_file` and
+`files__list_directory` — see [What an agent can actually do](#what-an-agent-can-actually-do).
 
 ## The eight built-in roles
 

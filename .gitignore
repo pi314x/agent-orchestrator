@@ -24,3 +24,6 @@ coverage/
 .DS_Store
 Thumbs.db
 .idea/
+
+# Local Claude Code settings (permissions, hooks) — machine-specific.
+.claude/settings.json
