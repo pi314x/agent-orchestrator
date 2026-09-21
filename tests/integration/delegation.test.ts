@@ -1,0 +1,349 @@
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { startHttpServer, type HttpServerHandle } from '../../src/http.js';
+import { createServerFactory } from '../../src/server.js';
+import type { Services } from '../../src/services.js';
+import { closeServices, testServices } from '../helpers.js';
+
+let server: HttpServerHandle;
+let client: Client;
+let services: Services;
+
+type Structured = Record<string, unknown>;
+
+const call = async (name: string, args: Record<string, unknown> = {}): Promise<Structured> => {
+  const result = await client.callTool({ name, arguments: args });
+  return (result.structuredContent ?? {}) as Structured;
+};
+
+beforeAll(async () => {
+  services = await testServices({ profile: 'standard' });
+
+  server = await startHttpServer({
+    factory: createServerFactory({ services, startedAt: Date.now() }),
+    config: { httpHost: '127.0.0.1', httpPort: 0 },
+    logger: services.logger
+  });
+
+  client = new Client({ name: 'delegation-test', version: '0.0.0' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(server.url)));
+});
+
+afterAll(async () => {
+  await client?.close();
+  await server?.close();
+  await closeServices(services);
+});
+
+describe('delegate', () => {
+  it('runs an instruction on a template agent and returns the result', async () => {
+    const output = await call('delegate', { instruction: 'summarize the release', template: 'summarizer' });
+
+    expect(output['completed']).toBe(true);
+    const job = output['job'] as Structured;
+    expect(job['state']).toBe('succeeded');
+    expect(job['resultText']).toContain('summarize the release');
+    expect(job['backend']).toBe('local');
+  });
+
+  it('honours a per-call runner override on delegate and job_submit', async () => {
+    // The override lands on the snapshot, not the persistent agent: spending
+    // a different backend (e.g. your CLI login) for one call changes where it
+    // runs, never the agent itself.
+    const delegated = await call('delegate', {
+      instruction: 'spend cli once',
+      template: 'summarizer',
+      runner: 'cli',
+      wait: false
+    });
+    const delegatedJob = delegated['job'] as Structured;
+    expect(
+      (await services.jobs.getOrThrow(delegatedJob['jobId'] as string)).agentSnapshot.runner
+    ).toBe('cli');
+
+    const submitted = await call('job_submit', {
+      instruction: 'spend anthropic once',
+      template: 'summarizer',
+      runner: 'anthropic'
+    });
+    const submittedJob = submitted['job'] as Structured;
+    expect(
+      (await services.jobs.getOrThrow(submittedJob['jobId'] as string)).agentSnapshot.runner
+    ).toBe('anthropic');
+  });
+
+  it('rejects unknown allowedTemplates before the planner spends anything', async () => {
+    const before = await services.jobs.list({});
+    const result = await client.callTool({
+      name: 'plan_create',
+      arguments: { goal: 'ship it', allowedTemplates: ['ghost'] }
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toMatch(/ghost/);
+    expect((await services.jobs.list({})).jobs).toHaveLength(before.jobs.length);
+  });
+
+  it('carries a runner override onto fan_out items and the reduce step', async () => {
+    const fanned = await call('fan_out', {
+      instructionTemplate: 'look at {{item}}',
+      items: ['a', 'b'],
+      template: 'summarizer',
+      runner: 'cli',
+      reduce: { instruction: 'merge' }
+    });
+    // Items run (and fail — cli is unconfigured here); the reduce step only
+    // runs when something succeeded, so it may be absent. Either way every
+    // job this call created carries the override.
+    const jobs = (fanned['jobs'] as Structured[]).concat(
+      fanned['reduceJob'] === undefined ? [] : [fanned['reduceJob'] as Structured]
+    );
+    expect(jobs.length).toBeGreaterThan(0);
+    for (const job of jobs) {
+      expect((await services.jobs.getOrThrow(job['jobId'] as string)).agentSnapshot.runner).toBe('cli');
+    }
+  });
+
+  it('rejects an unknown reduce template before any item runs', async () => {
+    const before = await services.jobs.list({});
+    const result = await client.callTool({
+      name: 'fan_out',
+      arguments: {
+        instructionTemplate: 'look at {{item}}',
+        items: ['a', 'b'],
+        template: 'summarizer',
+        reduce: { instruction: 'merge', template: 'ghost' }
+      }
+    });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toMatch(/ghost/);
+    expect((await services.jobs.list({})).jobs).toHaveLength(before.jobs.length);
+  });
+
+  it('routes to an existing agent by skill query', async () => {
+    await call('agent_create', {
+      name: 'security-reviewer',
+      role: 'reviewer',
+      instructions: 'Review for security issues.',
+      runner: 'mock'
+    });
+
+    const output = await call('delegate', { instruction: 'check the auth code', skillQuery: 'reviewer' });
+    const job = output['job'] as Structured;
+
+    expect(job['agentName']).toBe('security-reviewer');
+    expect(job['state']).toBe('succeeded');
+  });
+
+  it('reports an unmatched skill query as a structured error', async () => {
+    const result = await client.callTool({
+      name: 'delegate',
+      arguments: { instruction: 'do a thing', skillQuery: 'underwater-basket-weaving' }
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('returns a handle without blocking when wait is false', async () => {
+    const output = await call('delegate', {
+      instruction: 'background work',
+      template: 'writer',
+      wait: false
+    });
+
+    expect(output['completed']).toBe(false);
+    expect((output['job'] as Structured)['jobId']).toMatch(/^job_/);
+  });
+});
+
+describe('job lifecycle over MCP', () => {
+  it('submits, waits and reads back a job', async () => {
+    const submitted = (
+      await call('job_submit', {
+        instruction: 'analyse the logs',
+        template: 'researcher'
+      })
+    )['job'] as Structured;
+
+    const jobId = submitted['jobId'] as string;
+
+    const waited = await call('job_wait', { jobIds: [jobId], mode: 'all', timeoutSec: 5 });
+    expect(waited['settled']).toBe(true);
+
+    const fetched = (await call('job_get', { jobId, includeEvents: true }))['job'] as Structured;
+    expect(fetched['state']).toBe('succeeded');
+    expect(fetched['attempt']).toBe(1);
+  });
+
+  it('records an audit trail for each job', async () => {
+    const submitted = (
+      await call('job_submit', {
+        instruction: 'audited work',
+        template: 'coder'
+      })
+    )['job'] as Structured;
+
+    const jobId = submitted['jobId'] as string;
+    await call('job_wait', { jobIds: [jobId], timeoutSec: 5 });
+
+    const events = (await call('job_get', { jobId, includeEvents: true }))['events'] as { type: string }[];
+    expect(events.map(e => e.type)).toEqual(['job.submitted', 'job.started', 'job.succeeded']);
+  });
+
+  it('honours an idempotency key across retried submissions', async () => {
+    const args = { instruction: 'exactly once', template: 'writer', idempotencyKey: 'once-only' };
+
+    const first = (await call('job_submit', args))['job'] as Structured;
+    const second = (await call('job_submit', args))['job'] as Structured;
+
+    expect(second['jobId']).toBe(first['jobId']);
+  });
+
+  it('reports a missing job rather than inventing one', async () => {
+    const result = await client.callTool({ name: 'job_get', arguments: { jobId: 'job_missing' } });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({ code: 'NOT_FOUND' });
+  });
+
+  it('lists jobs filtered by state', async () => {
+    const output = await call('job_list', { state: 'succeeded', limit: 5 });
+
+    const jobs = output['jobs'] as Structured[];
+    expect(jobs.length).toBeGreaterThan(0);
+    for (const job of jobs) expect(job['state']).toBe('succeeded');
+  });
+});
+
+describe('discovery tools', () => {
+  it('lists the twenty-one built-in templates', async () => {
+    const templates = (await call('agent_template_list'))['templates'] as { name: string }[];
+
+    expect(templates.map(t => t.name)).toEqual([
+      'planner',
+      'researcher',
+      'coder',
+      'reviewer',
+      'tester',
+      'writer',
+      'critic',
+      'summarizer',
+      'architect',
+      'debugger',
+      'security-engineer',
+      'performance-engineer',
+      'api-designer',
+      'devops-engineer',
+      'data-engineer',
+      'technical-writer',
+      'release-manager',
+      'refactor',
+      'accessibility-specialist',
+      'compliance-reviewer',
+      'marketer'
+    ]);
+  });
+
+  it('reports the mock runner as available and anthropic as unconfigured', async () => {
+    const runners = (await call('runner_list'))['runners'] as { name: string; available: boolean }[];
+
+    expect(runners.find(r => r.name === 'mock')?.available).toBe(true);
+    expect(runners.find(r => r.name === 'anthropic')?.available).toBe(false);
+  });
+
+  it('surfaces queue depth in orchestrator_status', async () => {
+    const status = await call('orchestrator_status');
+
+    expect(status['jobs']).toMatchObject({ queued: 0, running: 0, blocked: 0 });
+    expect(status['status']).toBe('ok');
+  });
+});
+
+describe('fan_out', () => {
+  it('runs the instruction template over every item', async () => {
+    const output = await call('fan_out', {
+      instructionTemplate: 'Review {{item}}',
+      items: ['auth.ts', 'db.ts', 'http.ts'],
+      template: 'reviewer'
+    });
+
+    expect(output['completed']).toBe(true);
+    const jobs = output['jobs'] as Structured[];
+    expect(jobs).toHaveLength(3);
+
+    const texts = jobs.map(j => j['resultText'] as string);
+    expect(texts.some(t => t.includes('auth.ts'))).toBe(true);
+    expect(texts.some(t => t.includes('db.ts'))).toBe(true);
+    expect(texts.some(t => t.includes('http.ts'))).toBe(true);
+  });
+
+  it('reduces the fanned-out results when asked', async () => {
+    const output = await call('fan_out', {
+      instructionTemplate: 'Summarize {{item}}',
+      items: ['a', 'b'],
+      template: 'summarizer',
+      reduce: { instruction: 'Combine the findings' }
+    });
+
+    const reduceJob = output['reduceJob'] as Structured;
+    expect(reduceJob).toBeDefined();
+    expect(reduceJob['state']).toBe('succeeded');
+    expect(reduceJob['resultText']).toContain('Combine the findings');
+  });
+
+  it('respects a per-call concurrency cap', async () => {
+    const output = await call('fan_out', {
+      instructionTemplate: 'Handle {{item}}',
+      items: [1, 2, 3, 4],
+      template: 'coder',
+      concurrency: 2
+    });
+
+    expect(output['completed']).toBe(true);
+    expect(output['jobs']).toHaveLength(4);
+  });
+
+  it('returns handles without waiting when wait is false', async () => {
+    const output = await call('fan_out', {
+      instructionTemplate: 'Later {{item}}',
+      items: ['x', 'y'],
+      template: 'writer',
+      wait: false
+    });
+
+    expect(output['completed']).toBe(false);
+    expect(output['jobs']).toHaveLength(2);
+  });
+});
+
+describe('shared state over MCP', () => {
+  it('round-trips memory through the tools', async () => {
+    await call('memory_write', { namespace: 'proj', key: 'goal', value: { target: 'ship M2' } });
+
+    const read = await call('memory_read', { namespace: 'proj', key: 'goal' });
+    expect(read['found']).toBe(true);
+
+    const found = await call('memory_search', { query: 'ship', namespace: 'proj' });
+    expect((found['entries'] as Structured[]).length).toBeGreaterThan(0);
+  });
+
+  it('round-trips an artifact through the tools', async () => {
+    const put = (await call('artifact_put', { name: 'notes.md', content: 'line one' }))[
+      'artifact'
+    ] as Structured;
+
+    const got = await call('artifact_get', { artifactId: put['artifactId'] as string });
+
+    expect(got['content']).toBe('line one');
+    expect(got['eof']).toBe(true);
+  });
+
+  it('reports a missing artifact as a structured error', async () => {
+    const result = await client.callTool({ name: 'artifact_get', arguments: { artifactId: 'art_nope' } });
+
+    expect(result.isError).toBe(true);
+    expect(result.structuredContent).toMatchObject({ code: 'NOT_FOUND' });
+  });
+});

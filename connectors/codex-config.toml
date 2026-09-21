@@ -1,0 +1,8 @@
+# MCP connector for OpenAI Codex CLI.
+# Copy the section below into ~/.codex/config.toml, replacing the absolute path.
+# Then restart Codex; the tools appear under the orchestrator namespace.
+
+[mcp_servers.orchestrator]
+command = "node"
+args = ["/absolute/path/to/agent-orchestrator/dist/index.js"]
+startup_timeout_sec = 60

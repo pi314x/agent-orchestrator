@@ -1,0 +1,9 @@
+name: Orchestrator MCP
+version: 0.1.0
+schema: v1
+mcpServers:
+  - name: orchestrator
+    command: node
+    args:
+      - /absolute/path/to/agent-orchestrator/dist/index.js
+    cwd: /absolute/path/to/agent-orchestrator

@@ -1,0 +1,21 @@
+# A throwaway Postgres to develop and test the Postgres backend against.
+#
+#   docker compose up -d db
+#   TEST_POSTGRES_URL=postgres://orch:orch@127.0.0.1:5432/orch pnpm test
+#
+# Nothing here is meant for production: the password is in the file, and the
+# volume is anonymous, so `docker compose down -v` leaves no trace.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: orch
+      POSTGRES_PASSWORD: orch
+      POSTGRES_DB: orch
+    ports:
+      - '127.0.0.1:5432:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U orch -d orch']
+      interval: 2s
+      timeout: 3s
+      retries: 15

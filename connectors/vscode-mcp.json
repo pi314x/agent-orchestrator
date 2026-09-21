@@ -1,0 +1,10 @@
+{
+  "servers": {
+    "orchestrator": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["/absolute/path/to/agent-orchestrator/dist/index.js"],
+      "cwd": "/absolute/path/to/agent-orchestrator"
+    }
+  }
+}

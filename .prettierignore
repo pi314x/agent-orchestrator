@@ -1,0 +1,7 @@
+node_modules/
+dist/
+coverage/
+pnpm-lock.yaml
+tests/**/__snapshots__/
+# Hand-authored docs with wide tables and ASCII diagrams.
+*.md

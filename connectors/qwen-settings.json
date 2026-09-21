@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "orchestrator": {
+      "command": "node",
+      "args": ["/absolute/path/to/agent-orchestrator/dist/index.js"],
+      "cwd": "/absolute/path/to/agent-orchestrator",
+      "timeout": 60000
+    }
+  }
+}

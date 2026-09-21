@@ -1,0 +1,9 @@
+{
+  "context_servers": {
+    "orchestrator": {
+      "command": "node",
+      "args": ["/absolute/path/to/agent-orchestrator/dist/index.js"],
+      "env": {}
+    }
+  }
+}
